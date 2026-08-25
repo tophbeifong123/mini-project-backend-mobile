@@ -1,3 +1,28 @@
+> # ⚠️ เอกสารฉบับเก่า — เก็บไว้เพื่ออ้างอิงเท่านั้น (ARCHIVED)
+>
+> **ห้ามใช้ไฟล์นี้เป็นสเปกในการเขียนโค้ด** — ฉบับที่ใช้จริงคือ [`docs/architecture.md`](architecture.md)
+>
+> ฉบับนี้ถูกแทนที่เมื่อ **2026-08-25** หลังการรีวิว โดยพบปัญหาที่แก้ไปแล้วในฉบับใหม่:
+>
+> | # | ปัญหา | อยู่ตรงไหนในไฟล์นี้ | แก้ที่ |
+> | :-- | :--- | :--- | :--- |
+> | B1 | **ไม่มี JWT / Authentication เลยทั้งเอกสาร** ทั้งที่โจทย์บังคับ | ไม่ปรากฏ (grep เจอ 0 ครั้ง) | ฉบับใหม่ §4 |
+> | B2 | Worker คืนสต็อกใน `catch` เดียวกับ side-effect หลัง `commitTransaction()` → Redis บวกเกินจริง = **oversell** | §3.3 | ฉบับใหม่ §6.3 |
+> | B3 | Lua `DECR` ก่อน enqueue แต่ไม่มี compensation ถ้า `queue.add()` ล้ม → สต็อกหายถาวร, `remainingStock` ไม่มีวันถึง 0 | §3.1–3.2 | ฉบับใหม่ §6.2 |
+> | B4 | `stock:flash_sale:*` ไม่มีที่มา + `or '0'` ตีความ key หายว่า "ของหมด" + วาง cache/queue ไว้ Redis ตัวเดียว (LRU กิน job) | §3.1, §1 | ฉบับใหม่ §6.1, §1 |
+> | B5 | Worker concurrency 15 vs DB pool 5 conn → oversubscribe 3 เท่า | §1, §4 | ฉบับใหม่ §8 |
+> | M1 | ไม่ได้บอกว่า `remainingStock` merge เข้า response ยังไง ("เงื่อนไขสำคัญ" ของโจทย์) | §2.1 | ฉบับใหม่ §5.1–5.2 |
+> | M2 | L1 in-memory LRU ขัดกฎ stateless ของตัวเอง → 3 instance ตอบสต็อกไม่ตรงกันได้นาน 2 วินาที | §2.1 | ตัดออกในฉบับใหม่ §5.3 |
+> | M3 | `keepalive 64` ไม่มี `proxy_http_version 1.1` → keepalive ไม่ทำงานเลย | §4 | ฉบับใหม่ §2 |
+> | M4 | Bull-Board ไม่มี auth | §1 | ฉบับใหม่ §9.1 |
+> | M5 | ไม่มีแผน k6 ทั้งที่เป็น deliverable | §5 | ฉบับใหม่ §9.2 |
+> | N1 | mermaid ใช้ `\n` ในป้าย 14 จุด → render เป็นตัวอักษรจริง ไม่ขึ้นบรรทัดใหม่ | §1 | ฉบับใหม่ §1 (ใช้ `<br/>`) |
+>
+> เนื้อหาด้านล่างคงไว้ตามต้นฉบับทุกตัวอักษร (git object `eea5647`)
+> กู้ฉบับดิบได้ด้วย: `git show eea5647 > docs/old_architecture.md`
+
+---
+
 # 🏛️ Enterprise Flash Sale Architecture & Concurrency Blueprint
 *(ออกแบบและผ่านการตรวจสอบโดย Concurrency Specialist & Scalability Architect Agents)*
 

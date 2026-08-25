@@ -1,0 +1,250 @@
+# 🤖 CLAUDE.md — กติกาสำหรับ AI Agent และผู้พัฒนา
+
+> **โปรเจกต์**: Flash Sale System — Mobile Backend Architecture & Performance Testing
+> **โจทย์ต้นทาง**: [`docs/Flash Sale System.pdf`](docs/Flash%20Sale%20System.pdf)
+> **สถาปัตยกรรม (source of truth)**: [`docs/architecture.md`](docs/architecture.md)
+> **สถานะ**: 📐 blueprint-only — **ยังไม่มีโค้ดใน repo** (`src/` ยังไม่ถูกสร้าง)
+
+---
+
+## 0. ⚠️ อ่านก่อนเริ่มทุกครั้ง
+
+repo นี้ตอนนี้มีแต่ **เอกสารออกแบบ** ยังไม่มี `src/`, `package.json`, `docker-compose.yml`
+เพราะฉะนั้น:
+
+- **ห้ามเดาว่าไฟล์มีอยู่แล้ว** — ตรวจสอบก่อนเสมอ (`ls`, `cat`) แล้วค่อยแก้
+- เมื่อเริ่มเขียนโค้ด ให้ยึด [`docs/architecture.md`](docs/architecture.md) เป็นสเปก ถ้าโค้ดกับเอกสารขัดกัน **ถือว่าเอกสารถูก** จนกว่าจะตกลงกันใหม่ (แล้วต้องแก้เอกสารด้วย)
+- โจทย์บังคับ **API contract แบบเป๊ะๆ** เพราะกลุ่มอื่นจะเอา k6 script มายิงระบบเรา — เปลี่ยน path / field / status code เมื่อไหร่ = ยิงข้ามกลุ่มไม่ได้ (ดู §3)
+
+---
+
+## 1. 🛠️ Tech Stack
+
+| ชั้น | เทคโนโลยี | หมายเหตุ |
+| :--- | :--- | :--- |
+| Runtime | Node.js `>= 20.x` (แนะนำ `v22.x`) | |
+| Package Manager | **`pnpm` เท่านั้น** | ห้าม `npm` / `yarn` เด็ดขาด |
+| Framework | NestJS `^11` (Express platform) | โครงสร้างแบบ **modular by domain** |
+| Load Balancer | Nginx alpine | `least_conn` + keepalive → ≥ 3 instances |
+| Database | PostgreSQL 16 (Primary `:5432` / Replica `:5433`) | TypeORM replication (read-write split) |
+| Cache | Redis 7 — **`redis-cache`** `allkeys-lru` | metadata cache เท่านั้น |
+| Stock + Queue | Redis 7 — **`redis-data`** `noeviction` + AOF | stock counter, lock, BullMQ |
+| Queue | BullMQ + `@nestjs/bullmq` | ⚠️ **ห้ามใช้ `bull` / `@nestjs/bull`** |
+| Auth | `@nestjs/jwt` + `passport-jwt` (HS256) | stateless, ห้ามมี session ใน memory |
+| Validation | `class-validator` + `class-transformer` | global `ValidationPipe` |
+| Testing | Jest `^30`, Supertest `^7` | |
+| Load Test | k6 → `loadtest.js` | เป็น deliverable |
+| Container | Podman (`podman compose`) ใช้กับ `docker-compose.yml` | ไฟล์ต้องชื่อ `docker-compose.yml` ตามโจทย์ |
+
+---
+
+## 2. ⚡ คำสั่งที่ใช้บ่อย
+
+> ⚠️ ใช้ `pnpm` เสมอ
+
+```bash
+# --- Infrastructure ---
+podman compose up -d              # Nginx + 3 app + PG primary/replica + redis x2
+podman compose ps                 # ดูสถานะ + healthcheck
+podman compose logs -f app-1
+podman compose down -v            # ⚠️ -v ลบ volume (ข้อมูล DB หายหมด) — ถามก่อนใช้
+
+# --- Dependencies & Build ---
+pnpm install
+pnpm add <pkg>                    # ใช้ -w ต่อเมื่อ repo เป็น workspace จริงเท่านั้น
+pnpm run build
+
+# --- Dev / Prod ---
+pnpm run start:dev
+pnpm run start:prod
+
+# --- Quality ---
+pnpm run lint
+pnpm run format
+
+# --- Tests ---
+pnpm run test
+pnpm run test:cov
+pnpm run test:e2e
+
+# --- Migrations (TypeORM) ---
+pnpm run migration:generate -- src/migrations/<Name>
+pnpm run migration:run
+pnpm run migration:show
+pnpm run migration:revert         # ⚠️ ต้องขออนุญาตก่อน (§7)
+
+# --- Seed & Reset ก่อนทดสอบทุกครั้ง ---
+pnpm run seed                     # โหลด docs/products-seed.json เข้า DB
+pnpm run seed:redis               # SET stock:flash_sale:* จาก DB (NX) — ขาดไม่ได้
+
+# --- Load Test ---
+k6 run loadtest.js
+```
+
+---
+
+## 3. 📋 API Contract — ห้ามเปลี่ยนโดยพลการ
+
+โจทย์บังคับสเปกนี้เพื่อให้ยิง load test ข้ามกลุ่มได้ **การเปลี่ยนใดๆ ต้องถามผู้ใช้ก่อน**
+
+### `POST /api/v1/auth/token` — จำลอง login (ไม่ถูกวัด performance)
+```jsonc
+// req
+{ "userId": "user-999" }
+// res 200
+{ "status": "success", "accessToken": "eyJhbGciOiJIUzI1NiIs..." }
+```
+
+### `GET /api/v1/products?page=1&limit=10` — read-heavy
+```jsonc
+{
+  "status": "success",
+  "data": [{
+    "productId": "p-1001",
+    "name": "Limited Edition Sneaker",
+    "price": 2990,
+    "availableStock": 50,      // คงที่ มาจาก seed
+    "remainingStock": 30,      // ⚠️ ต้องสดเสมอ อ่านจาก Redis counter
+    "isFlashSaleActive": true
+  }],
+  "meta": { "total": 20, "page": 1, "limit": 10, "totalPages": 2 }
+}
+```
+
+### `POST /api/v1/orders` — write-heavy (ต้องมี `Authorization: Bearer <JWT>`)
+```jsonc
+// req  (ไม่มี quantity — บังคับ 1 ชิ้น)
+{ "productId": "p-1001" }
+// res 202
+{ "status": "processing", "orderJobId": "order:user-999:p-1001",
+  "message": "Your order is in the queue." }
+```
+
+| สถานการณ์ | Status | หมายเหตุ |
+| :--- | :--- | :--- |
+| รับเข้าคิวสำเร็จ | **202** | ห้ามเป็น 200/201 |
+| ไม่มี/JWT ไม่ถูกต้อง | 401 | |
+| เคยซื้อสินค้านี้แล้ว | 409 | |
+| ของหมด | 409 | |
+| กดรัวขณะมี order in-flight | 429 | **นับเป็นพฤติกรรมถูกต้อง ไม่ใช่ error** |
+| stock counter ยังไม่ถูก seed | 503 | ต้องแยกจาก "ของหมด" ให้ชัด |
+
+---
+
+## 4. 🚨 Concurrency Invariants — กฎที่ห้ามละเมิด
+
+นี่คือหัวใจของโจทย์ (Zero oversell + 1 ชิ้น/คน) รายละเอียดเต็มอยู่ใน [`docs/architecture.md`](docs/architecture.md) §6
+
+1. **ห้าม synchronous DB write ใน controller** — controller ต้องตอบ 202 หลัง enqueue ทันที
+2. **`userId` มาจาก JWT claim `sub` เท่านั้น** ห้ามรับจาก request body (ไม่งั้นสวมสิทธิ์ได้ + dedup พังทั้งระบบ)
+3. **Worker ต้องเขียนผ่าน `dataSource.createQueryRunner('master')` เท่านั้น** — `repository.findOne()` วิ่งไป replica ที่มี lag → race condition
+4. **ตัดสต็อกด้วย atomic SQL** `WHERE id = $1 AND remaining_stock > 0` แล้วเช็ค `affected === 0` — **ห้าม** `SELECT` มาเช็คใน JS ก่อน (TOCTOU)
+5. **หัก/คืน stock ใน Redis ต้องอยู่ใน Lua script** ห้ามทำเป็นหลายคำสั่งแยกกัน
+6. **ทุก path ที่หักสต็อกแล้วต้องมีทางชดเชย** — ถ้า `queue.add()` ล้มหลัง `DECR` ต้อง `INCR` คืนใน `catch`
+7. **Side effect หลัง `commitTransaction()` ต้องอยู่นอก try/catch ของ transaction** ไม่งั้นจะคืนสต็อกทั้งที่ขายไปแล้ว → oversell
+8. **Compensation ต้อง idempotent** guard ด้วย key ที่ผูกกับ `jobId` (BullMQ retry ได้หลายครั้ง)
+9. **`jobId` ต้องเป็น `order:{userId}:{productId}`** (deterministic) เพื่อให้ BullMQ ปฏิเสธ job ซ้ำเอง
+10. **Permanent failure ต้อง `return` ไม่ใช่ `throw`** (ของหมด / unique violation `23505`) — retry ไม่มีทางสำเร็จ
+11. **`redis-data` ต้อง `noeviction`** ถ้า LRU evict `stock:*` หรือ BullMQ job = ระบบพังเงียบๆ
+
+---
+
+## 5. 📐 Core Patterns
+
+1. **Stateless Backend** — ไม่มี session/counter/cache ผูกกับ RAM ของ process. ข้อยกเว้นเดียวคือ *single-flight promise memoization* ซึ่งเก็บ in-flight request ไม่ใช่ผลลัพธ์ข้ามคำขอ
+2. **Cache-Aside + Stock Overlay** — metadata แคชนาน (TTL 30–60s **+ jitter**), `remainingStock` อ่านสดจาก `MGET stock:*` แล้ว merge ตอน serialize. **นี่คือคำตอบของ "เงื่อนไขสำคัญ" ในโจทย์**
+3. **4-Tier Defense** — JWT guard → Redis Lua gatekeeper → BullMQ → atomic SQL → DB constraints
+4. **Health Checks แยก 2 ตัว** — `/health/live` ห้ามเช็ค DB (DB สะดุดแล้วจะ restart ทุก container พร้อมกัน), `/health/ready` เช็ค DB + Redis แล้วตอบ 503
+5. **Structured JSON Logging** — single-line JSON + `X-Correlation-ID` ส่งต่อเข้า job payload ให้ trace ข้ามไปถึง worker ได้ + redact password/token/secret
+6. **Key Builder รวมศูนย์** — Redis key ทุกตัวสร้างจาก `src/redis/redis.keys.ts` ห้ามต่อ string เอง
+
+---
+
+## 6. ✅ DO / ❌ DON'T
+
+### ✅ DO
+- **Strict typing** — เลี่ยง `any`; mock ในเทสต์ใช้ `jest.Mocked<Repository<T>>` ไม่ใช่ `any`
+- **TTL ทุก key ใน `redis-cache`** พร้อม jitter (key ที่ไม่มี TTL = memory leak)
+- **ปล่อย Redis lock ผ่าน Lua compare-and-delete** (เทียบ token ก่อนลบ)
+- **`try/catch` รอบทุกการเรียก cache พร้อม fallback ไป DB** — Redis คือ optimization ไม่ใช่ dependency ที่ขาดไม่ได้ (สำหรับ *cache*; stock counter เป็นคนละเรื่อง)
+- **ใช้ NestJS exceptions มาตรฐาน** (`ConflictException`, `ServiceUnavailableException`, ...)
+- **Migration สำหรับทุกการเปลี่ยน schema** และอ่านไฟล์ที่ generate มาก่อน commit เสมอ
+- **Graceful shutdown** (`app.enableShutdownHooks()`) ไม่งั้น deploy ทีไรเกิด stalled job ทุกที
+- **Bull-Board ต้องมี auth คลุม** — มันเปิดดู payload และกด retry/remove job ได้
+
+### ❌ DON'T
+- ❌ ใช้ `npm` / `yarn` — **`pnpm` เท่านั้น**
+- ❌ เก็บ state ที่ต้องแชร์ไว้ใน memory ของ Node.js (รวมถึง **L1 LRU cache ที่มี `remainingStock`** — 3 instance จะตอบไม่ตรงกัน)
+- ❌ เปิด `synchronize: true` (DROP column ได้ = ข้อมูลหายถาวร)
+- ❌ อ่านข้อมูลที่ต้อง lock จาก Replica
+- ❌ `redis.keys(pattern)` — O(N) และบล็อก Redis ทั้งตัว ใช้ `SCAN` หรือ key ที่คำนวณตรงได้
+- ❌ ลบ Redis lock ด้วย `DEL` ตรงๆ โดยไม่เทียบ token เจ้าของ
+- ❌ เรียก external API ใน DB transaction — ให้ enqueue แทน
+- ❌ ใช้ `job.progress()` / `queue.on('completed')` / job option `timeout` — พวกนี้เป็น **Bull ไม่ใช่ BullMQ** (ใช้ `job.updateProgress()`, `QueueEvents` / `@OnWorkerEvent()`, `Promise.race`)
+- ❌ Hardcode secret — ใช้ `ConfigService` / `.env` เสมอ
+- ❌ Commit `.env` หรือแก้ `pnpm-lock.yaml` ด้วยมือ
+- ❌ นับ 409/429 เป็น error ใน k6 threshold — มันคือพฤติกรรมที่ถูกต้อง
+
+---
+
+## 7. 🧪 Verification Checklist
+
+ก่อนสรุปว่างานเสร็จ **ต้องรันและผ่านครบ**:
+
+```bash
+pnpm run build     # 1. ไม่มี TypeScript error
+pnpm run lint      # 2. ผ่าน ESLint
+pnpm run test      # 3. unit tests ผ่านหมด
+```
+> เทสต์ตก = แก้ที่ต้นเหตุ **ห้ามลบ assertion ทิ้ง**
+
+4. **API contract ไม่เปลี่ยน** — path, field, status code ตรงกับ §3
+5. **ถ้าแตะ write path** ต้องรัน load test แล้วพิสูจน์ Data Integrity ([`docs/architecture.md`](docs/architecture.md) §9.3):
+   ```sql
+   SELECT remaining_stock FROM products WHERE id = 'p-1001';       -- ต้อง = 0
+   SELECT COUNT(*), COUNT(DISTINCT user_id) FROM orders
+     WHERE product_id = 'p-1001';                                  -- ต้อง = 50, 50
+   ```
+   ```bash
+   redis-cli -p 6380 GET stock:flash_sale:p-1001                   # ต้อง = "0"
+   ```
+6. **ถ้าแก้ `docs/architecture.md`** ต้องเช็คว่า §0 Requirement Traceability ยังชี้ถูกที่
+
+---
+
+## 8. ❓ ต้องหยุดถามผู้ใช้ก่อน
+
+- ⚠️ **กระทบข้อมูลใน DB** — `migration:revert`, `podman compose down -v`, ลบตาราง/คอลัมน์, raw SQL ที่ลบข้อมูล
+- ⚠️ **เพิ่ม/ลบ/อัปเกรด dependency**
+- ⚠️ **เปลี่ยน API contract** (§3) — path, method, field, status code
+- ⚠️ **แก้นโยบาย cache หรือ concurrency** — TTL, ปิด lock, ลด tier, แก้ Lua script
+- ⚠️ **ละเมิด invariant ใน §4** ข้อใดข้อหนึ่ง
+- ⚠️ **แก้ config หลัก** — `.env.example`, `docker-compose.yml`, `nginx.conf`, `maxmemory-policy`
+
+---
+
+## 9. 📦 Deliverables (เกณฑ์ส่งงาน)
+
+- [ ] **Source code** บน GitHub + `docker-compose.yml` ที่ **1-click start** ได้จริง
+- [ ] **`loadtest.js`** (k6) วางใน repo เดียวกัน
+- [ ] **Report (PDF)** ประกอบด้วย:
+  - [ ] Diagram สถาปัตยกรรม
+  - [ ] อธิบายกลยุทธ์ **Cache Invalidation** และการกัน **สั่งซื้อซ้ำซ้อน**
+  - [ ] ผลจาก Load Test Dashboard (แคปหน้าจอ + คำอธิบาย)
+  - [ ] **ตารางเทียบผลยิงระบบกลุ่มตัวเอง vs กลุ่มเพื่อน** + วิเคราะห์คอขวด
+  - [ ] รายชื่อสมาชิกและการแบ่งงาน
+  - [ ] อธิบายว่า **จัดการ `remainingStock` อย่างไร** (อาจารย์ระบุไว้ในโจทย์)
+
+---
+
+## 📚 เอกสารอ้างอิงในโปรเจกต์
+
+| ไฟล์ | ใช้เมื่อไหร่ |
+| :--- | :--- |
+| [`docs/architecture.md`](docs/architecture.md) | **สเปกหลัก** — อ่านก่อนเขียนโค้ดทุกครั้ง |
+| [`docs/old_architecture.md`](docs/old_architecture.md) | ⚠️ **ฉบับเก่า archived** — เก็บไว้เทียบเฉยๆ **ห้ามใช้เป็นสเปก** (ขาด JWT, มีบั๊ก oversell/undersell) |
+| [`docs/Flash Sale System.pdf`](docs/Flash%20Sale%20System.pdf) | โจทย์ต้นฉบับ |
+| [`docs/products-seed.json`](docs/products-seed.json) | ข้อมูลตั้งต้น |
+| [`docs/Summary_Best_Practice/agent/INDEX.md`](docs/Summary_Best_Practice/agent/INDEX.md) | กฎสรุปจากบทเรียน + **slide-errata** (โค้ดในสไลด์ที่ผิด ห้ามลอก) |
+| [`docs/Summary_Best_Practice/For_human/`](docs/Summary_Best_Practice/For_human/) | ฉบับอ่านยาว ภาษาไทย |
+| [`AGENTS.md`](AGENTS.md) | pointer มาที่ไฟล์นี้ (สำหรับ AI tool อื่น) |
