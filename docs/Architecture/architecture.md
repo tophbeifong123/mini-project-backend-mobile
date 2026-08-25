@@ -590,6 +590,7 @@ GROUP BY user_id HAVING COUNT(*) > 1;
 ---
 
 ## 📚 อ้างอิง
+- 🎓 **อ่านไม่เข้าใจ? เริ่มที่นี่ก่อน**: [`docs/Architecture/architecture-primer.md`](./architecture-primer.md) — ฉบับปูพื้นฐานตั้งแต่ศูนย์ (ไม่ใช่สเปก)
 - โจทย์: [`docs/Requirement/Flash Sale System.pdf`](../Requirement/Flash%20Sale%20System.pdf)
 - 📊 ไดอะแกรม DFD / Control Flow / CSPEC: [`docs/Architecture/diagrams.md`](./diagrams.md)
 - ⚠️ ฉบับเก่า (archived, ห้ามใช้เป็นสเปก): [`docs/Architecture/old_architecture.md`](./old_architecture.md)

@@ -10,6 +10,7 @@ High-throughput, low-latency backend สำหรับสถานการณ�
 
 | เอกสาร | คำอธิบาย |
 | :--- | :--- |
+| 🎓 [**Architecture Primer (เริ่มที่นี่)**](docs/Architecture/architecture-primer.md) | **ปูพื้นฐานตั้งแต่ศูนย์** — ทำไมต้องมีของเยอะขนาดนี้, ตัวละคร 7 ตัว, race condition, glossary, คำถามทดสอบตัวเอง |
 | 🏛️ [**System Architecture & Concurrency Blueprint**](docs/Architecture/architecture.md) | สเปกหลักของระบบ — read path, write path 4-tier, failure matrix, pooling, load test |
 | 🤖 [**CLAUDE.md**](CLAUDE.md) | กติกาสำหรับ AI agent และผู้พัฒนา — stack, คำสั่ง, API contract, DO/DON'T |
 | 📊 [**Dataflow & Control Flow Diagrams**](docs/Architecture/diagrams.md) | DFD Level 0–2, Control Flow, CSPEC, State Machine, Sequence — สำหรับใส่ในรายงาน |
