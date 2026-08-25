@@ -1,8 +1,8 @@
 # 🤖 CLAUDE.md — กติกาสำหรับ AI Agent และผู้พัฒนา
 
 > **โปรเจกต์**: Flash Sale System — Mobile Backend Architecture & Performance Testing
-> **โจทย์ต้นทาง**: [`docs/Flash Sale System.pdf`](docs/Flash%20Sale%20System.pdf)
-> **สถาปัตยกรรม (source of truth)**: [`docs/architecture.md`](docs/architecture.md)
+> **โจทย์ต้นทาง**: [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf)
+> **สถาปัตยกรรม (source of truth)**: [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md)
 > **สถานะ**: 📐 blueprint-only — **ยังไม่มีโค้ดใน repo** (`src/` ยังไม่ถูกสร้าง)
 
 ---
@@ -13,7 +13,7 @@ repo นี้ตอนนี้มีแต่ **เอกสารออกแ
 เพราะฉะนั้น:
 
 - **ห้ามเดาว่าไฟล์มีอยู่แล้ว** — ตรวจสอบก่อนเสมอ (`ls`, `cat`) แล้วค่อยแก้
-- เมื่อเริ่มเขียนโค้ด ให้ยึด [`docs/architecture.md`](docs/architecture.md) เป็นสเปก ถ้าโค้ดกับเอกสารขัดกัน **ถือว่าเอกสารถูก** จนกว่าจะตกลงกันใหม่ (แล้วต้องแก้เอกสารด้วย)
+- เมื่อเริ่มเขียนโค้ด ให้ยึด [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) เป็นสเปก ถ้าโค้ดกับเอกสารขัดกัน **ถือว่าเอกสารถูก** จนกว่าจะตกลงกันใหม่ (แล้วต้องแก้เอกสารด้วย)
 - โจทย์บังคับ **API contract แบบเป๊ะๆ** เพราะกลุ่มอื่นจะเอา k6 script มายิงระบบเรา — เปลี่ยน path / field / status code เมื่อไหร่ = ยิงข้ามกลุ่มไม่ได้ (ดู §3)
 
 ---
@@ -74,7 +74,7 @@ pnpm run migration:show
 pnpm run migration:revert         # ⚠️ ต้องขออนุญาตก่อน (§7)
 
 # --- Seed & Reset ก่อนทดสอบทุกครั้ง ---
-pnpm run seed                     # โหลด docs/products-seed.json เข้า DB
+pnpm run seed                     # โหลด docs/Requirement/products-seed.json เข้า DB
 pnpm run seed:redis               # SET stock:flash_sale:* จาก DB (NX) — ขาดไม่ได้
 
 # --- Load Test ---
@@ -133,7 +133,7 @@ k6 run loadtest.js
 
 ## 4. 🚨 Concurrency Invariants — กฎที่ห้ามละเมิด
 
-นี่คือหัวใจของโจทย์ (Zero oversell + 1 ชิ้น/คน) รายละเอียดเต็มอยู่ใน [`docs/architecture.md`](docs/architecture.md) §6
+นี่คือหัวใจของโจทย์ (Zero oversell + 1 ชิ้น/คน) รายละเอียดเต็มอยู่ใน [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) §6
 
 1. **ห้าม synchronous DB write ใน controller** — controller ต้องตอบ 202 หลัง enqueue ทันที
 2. **`userId` มาจาก JWT claim `sub` เท่านั้น** ห้ามรับจาก request body (ไม่งั้นสวมสิทธิ์ได้ + dedup พังทั้งระบบ)
@@ -199,7 +199,7 @@ pnpm run test      # 3. unit tests ผ่านหมด
 > เทสต์ตก = แก้ที่ต้นเหตุ **ห้ามลบ assertion ทิ้ง**
 
 4. **API contract ไม่เปลี่ยน** — path, field, status code ตรงกับ §3
-5. **ถ้าแตะ write path** ต้องรัน load test แล้วพิสูจน์ Data Integrity ([`docs/architecture.md`](docs/architecture.md) §9.3):
+5. **ถ้าแตะ write path** ต้องรัน load test แล้วพิสูจน์ Data Integrity ([`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) §9.3):
    ```sql
    SELECT remaining_stock FROM products WHERE id = 'p-1001';       -- ต้อง = 0
    SELECT COUNT(*), COUNT(DISTINCT user_id) FROM orders
@@ -208,7 +208,7 @@ pnpm run test      # 3. unit tests ผ่านหมด
    ```bash
    redis-cli -p 6380 GET stock:flash_sale:p-1001                   # ต้อง = "0"
    ```
-6. **ถ้าแก้ `docs/architecture.md`** ต้องเช็คว่า §0 Requirement Traceability ยังชี้ถูกที่
+6. **ถ้าแก้ `docs/Architecture/architecture.md`** ต้องเช็คว่า §0 Requirement Traceability ยังชี้ถูกที่
 
 ---
 
@@ -241,10 +241,11 @@ pnpm run test      # 3. unit tests ผ่านหมด
 
 | ไฟล์ | ใช้เมื่อไหร่ |
 | :--- | :--- |
-| [`docs/architecture.md`](docs/architecture.md) | **สเปกหลัก** — อ่านก่อนเขียนโค้ดทุกครั้ง |
-| [`docs/old_architecture.md`](docs/old_architecture.md) | ⚠️ **ฉบับเก่า archived** — เก็บไว้เทียบเฉยๆ **ห้ามใช้เป็นสเปก** (ขาด JWT, มีบั๊ก oversell/undersell) |
-| [`docs/Flash Sale System.pdf`](docs/Flash%20Sale%20System.pdf) | โจทย์ต้นฉบับ |
-| [`docs/products-seed.json`](docs/products-seed.json) | ข้อมูลตั้งต้น |
+| [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) | **สเปกหลัก** — อ่านก่อนเขียนโค้ดทุกครั้ง |
+| [`docs/Architecture/diagrams.md`](docs/Architecture/diagrams.md) | DFD / Control Flow / CSPEC / State Machine — ใช้ประกอบรายงานและตรวจ invariant |
+| [`docs/Architecture/old_architecture.md`](docs/Architecture/old_architecture.md) | ⚠️ **ฉบับเก่า archived** — เก็บไว้เทียบเฉยๆ **ห้ามใช้เป็นสเปก** (ขาด JWT, มีบั๊ก oversell/undersell) |
+| [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf) | โจทย์ต้นฉบับ |
+| [`docs/Requirement/products-seed.json`](docs/Requirement/products-seed.json) | ข้อมูลตั้งต้น |
 | [`docs/Summary_Best_Practice/agent/INDEX.md`](docs/Summary_Best_Practice/agent/INDEX.md) | กฎสรุปจากบทเรียน + **slide-errata** (โค้ดในสไลด์ที่ผิด ห้ามลอก) |
 | [`docs/Summary_Best_Practice/For_human/`](docs/Summary_Best_Practice/For_human/) | ฉบับอ่านยาว ภาษาไทย |
 | [`AGENTS.md`](AGENTS.md) | pointer มาที่ไฟล์นี้ (สำหรับ AI tool อื่น) |

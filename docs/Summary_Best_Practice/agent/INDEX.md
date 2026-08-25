@@ -19,7 +19,7 @@ Cross-cutting invariants:
 "slide-errata" sections list code in the source PDFs that is broken or wrong. Do not reproduce it.
 
 ## applied in this project
-These notes are the rulebook behind [`docs/architecture.md`](../../architecture.md) and [`CLAUDE.md`](../../../CLAUDE.md).
+These notes are the rulebook behind [`docs/Architecture/architecture.md`](../../Architecture/architecture.md) and [`CLAUDE.md`](../../../CLAUDE.md).
 Flash Sale System maps to them as: B02 modular NestJS · B03 atomic decrement + UNIQUE constraint + pooling ·
 B04 cache-aside + TTL jitter + Lua atomicity + eviction policy · B05 BullMQ idempotency + retries + Bull-Board auth ·
 B06 stateless JWT + Nginx least_conn + read-write split + k6.

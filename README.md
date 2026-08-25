@@ -10,11 +10,12 @@ High-throughput, low-latency backend สำหรับสถานการณ�
 
 | เอกสาร | คำอธิบาย |
 | :--- | :--- |
-| 🏛️ [**System Architecture & Concurrency Blueprint**](docs/architecture.md) | สเปกหลักของระบบ — read path, write path 4-tier, failure matrix, pooling, load test |
+| 🏛️ [**System Architecture & Concurrency Blueprint**](docs/Architecture/architecture.md) | สเปกหลักของระบบ — read path, write path 4-tier, failure matrix, pooling, load test |
 | 🤖 [**CLAUDE.md**](CLAUDE.md) | กติกาสำหรับ AI agent และผู้พัฒนา — stack, คำสั่ง, API contract, DO/DON'T |
-| 🗄️ [**old_architecture.md**](docs/old_architecture.md) | ⚠️ **ฉบับเก่า เก็บไว้อ้างอิงเท่านั้น** — ห้ามใช้เป็นสเปก (มีสรุปปัญหาที่พบอยู่หัวไฟล์) |
-| 📄 [**โจทย์ต้นฉบับ**](docs/Flash%20Sale%20System.pdf) | Mobile Backend Architecture & Performance Testing |
-| 🌱 [**products-seed.json**](docs/products-seed.json) | ข้อมูลสินค้าตั้งต้น (`p-1001` มีสต็อก 50 ชิ้น = ตัวที่ใช้ทดสอบ) |
+| 📊 [**Dataflow & Control Flow Diagrams**](docs/Architecture/diagrams.md) | DFD Level 0–2, Control Flow, CSPEC, State Machine, Sequence — สำหรับใส่ในรายงาน |
+| 🗄️ [**old_architecture.md**](docs/Architecture/old_architecture.md) | ⚠️ **ฉบับเก่า เก็บไว้อ้างอิงเท่านั้น** — ห้ามใช้เป็นสเปก (มีสรุปปัญหาที่พบอยู่หัวไฟล์) |
+| 📄 [**โจทย์ต้นฉบับ**](docs/Requirement/Flash%20Sale%20System.pdf) | Mobile Backend Architecture & Performance Testing |
+| 🌱 [**products-seed.json**](docs/Requirement/products-seed.json) | ข้อมูลสินค้าตั้งต้น (`p-1001` มีสต็อก 50 ชิ้น = ตัวที่ใช้ทดสอบ) |
 | 📖 [**สรุปบทเรียน (ฉบับอ่าน)**](docs/Summary_Best_Practice/For_human/) | Backend01–06 ภาษาไทยแบบละเอียด |
 | ⚙️ [**สรุปบทเรียน (ฉบับ agent)**](docs/Summary_Best_Practice/agent/INDEX.md) | กฎแบบย่อ + **slide-errata** (โค้ดในสไลด์ที่ผิด ห้ามลอก) |
 
@@ -49,7 +50,7 @@ k6 (1,000 read VUs + 500 write VUs)
                           (catalog reads)
 ```
 
-**หลักคิดสำคัญ**: แคช *metadata สินค้า* ไว้นาน แต่ `remainingStock` อ่านสดจาก Redis counter ทุก request แล้ว merge ตอนตอบกลับ — ทำให้แคชไม่ต้องถูก invalidate ทุกครั้งที่มีคนซื้อ แต่สต็อกยังถูกต้องเสมอ ([รายละเอียด](docs/architecture.md#5-%EF%B8%8F-read-path-1000-concurrent-users))
+**หลักคิดสำคัญ**: แคช *metadata สินค้า* ไว้นาน แต่ `remainingStock` อ่านสดจาก Redis counter ทุก request แล้ว merge ตอนตอบกลับ — ทำให้แคชไม่ต้องถูก invalidate ทุกครั้งที่มีคนซื้อ แต่สต็อกยังถูกต้องเสมอ ([รายละเอียด](docs/Architecture/architecture.md#5-%EF%B8%8F-read-path-1000-concurrent-users))
 
 ---
 

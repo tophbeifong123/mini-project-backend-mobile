@@ -11,9 +11,10 @@
 | ไฟล์ | คืออะไร |
 | :--- | :--- |
 | [`CLAUDE.md`](CLAUDE.md) | **กติกาฉบับเต็ม** — stack, คำสั่ง, API contract, DO/DON'T, checklist |
-| [`docs/architecture.md`](docs/architecture.md) | **สเปกสถาปัตยกรรม** — source of truth ถ้าโค้ดขัดกับเอกสาร เอกสารถูก |
-| [`docs/old_architecture.md`](docs/old_architecture.md) | ⚠️ ฉบับเก่า archived — **ห้ามใช้เป็นสเปก** |
-| [`docs/Flash Sale System.pdf`](docs/Flash%20Sale%20System.pdf) | โจทย์ต้นฉบับ |
+| [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) | **สเปกสถาปัตยกรรม** — source of truth ถ้าโค้ดขัดกับเอกสาร เอกสารถูก |
+| [`docs/Architecture/diagrams.md`](docs/Architecture/diagrams.md) | DFD + Control Flow + CSPEC (ตารางตัดสินใจของ gatekeeper และ worker) |
+| [`docs/Architecture/old_architecture.md`](docs/Architecture/old_architecture.md) | ⚠️ ฉบับเก่า archived — **ห้ามใช้เป็นสเปก** |
+| [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf) | โจทย์ต้นฉบับ |
 | [`docs/Summary_Best_Practice/agent/INDEX.md`](docs/Summary_Best_Practice/agent/INDEX.md) | กฎสรุปจากบทเรียน + slide-errata (โค้ดผิดในสไลด์ ห้ามลอก) |
 
 ## กฎที่ห้ามละเมิด (สรุป — รายละเอียดใน `CLAUDE.md` §4)
@@ -33,7 +34,7 @@
 ```bash
 pnpm run build && pnpm run lint && pnpm run test
 ```
-ถ้าแตะ write path ต้องพิสูจน์ Data Integrity ด้วย (`docs/architecture.md` §9.3):
+ถ้าแตะ write path ต้องพิสูจน์ Data Integrity ด้วย (`docs/Architecture/architecture.md` §9.3):
 `remaining_stock = 0` · `orders = 50 แถว` · `unique users = 50` · `redis GET stock:flash_sale:p-1001 = "0"`
 
 ## ต้องหยุดถามก่อน

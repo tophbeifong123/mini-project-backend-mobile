@@ -590,9 +590,10 @@ GROUP BY user_id HAVING COUNT(*) > 1;
 ---
 
 ## 📚 อ้างอิง
-- โจทย์: [`docs/Flash Sale System.pdf`](./Flash%20Sale%20System.pdf)
-- ⚠️ ฉบับเก่า (archived, ห้ามใช้เป็นสเปก): [`docs/old_architecture.md`](./old_architecture.md)
-- ข้อมูลตั้งต้น: [`docs/products-seed.json`](./products-seed.json)
-- สรุปบทเรียน (agent): [`docs/Summary_Best_Practice/agent/INDEX.md`](./Summary_Best_Practice/agent/INDEX.md)
-- สรุปบทเรียน (ฉบับอ่าน): [`docs/Summary_Best_Practice/For_human/`](./Summary_Best_Practice/For_human/)
-- กติกาสำหรับ AI agent: [`../CLAUDE.md`](../CLAUDE.md)
+- โจทย์: [`docs/Requirement/Flash Sale System.pdf`](../Requirement/Flash%20Sale%20System.pdf)
+- 📊 ไดอะแกรม DFD / Control Flow / CSPEC: [`docs/Architecture/diagrams.md`](./diagrams.md)
+- ⚠️ ฉบับเก่า (archived, ห้ามใช้เป็นสเปก): [`docs/Architecture/old_architecture.md`](./old_architecture.md)
+- ข้อมูลตั้งต้น: [`docs/Requirement/products-seed.json`](../Requirement/products-seed.json)
+- สรุปบทเรียน (agent): [`docs/Summary_Best_Practice/agent/INDEX.md`](../Summary_Best_Practice/agent/INDEX.md)
+- สรุปบทเรียน (ฉบับอ่าน): [`docs/Summary_Best_Practice/For_human/`](../Summary_Best_Practice/For_human/)
+- กติกาสำหรับ AI agent: [`CLAUDE.md`](../../CLAUDE.md)
