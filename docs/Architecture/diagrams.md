@@ -484,4 +484,3 @@ sequenceDiagram
 - สเปกเต็ม: [`docs/Architecture/architecture.md`](architecture.md)
 - กติกาสำหรับผู้พัฒนา / AI agent: [`CLAUDE.md`](../../CLAUDE.md)
 - โจทย์ต้นฉบับ: [`docs/Requirement/Flash Sale System.pdf`](../Requirement/Flash%20Sale%20System.pdf)
-- ⚠️ ฉบับเก่า (archived): [`docs/Architecture/old_architecture.md`](old_architecture.md)

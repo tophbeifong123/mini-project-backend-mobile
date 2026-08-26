@@ -819,7 +819,6 @@ stateDiagram-v2
 | k6 scenarios / thresholds | เขียนทีหลัง หลังระบบขึ้นแล้ว | ตอนทำ `loadtest.js` → [§9.2](architecture.md) |
 | Bull-Board, health checks, structured logging | เป็น deliverable แต่ไม่ใช่แก่นของ concurrency | ตอนใกล้ส่งงาน → [§9](architecture.md) |
 | Probabilistic early expiration (XFetch) | เอกสารระบุเองว่า **ไม่ใช้ในการส่งงาน** | ข้ามได้ |
-| [`old_architecture.md`](old_architecture.md) | ฉบับเก่าที่ไม่มี JWT + มีบั๊ก oversell/undersell | **ห้ามใช้เป็นสเปก** |
 
 ---
 
@@ -1038,4 +1037,3 @@ worker จะอ่านเจอสต็อกเก่า แล้วตั
 | จะเขียน `loadtest.js` | [`architecture.md` §9.2–9.3](architecture.md) |
 | จะเขียนรายงาน | [`architecture.md` §10](architecture.md) (ตาราง Naive vs นี่) + §9.3 + [`diagrams.md`](diagrams.md) |
 
-> ⚠️ **[`old_architecture.md`](old_architecture.md) ห้ามอ่านเป็นสเปก** — ฉบับเก่าที่ไม่มี JWT และมีบั๊ก oversell/undersell เก็บไว้เทียบเฉยๆ
