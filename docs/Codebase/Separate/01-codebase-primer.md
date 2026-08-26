@@ -275,13 +275,17 @@ return 1
 **บรรทัด `if raw == false then return -4`** สำคัญกว่าที่เห็น — ถ้าเขียน `tonumber(GET(k) or '0')` แบบที่เห็นทั่วไป
 "ไม่มี key" จะกลายเป็น "สต็อก 0" → Redis restart เมื่อไหร่ ระบบตอบ "ของหมด" ตลอดกาลโดยไม่มีใครรู้
 
-### ⚠️ ตรงที่ยังมีบั๊ก
+### ✅ จุดที่เคยเป็นบั๊ก และแก้ไปแล้ว (2026-08-26)
 
-`orders.service.ts:144-153` ตรวจว่า job ที่ `queue.add()` คืนมาเป็นของเราไหม โดยเทียบ `job.data.requestToken`
-**แต่ BullMQ ไม่เคยอ่าน `data` กลับมาจาก Redis** — `Job.create()` เขียนกลับแค่ `job.id`
-(`node_modules/bullmq/dist/cjs/classes/job.js:124-135`) → `isPreexistingJob` **เป็น false เสมอ**
+เดิมตรวจว่า job เป็นของเราไหมโดยเทียบ `job.data.requestToken` จากสิ่งที่ `queue.add()` คืนมา
+**ซึ่งใช้ไม่ได้** — BullMQ ไม่เคยอ่าน `data` กลับจาก Redis `Job.create()` เขียนกลับแค่ `job.id`
+(`node_modules/bullmq/dist/cjs/classes/job.js:124-135`) → เงื่อนไขนั้นเป็น false เสมอ = เช็คตาย
 
-รายละเอียดและทางแก้อยู่ใน [Q&A ข้อ 1](02-design-review-qa.md#1-blocker-b-ที่คิดว่าปิดแล้ว-ยังเปิดอยู่)
+ตอนนี้ `orders.service.ts` **อ่าน job กลับจาก Redis** ด้วย `queue.getJob(jobId)`
+(`Job.fromId` → `HGETALL`) แล้วเทียบ token ที่ *เก็บอยู่จริง* — round trip เท่าเดิมกับ `getState()` ที่ถอดออก
+และถ้าอ่านกลับไม่ได้ **จะไม่คืนสต็อก** (คืนผิดตอนของขายไปแล้วแย่กว่าไม่คืน)
+
+ที่มาและการถกเถียงอยู่ใน [Q&A ข้อ 1](02-design-review-qa.md#1-blocker-b-ที่คิดว่าปิดแล้ว-ยังเปิดอยู่)
 
 ---
 
@@ -339,10 +343,14 @@ PostgreSQL READ COMMITTED จะ **ประเมิน `WHERE` ใหม่** 
 | กรณี | DB | Redis | คืนสต็อก? |
 | :--- | :--- | :--- | :--- |
 | สำเร็จ | −1 | −1 (จาก gatekeeper) | ไม่ ✅ ตรงกัน |
-| ของหมด (`affected=0`) | rollback | −1 | **คืน** → กลับมาตรงกัน |
+| ของหมด (`affected=0`) | rollback | −1 | **ไม่คืน** → ปล่อยให้ Redis ลู่ลงเข้าหา DB (ดูหมายเหตุ) |
 | `23505` | rollback | −1 | **ไม่คืน** → Redis ต่ำกว่า DB ถาวร ⚠️ |
 | ล้ม attempt 1–2 | rollback | −1 | ไม่คืน (จะ retry) ✅ |
 | ล้ม attempt 3 | rollback | −1 | **คืน** → ตรงกัน |
+
+> **ทำไม sold-out ถึงไม่คืน**: `affected = 0` แปลว่า Redis บอก "ผ่าน" แต่ DB บอก "หมด"
+> = Redis สูงกว่า DB อยู่ก่อนแล้ว ถ้าคืนจะดันขึ้นอีก → ปล่อยคนถัดไป → ตาย sold-out อีก → คืนอีก **วนไม่จบ**
+> counter จะลู่เข้าหา 1 ไม่มีวันถึง 0 (ตกเกณฑ์ §9.3 ข้อ 4) การไม่คืนทำให้มันลู่ลงหา DB แล้วหยุดเอง
 
 ---
 
@@ -431,7 +439,9 @@ flowchart TD
 | queue | `orders` | `bullmq.module.ts:5` + `orders.service.ts:36` (ซ้ำ 2 ที่) | คนละชื่อ → job ไม่มีใครกิน |
 | catalog TTL | `30 + rand(0..30)` วิ | `redis.service.ts:231` | ไม่มี jitter → key หมดอายุพร้อมกัน |
 | lock TTL | 30,000 ms | `env.validation.ts:123` | สั้นไป → ยิงซ้ำได้ก่อน job จบ |
-| `compensated:` TTL | 86,400 วิ | `redis.service.ts:61` | ยาวเกินความจำเป็น ~5 order of magnitude |
+| `compensated:` TTL | 300 วิ | `redis.service.ts` | ต้องครอบ retry chain ของ job เดียว (~2 วิ) เท่านั้น |
+| debounce ล้างแคช | 1,000 ms | `redis.service.ts` | ต่ำไป = ล้างแคช 50 ครั้งรวดตอน burst |
+| `commandTimeout` | 1,000 ms | `redis.module.ts` | **ไม่มี = คำสั่งค้าง `catch` ไม่ทำงาน → 504** |
 | worker concurrency | 5 | `orders.processor.ts:38` | อ่านตอน decorate → `.env` ไม่มีผล |
 | pool size | 10 ต่อ pool | `database.config.ts:51` | เกิน ~16 จะชน `max_connections=100` |
 | BullMQ attempts | 3, backoff exp 200 ms | `orders.service.ts:119` | เป็นตัวกำหนดว่า `isFinalAttempt` เมื่อไหร่ |
@@ -472,6 +482,10 @@ flowchart TD
 
 **Q: 429 คือ error หรือเปล่า?**
 ไม่ใช่ มันคือหลักฐานว่า in-flight lock ทำงาน โจทย์บอกให้จำลองการกดรัว ห้ามนับเป็น error ใน k6 threshold
+
+**Q: ยิง k6 รอบสองเลยได้ไหม?**
+**ไม่ได้** ต้อง `RESET_CONFIRM=yes pnpm run reset` ก่อน — `seed` ใช้ `ON CONFLICT` ที่ไม่แตะ `remaining_stock`,
+`seed:redis` ใช้ `SET … NX`, `bought:` ไม่มี TTL → re-seed ซ้ำกี่รอบก็ไม่เปลี่ยนอะไร ได้ 409 ล้วน
 
 **Q: worker ตายกลางทางจะเป็นยังไง?**
 BullMQ จะเห็นว่า job "stalled" หลัง 30 วิ แล้วโยนกลับเข้าคิว **แต่ถ้า stall ครั้งที่ 2 มันจะ fail ทันที

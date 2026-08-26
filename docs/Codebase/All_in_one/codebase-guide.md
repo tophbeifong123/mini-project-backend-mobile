@@ -1,8 +1,9 @@
 # 📘 Codebase Guide — `flash-sale-backend` (ฉบับรวมไฟล์เดียว)
 
-> ไฟล์นี้คือ [`Separate/01-codebase-primer.md`](../Separate/01-codebase-primer.md) และ
-> [`Separate/02-design-review-qa.md`](../Separate/02-design-review-qa.md) ต่อกัน — เนื้อหาเหมือนกันทุกตัวอักษร
-> อ่านรวดเดียวจบใช้ไฟล์นี้ · อ่านคนละวัตถุประสงค์ใช้ฉบับแยก
+> ⚠️ **ไฟล์นี้ถูก generate** ห้ามแก้ตรงนี้ — แก้ที่ `Separate/` แล้วรัน `node scripts/build-all-in-one.mjs`
+>
+> เนื้อหาเหมือน [`Separate/01-codebase-primer.md`](../Separate/01-codebase-primer.md) +
+> [`Separate/02-design-review-qa.md`](../Separate/02-design-review-qa.md) ทุกตัวอักษร
 >
 > **ภาค 1** = โค้ดไฟล์ไหนเรียกไฟล์ไหน · **ภาค 2** = reviewer 3 คนถกดีไซน์อะไรกัน
 
@@ -285,13 +286,17 @@ return 1
 **บรรทัด `if raw == false then return -4`** สำคัญกว่าที่เห็น — ถ้าเขียน `tonumber(GET(k) or '0')` แบบที่เห็นทั่วไป
 "ไม่มี key" จะกลายเป็น "สต็อก 0" → Redis restart เมื่อไหร่ ระบบตอบ "ของหมด" ตลอดกาลโดยไม่มีใครรู้
 
-#### ⚠️ ตรงที่ยังมีบั๊ก
+#### ✅ จุดที่เคยเป็นบั๊ก และแก้ไปแล้ว (2026-08-26)
 
-`orders.service.ts:144-153` ตรวจว่า job ที่ `queue.add()` คืนมาเป็นของเราไหม โดยเทียบ `job.data.requestToken`
-**แต่ BullMQ ไม่เคยอ่าน `data` กลับมาจาก Redis** — `Job.create()` เขียนกลับแค่ `job.id`
-(`node_modules/bullmq/dist/cjs/classes/job.js:124-135`) → `isPreexistingJob` **เป็น false เสมอ**
+เดิมตรวจว่า job เป็นของเราไหมโดยเทียบ `job.data.requestToken` จากสิ่งที่ `queue.add()` คืนมา
+**ซึ่งใช้ไม่ได้** — BullMQ ไม่เคยอ่าน `data` กลับจาก Redis `Job.create()` เขียนกลับแค่ `job.id`
+(`node_modules/bullmq/dist/cjs/classes/job.js:124-135`) → เงื่อนไขนั้นเป็น false เสมอ = เช็คตาย
 
-รายละเอียดและทางแก้อยู่ใน **ภาค 2 ข้อ 1**
+ตอนนี้ `orders.service.ts` **อ่าน job กลับจาก Redis** ด้วย `queue.getJob(jobId)`
+(`Job.fromId` → `HGETALL`) แล้วเทียบ token ที่ *เก็บอยู่จริง* — round trip เท่าเดิมกับ `getState()` ที่ถอดออก
+และถ้าอ่านกลับไม่ได้ **จะไม่คืนสต็อก** (คืนผิดตอนของขายไปแล้วแย่กว่าไม่คืน)
+
+ที่มาและการถกเถียงอยู่ใน **ภาค 2 ข้อ 1**
 
 ---
 
@@ -349,10 +354,14 @@ PostgreSQL READ COMMITTED จะ **ประเมิน `WHERE` ใหม่** 
 | กรณี | DB | Redis | คืนสต็อก? |
 | :--- | :--- | :--- | :--- |
 | สำเร็จ | −1 | −1 (จาก gatekeeper) | ไม่ ✅ ตรงกัน |
-| ของหมด (`affected=0`) | rollback | −1 | **คืน** → กลับมาตรงกัน |
+| ของหมด (`affected=0`) | rollback | −1 | **ไม่คืน** → ปล่อยให้ Redis ลู่ลงเข้าหา DB (ดูหมายเหตุ) |
 | `23505` | rollback | −1 | **ไม่คืน** → Redis ต่ำกว่า DB ถาวร ⚠️ |
 | ล้ม attempt 1–2 | rollback | −1 | ไม่คืน (จะ retry) ✅ |
 | ล้ม attempt 3 | rollback | −1 | **คืน** → ตรงกัน |
+
+> **ทำไม sold-out ถึงไม่คืน**: `affected = 0` แปลว่า Redis บอก "ผ่าน" แต่ DB บอก "หมด"
+> = Redis สูงกว่า DB อยู่ก่อนแล้ว ถ้าคืนจะดันขึ้นอีก → ปล่อยคนถัดไป → ตาย sold-out อีก → คืนอีก **วนไม่จบ**
+> counter จะลู่เข้าหา 1 ไม่มีวันถึง 0 (ตกเกณฑ์ §9.3 ข้อ 4) การไม่คืนทำให้มันลู่ลงหา DB แล้วหยุดเอง
 
 ---
 
@@ -441,7 +450,9 @@ flowchart TD
 | queue | `orders` | `bullmq.module.ts:5` + `orders.service.ts:36` (ซ้ำ 2 ที่) | คนละชื่อ → job ไม่มีใครกิน |
 | catalog TTL | `30 + rand(0..30)` วิ | `redis.service.ts:231` | ไม่มี jitter → key หมดอายุพร้อมกัน |
 | lock TTL | 30,000 ms | `env.validation.ts:123` | สั้นไป → ยิงซ้ำได้ก่อน job จบ |
-| `compensated:` TTL | 86,400 วิ | `redis.service.ts:61` | ยาวเกินความจำเป็น ~5 order of magnitude |
+| `compensated:` TTL | 300 วิ | `redis.service.ts` | ต้องครอบ retry chain ของ job เดียว (~2 วิ) เท่านั้น |
+| debounce ล้างแคช | 1,000 ms | `redis.service.ts` | ต่ำไป = ล้างแคช 50 ครั้งรวดตอน burst |
+| `commandTimeout` | 1,000 ms | `redis.module.ts` | **ไม่มี = คำสั่งค้าง `catch` ไม่ทำงาน → 504** |
 | worker concurrency | 5 | `orders.processor.ts:38` | อ่านตอน decorate → `.env` ไม่มีผล |
 | pool size | 10 ต่อ pool | `database.config.ts:51` | เกิน ~16 จะชน `max_connections=100` |
 | BullMQ attempts | 3, backoff exp 200 ms | `orders.service.ts:119` | เป็นตัวกำหนดว่า `isFinalAttempt` เมื่อไหร่ |
@@ -483,6 +494,10 @@ flowchart TD
 **Q: 429 คือ error หรือเปล่า?**
 ไม่ใช่ มันคือหลักฐานว่า in-flight lock ทำงาน โจทย์บอกให้จำลองการกดรัว ห้ามนับเป็น error ใน k6 threshold
 
+**Q: ยิง k6 รอบสองเลยได้ไหม?**
+**ไม่ได้** ต้อง `RESET_CONFIRM=yes pnpm run reset` ก่อน — `seed` ใช้ `ON CONFLICT` ที่ไม่แตะ `remaining_stock`,
+`seed:redis` ใช้ `SET … NX`, `bought:` ไม่มี TTL → re-seed ซ้ำกี่รอบก็ไม่เปลี่ยนอะไร ได้ 409 ล้วน
+
 **Q: worker ตายกลางทางจะเป็นยังไง?**
 BullMQ จะเห็นว่า job "stalled" หลัง 30 วิ แล้วโยนกลับเข้าคิว **แต่ถ้า stall ครั้งที่ 2 มันจะ fail ทันที
 โดยไม่เรียก handler เลย** → `compensateOnce` ไม่ถูกเรียก → สต็อกหาย 1 ชิ้น
@@ -510,6 +525,10 @@ BullMQ จะเห็นว่า job "stalled" หลัง 30 วิ แล�
 > แยกกันทำรอบแรกโดยไม่เห็นงานกัน แล้วรอบสองเอาคำถามของแต่ละคนไปให้อีกสองคนตอบ
 >
 > **นี่คือบทสนทนาจริง ไม่ใช่บทที่แต่งขึ้น** — ตรงไหนมีคนยอมถอย จะเขียนไว้ว่ายอมถอย
+>
+> ✅ **อัปเดต 2026-08-26** — เจ้าของโปรเจกต์อนุมัติแล้ว และ **10 จาก 11 ข้อถูกแก้ลงโค้ดเรียบร้อย**
+> (ข้อ 10 "ตัด PG replica" ไม่ทำ เพราะกระทบ requirement — read-write split เป็นหัวข้อในรายงาน)
+> ดูสถานะรายข้อที่ตารางท้ายเอกสาร
 
 | ผู้ร่วมวง | มุมที่ถือ |
 | :--- | :--- |
@@ -707,21 +726,25 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 4. `CLAUDE.md` §6 — "Redis คือ optimization ไม่ใช่ dependency" **ไม่จริงตอน runtime** เพราะ `maxRetriesPerRequest: null` ไม่มี `commandTimeout` → คำสั่งค้าง ไม่ reject → `catch` ไม่ทำงาน ได้ 504 แทน fallback
 
 #### ที่ต้องตัดสินใจ (ยังไม่ได้แก้)
-| # | เรื่อง | ใครหนุน |
-| :-- | :--- | :--- |
-| 1 | เปลี่ยน `getState()` → `getJob()` + เทียบ token ที่เก็บอยู่ | ทั้ง 3 |
-| 2 | เขียน `orders.service.spec.ts` เคส duplicate ใหม่ | ทั้ง 3 |
-| 3 | เพิ่ม `pnpm run reset` | ทั้ง 3 |
-| 4 | read path fallback แทน 503 + นับ metric | PERF, CORRECT |
-| 5 | ไม่คืนสต็อกตอน `SoldOutError` | PERF |
-| 6 | debounce `invalidateCatalogCache()` | PERF, SIMPLE |
-| 7 | ใส่ `commandTimeout` ให้ ioredis | PERF |
-| 8 | `compensated:` TTL 86400 → 300 วิ | PERF |
-| 9 | ย้าย `requestToken` ไปเป็นค่าของ lock (ให้ CAS ทำงานจริง) | CORRECT |
-| 10 | ตัด PG replica + `DB_POOL_SIZE=20` | SIMPLE, PERF |
-| 11 | แก้เอกสาร 4 จุดที่ไม่ตรงโค้ด | ทั้ง 3 |
+| # | เรื่อง | ใครหนุน | สถานะ |
+| :-- | :--- | :--- | :--- |
+| 1 | เปลี่ยน `getState()` → `getJob()` + เทียบ token ที่เก็บอยู่ | ทั้ง 3 | ✅ แก้แล้ว |
+| 2 | เขียน `orders.service.spec.ts` เคส duplicate ใหม่ | ทั้ง 3 | ✅ แก้แล้ว (+3 เทสต์เรื่อง lock token) |
+| 3 | เพิ่ม `pnpm run reset` | ทั้ง 3 | ✅ `RESET_CONFIRM=yes pnpm run reset` |
+| 4 | read path fallback แทน 503 + นับ metric | PERF, CORRECT | ✅ แก้แล้ว (`getDegradedReadCount()`) |
+| 5 | ไม่คืนสต็อกตอน `SoldOutError` | PERF | ✅ แก้แล้ว |
+| 6 | debounce `invalidateCatalogCache()` | PERF, SIMPLE | ✅ ≤1 ครั้ง/วินาที (trailing) |
+| 7 | ใส่ `commandTimeout` ให้ ioredis | PERF | ✅ 1000 ms |
+| 8 | `compensated:` TTL 86400 → 300 วิ | PERF | ✅ แก้แล้ว |
+| 9 | ย้าย `requestToken` ไปเป็นค่าของ lock (ให้ CAS ทำงานจริง) | CORRECT | ✅ + `compensate*.lua` เป็น compare-and-delete |
+| 10 | ตัด PG replica + `DB_POOL_SIZE=20` | SIMPLE, PERF | ❌ **ไม่ทำ** — กระทบ requirement (read-write split เป็นหัวข้อในรายงาน) |
+| 11 | แก้เอกสาร 4 จุดที่ไม่ตรงโค้ด | ทั้ง 3 | ✅ §8, ADR-4, Q3, §6 |
 
-> ⚠️ ทุกข้อในตารางนี้แตะ `CLAUDE.md` §8 (นโยบาย cache/concurrency, config หลัก, invariant §4) — **ต้องขออนุมัติก่อนแก้**
+> ทั้งหมดแตะ `CLAUDE.md` §8 จึงขออนุมัติก่อน — ได้รับอนุมัติ 2026-08-26
+> ตรวจหลังแก้: `build` ✅ · `lint` ✅ · `test` **32/32** ✅ (เดิม 30)
+>
+> ⚠️ **ยังไม่เคยรันบน container จริง** — ทุกอย่างข้างบนยืนยันด้วย unit test กับการอ่านโค้ดเท่านั้น
+> โดยเฉพาะข้อ 1 ที่พึ่งพฤติกรรมของ `queue.getJob()` ควรมี integration test ยืนยันเมื่อมี container runtime
 
 ---
 

@@ -422,6 +422,9 @@ GET /api/v1/products?page=1&limit=10
 - **Metadata cache**: invalidate เฉพาะตอนแก้ข้อมูลสินค้าจริง (ชื่อ/ราคา) — ไม่ต้องแตะตอนมีคนซื้อ
 - **Stock**: ไม่ต้อง invalidate เพราะ worker `DECR` counter ตัวเดียวกันที่ read path อ่าน → เห็นค่าใหม่ทันที
 - Worker ยังคงส่ง invalidate metadata หลังตัดสต็อกสำเร็จ (§6.3) เพื่อรองรับกรณีสินค้าเปลี่ยนสถานะ `isFlashSaleActive`
+  — แต่ **debounce ไม่เกิน 1 ครั้ง/วินาที** (แก้ 2026-08-26): ของ 50 ชิ้นหมดใน window ~300 ms
+  = ล้างทั้งแคช 50 ครั้งรวดตอนที่ reader 1,000 คนกำลังยิงอยู่พอดี ซึ่งไม่ใช่สิ่งที่โจทย์ข้อ 2.3 กฎ 4 ต้องการ
+  เป็น trailing debounce จึงไม่มีการล้างที่หายไปเฉยๆ
 - ลำดับที่ถูก: **update DB → แล้วค่อย DEL cache** (ไม่ใช่ DEL ก่อน) และพึ่ง TTL เป็น safety net เสมอ *(B04)*
 - ❌ ห้ามใช้ `KEYS pattern` ในการล้างแคช — เป็น O(N) และบล็อก Redis ทั้งตัว ใช้ `SCAN` หรือ key ที่คำนวณตรงได้ *(B04 slide-errata #1)*
 
@@ -473,7 +476,8 @@ POST /api/v1/orders   { productId }   + Bearer JWT
 -- KEYS[2] stock:flash_sale:{productId}        fast stock counter
 -- KEYS[3] bought:{productId}:{userId}         committed flag
 -- ARGV[1] lock_ttl_ms   (เช่น 30000)
--- ARGV[2] jobId / order token
+-- ARGV[2] requestToken — สุ่มใหม่ **ทุกคำขอ** ไม่ใช่ jobId
+--         (jobId ซ้ำทุกครั้งที่คนเดิมขอของเดิม → compare-and-delete แยกการถือครองไม่ออก)
 
 -- 0) stock counter ต้องมีอยู่จริง ห้ามตีความ nil ว่า 0
 --    (nil = ยังไม่ seed หรือถูก evict → ต้องแยกออกจาก "ของหมด")
@@ -516,7 +520,11 @@ return 1                 -- ALLOWED
 async createOrder(userId: string, productId: string) {
   const jobId = `order:${userId}:${productId}`;   // deterministic → BullMQ ปฏิเสธซ้ำเอง
 
-  const verdict = await this.redis.gatekeeper(userId, productId, jobId, LOCK_TTL_MS);
+  // token สุ่มใหม่ทุกคำขอ — ใช้เป็นค่าใน lock (ให้ compare-and-delete แยกการถือครองได้จริง)
+  // และเป็นตัวพิสูจน์ว่า job ที่อยู่ในคิวเป็นของคำขอนี้
+  const requestToken = randomUUID();
+
+  const verdict = await this.redis.gatekeeper(userId, productId, requestToken, LOCK_TTL_MS);
 
   switch (verdict) {
     case -1: throw new ConflictException('You already purchased this product');
@@ -538,21 +546,31 @@ async createOrder(userId: string, productId: string) {
       removeOnFail: { count: 5000 },                 // เก็บหลักฐาน job ที่ fail ไว้โชว์
     });
   } catch (err) {
-    await this.redis.compensate(userId, productId);  // INCR stock + DEL lock (atomic)
+    await this.redis.compensate(userId, productId, requestToken);  // INCR stock + ปล่อย lock (atomic)
     throw new ServiceUnavailableException('Queue unavailable');
   }
 
-  // ⚠️ FIX (b) — BullMQ เจอ `jobId` ซ้ำแล้ว **คืน job เดิมเงียบๆ ไม่ throw**
+  // ⚠️ FIX (b) v2 — BullMQ เจอ `jobId` ซ้ำแล้ว **คืน job เดิมเงียบๆ ไม่ throw**
   // ถ้าพึ่ง catch อย่างเดียว: DECR ไปแล้ว + queue.add() เป็น no-op = สต็อกหาย 1 ชิ้นถาวร
-  // → ต้องตรวจ "ค่าที่คืนมา" ด้วย ไม่ใช่ตรวจแค่ exception
+  //
+  // ❌ **ห้ามเทียบกับ `job.data` ที่ `add()` คืนมา** — มันคือ object ที่เราส่งเข้าไปเอง
+  //    `Job.create()` เขียนกลับแค่ `job.id` ไม่เคยอ่าน data จาก Redis
+  //    (node_modules/bullmq/dist/cjs/classes/job.js:124-135) และตอน jobId ซ้ำ
+  //    ฝั่ง Lua แค่ `return jobId` โดยทิ้ง payload ใหม่ (addStandardJob-9.js:445)
+  //    → เทียบยังไงก็ตรงเสมอ = เช็คตาย (ฉบับก่อนของเอกสารนี้ผิดตรงนี้)
+  //
+  // ✅ ต้อง **อ่าน job กลับจาก Redis** แล้วเทียบ token ที่เก็บอยู่จริง
   if (!job) {
-    await this.redis.compensate(userId, productId);
+    await this.redis.compensate(userId, productId, requestToken);
     throw new ServiceUnavailableException('Queue unavailable');
   }
-  const state = await job.getState();
-  if (state === 'completed' || state === 'failed') {
-    // job record เดิมยังค้างอยู่ (removeOnComplete/Fail count 5000) → job ใหม่จะไม่ถูกรัน
-    await this.redis.compensate(userId, productId);
+
+  const stored = await this.ordersQueue.getJob(jobId);   // Job.fromId → HGETALL
+  if (!stored) {
+    // ยืนยันไม่ได้ ≠ เป็นของคนอื่น — **ห้ามคืนสต็อก** (คืนผิดตอนของขายแล้วแย่กว่าไม่คืน)
+    this.logger.error(`cannot verify queued job ${jobId} — NOT compensating`);
+  } else if (stored.data?.requestToken !== requestToken) {
+    await this.redis.compensate(userId, productId, requestToken);
     throw new ConflictException('Order already processed');
   }
 
@@ -615,12 +633,21 @@ export class OrdersProcessor extends WorkerHost {
       // compensate เป็น Lua ที่ INCR stock + DEL lock ในสเต็ปเดียว และ
       // guard ด้วย key `compensated:{jobId}` ไม่ให้คืนซ้ำเมื่อ retry
       const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
-      if (isFinalAttempt || err instanceof SoldOutError) {
-        await this.redis.compensateOnce(job.id, userId, productId);
+
+      if (err instanceof SoldOutError) {
+        // ⚠️ **ห้ามคืนสต็อกตรงนี้** (แก้ 2026-08-26)
+        // SoldOutError = Redis บอก "ผ่าน" แต่ DB บอก "หมด" → Redis สูงกว่า DB อยู่ก่อนแล้ว
+        // ถ้าคืน จะดัน Redis ขึ้นอีก → ปล่อยคนถัดไป → ตาย sold-out อีก → คืนอีก **วนไม่จบ**
+        // counter จะลู่เข้าหา 1 ไม่มีวันถึง 0 = ตกเกณฑ์ §9.3 ข้อ 4
+        // การไม่คืนทำให้ counter ลู่ลงเข้าหา DB แล้วหยุดเอง (lock ปล่อยให้ TTL เก็บ)
+        return { status: 'sold_out' };   // ❌ อย่า throw — permanent failure
+      }
+
+      if (isFinalAttempt) {
+        await this.redis.compensateOnce(job.id, userId, productId, requestToken);
       }
 
       await queryRunner.release();
-      if (err instanceof SoldOutError) return { status: 'sold_out' };  // ❌ อย่า throw
       throw err;                                                       // ✅ transient → retry
     } finally {
       if (queryRunner.isReleased === false) await queryRunner.release();
@@ -631,7 +658,7 @@ export class OrdersProcessor extends WorkerHost {
     // ไม่งั้นจะ "คืนสต็อกใน Redis ทั้งที่ DB ตัดไปแล้ว" → Redis บวกเกินจริง → oversell
     try {
       await this.redis.markBought(productId, userId);       // SET bought:{p}:{u}
-      await this.redis.releaseInFlightLock(userId, productId);
+      await this.redis.releaseInFlightLock(userId, productId, requestToken);  // compare-and-delete
       await this.redis.invalidateCatalogCache();
     } catch (e) {
       this.logger.error({ msg: 'post-commit side effect failed', jobId: job.id, err: e });
@@ -688,9 +715,15 @@ Error mapping: `23505` → 409 · `23514` (check) → 400 · `40P01` (deadlock) 
 
 **สูตรที่ต้องใช้** *(B06 — เป็นจุดที่สไลด์คำนวณผิด)*:
 ```
-total connections = instances × (1 + replicas) × poolSize   ≤ 80% ของ max_connections
+ต่อ "เซิร์ฟเวอร์แต่ละตัว" แยกกัน:
+  connections บน primary = instances × poolSize   ≤ 80% ของ max_connections ของ primary
+  connections บน replica = instances × poolSize   ≤ 80% ของ max_connections ของ replica
 ```
 TypeORM replication สร้าง pool **แยกต่อ master และต่อ slave แต่ละตัว** ไม่ใช่ pool เดียว
+
+> ⚠️ **แก้จากฉบับก่อน (2026-08-26)** — เดิมเขียนว่า `instances × (1 + replicas) × poolSize ≤ 80% ของ max_connections`
+> ซึ่ง **มิติผิด**: มันบวก connection ที่ไปลงคนละเซิร์ฟเวอร์เข้าด้วยกัน แล้วเอาไปเทียบกับ limit ของเซิร์ฟเวอร์เดียว
+> ค่าที่ถูกคือ **30 บน primary และ 30 บน replica แยกกัน** ไม่ใช่ 60 ที่ต้องเทียบกับ 100
 
 | องค์ประกอบ | ค่า | เหตุผล |
 | :--- | :--- | :--- |
@@ -702,7 +735,15 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 | Redis: `redis-data` | 3 clients | ① คำสั่งทั่วไป/Lua ② BullMQ producer ③ BullMQ worker (blocking `BZPOPMIN` ใช้ connection แยกเสมอ) |
 | Nginx | `worker_connections 10240`, `keepalive 64` | ต้องมาคู่กับ `proxy_http_version 1.1` (§2) |
 
-> **ข้อควรระวัง**: ถ้ารัน worker ใน process เดียวกับ API (แบบ `@nestjs/bullmq` ปกติ) มันคือ **DataSource เดียวกัน = pool เดียวกัน** จะแบ่งเป็น "10 สำหรับ API + 5 สำหรับ worker" ไม่ได้ ทั้ง API และ worker แย่ง pool 10 ตัวเดียวกัน — นี่คือเหตุผลที่ concurrency ต้องเป็น 5 ไม่ใช่ 15
+> **ข้อควรระวัง (แก้ 2026-08-26)** — ฉบับก่อนเขียนว่า "ทั้ง API และ worker แย่ง pool 10 ตัวเดียวกัน" **ซึ่งไม่จริงกับโค้ดที่เขียนจริง**
+> เพราะเปิด `replication` + `defaultMode: 'slave'` ไว้ TypeORM จึงสร้าง **pool แยกต่อ master และต่อ slave**
+> → API อ่าน catalog ลง **slave pool** ส่วน worker ขอ `createQueryRunner('master')` ลง **master pool** — **ไม่เคยชนกัน**
+>
+> `WORKER_CONCURRENCY = 5` จึงไม่ได้มีที่มาจากการแย่ง pool (จะเป็น 10 ก็ยังปลอดภัย)
+> เพดานจริงของ write path คือ **row lock ของสินค้าแถวเดียว** ที่ทุก worker ยิงใส่ ซึ่ง serialize อยู่แล้วไม่ว่า concurrency จะเป็นเท่าไหร่
+>
+> ⚠️ **แต่ถ้าวันไหนตัด replica ทิ้ง** master กับ slave จะยุบเป็น pool เดียว แล้วคำเตือนเดิมจะ *กลายเป็นจริงขึ้นมา*
+> ต้อง re-derive `DB_POOL_SIZE` (เช่นเป็น 20) **ก่อน** แก้ compose ไม่ใช่หลัง
 
 ---
 

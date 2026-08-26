@@ -4,6 +4,10 @@
 > แยกกันทำรอบแรกโดยไม่เห็นงานกัน แล้วรอบสองเอาคำถามของแต่ละคนไปให้อีกสองคนตอบ
 >
 > **นี่คือบทสนทนาจริง ไม่ใช่บทที่แต่งขึ้น** — ตรงไหนมีคนยอมถอย จะเขียนไว้ว่ายอมถอย
+>
+> ✅ **อัปเดต 2026-08-26** — เจ้าของโปรเจกต์อนุมัติแล้ว และ **10 จาก 11 ข้อถูกแก้ลงโค้ดเรียบร้อย**
+> (ข้อ 10 "ตัด PG replica" ไม่ทำ เพราะกระทบ requirement — read-write split เป็นหัวข้อในรายงาน)
+> ดูสถานะรายข้อที่ตารางท้ายเอกสาร
 
 | ผู้ร่วมวง | มุมที่ถือ |
 | :--- | :--- |
@@ -201,21 +205,25 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 4. `CLAUDE.md` §6 — "Redis คือ optimization ไม่ใช่ dependency" **ไม่จริงตอน runtime** เพราะ `maxRetriesPerRequest: null` ไม่มี `commandTimeout` → คำสั่งค้าง ไม่ reject → `catch` ไม่ทำงาน ได้ 504 แทน fallback
 
 ### ที่ต้องตัดสินใจ (ยังไม่ได้แก้)
-| # | เรื่อง | ใครหนุน |
-| :-- | :--- | :--- |
-| 1 | เปลี่ยน `getState()` → `getJob()` + เทียบ token ที่เก็บอยู่ | ทั้ง 3 |
-| 2 | เขียน `orders.service.spec.ts` เคส duplicate ใหม่ | ทั้ง 3 |
-| 3 | เพิ่ม `pnpm run reset` | ทั้ง 3 |
-| 4 | read path fallback แทน 503 + นับ metric | PERF, CORRECT |
-| 5 | ไม่คืนสต็อกตอน `SoldOutError` | PERF |
-| 6 | debounce `invalidateCatalogCache()` | PERF, SIMPLE |
-| 7 | ใส่ `commandTimeout` ให้ ioredis | PERF |
-| 8 | `compensated:` TTL 86400 → 300 วิ | PERF |
-| 9 | ย้าย `requestToken` ไปเป็นค่าของ lock (ให้ CAS ทำงานจริง) | CORRECT |
-| 10 | ตัด PG replica + `DB_POOL_SIZE=20` | SIMPLE, PERF |
-| 11 | แก้เอกสาร 4 จุดที่ไม่ตรงโค้ด | ทั้ง 3 |
+| # | เรื่อง | ใครหนุน | สถานะ |
+| :-- | :--- | :--- | :--- |
+| 1 | เปลี่ยน `getState()` → `getJob()` + เทียบ token ที่เก็บอยู่ | ทั้ง 3 | ✅ แก้แล้ว |
+| 2 | เขียน `orders.service.spec.ts` เคส duplicate ใหม่ | ทั้ง 3 | ✅ แก้แล้ว (+3 เทสต์เรื่อง lock token) |
+| 3 | เพิ่ม `pnpm run reset` | ทั้ง 3 | ✅ `RESET_CONFIRM=yes pnpm run reset` |
+| 4 | read path fallback แทน 503 + นับ metric | PERF, CORRECT | ✅ แก้แล้ว (`getDegradedReadCount()`) |
+| 5 | ไม่คืนสต็อกตอน `SoldOutError` | PERF | ✅ แก้แล้ว |
+| 6 | debounce `invalidateCatalogCache()` | PERF, SIMPLE | ✅ ≤1 ครั้ง/วินาที (trailing) |
+| 7 | ใส่ `commandTimeout` ให้ ioredis | PERF | ✅ 1000 ms |
+| 8 | `compensated:` TTL 86400 → 300 วิ | PERF | ✅ แก้แล้ว |
+| 9 | ย้าย `requestToken` ไปเป็นค่าของ lock (ให้ CAS ทำงานจริง) | CORRECT | ✅ + `compensate*.lua` เป็น compare-and-delete |
+| 10 | ตัด PG replica + `DB_POOL_SIZE=20` | SIMPLE, PERF | ❌ **ไม่ทำ** — กระทบ requirement (read-write split เป็นหัวข้อในรายงาน) |
+| 11 | แก้เอกสาร 4 จุดที่ไม่ตรงโค้ด | ทั้ง 3 | ✅ §8, ADR-4, Q3, §6 |
 
-> ⚠️ ทุกข้อในตารางนี้แตะ `CLAUDE.md` §8 (นโยบาย cache/concurrency, config หลัก, invariant §4) — **ต้องขออนุมัติก่อนแก้**
+> ทั้งหมดแตะ `CLAUDE.md` §8 จึงขออนุมัติก่อน — ได้รับอนุมัติ 2026-08-26
+> ตรวจหลังแก้: `build` ✅ · `lint` ✅ · `test` **32/32** ✅ (เดิม 30)
+>
+> ⚠️ **ยังไม่เคยรันบน container จริง** — ทุกอย่างข้างบนยืนยันด้วย unit test กับการอ่านโค้ดเท่านั้น
+> โดยเฉพาะข้อ 1 ที่พึ่งพฤติกรรมของ `queue.getJob()` ควรมี integration test ยืนยันเมื่อมี container runtime
 
 ---
 

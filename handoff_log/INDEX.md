@@ -7,5 +7,6 @@
 
 ---
 
+- 2026-08-26 — [Design Review รอบ 2 + แก้ 10 ข้อ](handoff_26_08_2026_design-review-round2.md) — เอกสารปูพื้นโค้ด (`docs/Codebase/`) + review ด้วย 4 agent แล้ว cross-examine — **เจอว่า blocker (b) ที่บันทึกว่าปิดแล้วยังเปิดอยู่** แก้ไป 10/11 ข้อ · build/lint/test ผ่าน (32 tests)
 - 2026-08-26 — [Backend Implementation](handoff_26_08_2026_backend-implementation.md) — สร้าง `flash-sale-backend` ทั้งโปรเจกต์ (NestJS + docker-compose + loadtest.js) ด้วย 3 agent + 1 agent ตรวจ requirement — **merge เข้า main แล้ว (11 commits) แต่ยังไม่เคยรัน container / ยิง k6**
 - 2026-08-26 — [Architecture Rationale + DB Schema](handoff_26_08_2026_architecture-rationale-db-schema.md) — เขียนสเปกสถาปัตยกรรมใหม่ทั้งชุด + เพิ่ม §3.1 DB schema + design review ด้วย 4 agent เจอ blocker 2 ข้อ — **จบแล้ว (ตัดสินใจครบ 4 ข้อในรอบถัดมา, commit แล้ว)**
