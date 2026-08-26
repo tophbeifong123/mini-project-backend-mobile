@@ -15,9 +15,9 @@
 | [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) | **สเปกสถาปัตยกรรม** — source of truth ถ้าโค้ดขัดกับเอกสาร เอกสารถูก |
 | [`docs/Codebase/README.md`](docs/Codebase/README.md) | **โค้ดจริงทำงานยังไง** — เดิน request ทีละ hop อ้าง `file:line` + บันทึก design review |
 | [`docs/Architecture/diagrams.md`](docs/Architecture/diagrams.md) | DFD + Control Flow + CSPEC (ตารางตัดสินใจของ gatekeeper และ worker) |
-| [`docs/Architecture/old_architecture.md`](docs/Architecture/old_architecture.md) | ⚠️ ฉบับเก่า archived — **ห้ามใช้เป็นสเปก** |
 | [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf) | โจทย์ต้นฉบับ |
 | [`docs/Summary_Best_Practice/For_agent/INDEX.md`](docs/Summary_Best_Practice/For_agent/INDEX.md) | กฎสรุปจากบทเรียน + slide-errata (โค้ดผิดในสไลด์ ห้ามลอก) |
+| [`docs/Meta/primer-template.md`](docs/Meta/primer-template.md) | แม่แบบ prompt เขียนเอกสารปูพื้นฐาน — ไม่ใช่สเปกของระบบนี้ |
 
 ## กฎที่ห้ามละเมิด (สรุป — รายละเอียดใน `CLAUDE.md` §4)
 1. **`pnpm` เท่านั้น** ห้าม `npm` / `yarn`
