@@ -2,7 +2,7 @@
 
 **วันที่:** 2026-08-26 · **ผู้บันทึก:** NuiGates (ร่วมกับ Claude Code / Opus 5) · **สถานะ:** โค้ดครบ ผ่าน build/lint/test · merge เข้า `main` แล้ว — **ยังไม่เคยรันบน container และยังไม่เคยยิง k6**
 **ขอบเขต:** สร้าง `flash-sale-backend` ทั้งโปรเจกต์จากศูนย์ — NestJS ครบทุก module, docker-compose, nginx, loadtest.js
-**ต่อจาก:** [`handoff_architecture-rationale-db-schema_26_08_2026.md`](handoff_architecture-rationale-db-schema_26_08_2026.md) (§6 ข้อ 6 "เริ่มเขียน `src/`")
+**ต่อจาก:** [`handoff_26_08_2026_architecture-rationale-db-schema.md`](handoff_26_08_2026_architecture-rationale-db-schema.md) (§6 ข้อ 6 "เริ่มเขียน `src/`")
 
 ---
 
@@ -132,4 +132,4 @@
 | วิธีสตาร์ท / วิธี dev นอก container | `README.md` |
 | Cache Hit/Miss สำหรับรายงาน | `scripts/cache-stats.sh` |
 | k6 | `loadtest.js` |
-| handoff รอบก่อน | `handoff_log/handoff_architecture-rationale-db-schema_26_08_2026.md` |
+| handoff รอบก่อน | `handoff_log/handoff_26_08_2026_architecture-rationale-db-schema.md` |
