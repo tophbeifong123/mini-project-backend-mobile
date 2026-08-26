@@ -15,7 +15,7 @@
 | [`docs/Architecture/diagrams.md`](docs/Architecture/diagrams.md) | DFD + Control Flow + CSPEC (ตารางตัดสินใจของ gatekeeper และ worker) |
 | [`docs/Architecture/old_architecture.md`](docs/Architecture/old_architecture.md) | ⚠️ ฉบับเก่า archived — **ห้ามใช้เป็นสเปก** |
 | [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf) | โจทย์ต้นฉบับ |
-| [`docs/Summary_Best_Practice/agent/INDEX.md`](docs/Summary_Best_Practice/agent/INDEX.md) | กฎสรุปจากบทเรียน + slide-errata (โค้ดผิดในสไลด์ ห้ามลอก) |
+| [`docs/Summary_Best_Practice/For_agent/INDEX.md`](docs/Summary_Best_Practice/For_agent/INDEX.md) | กฎสรุปจากบทเรียน + slide-errata (โค้ดผิดในสไลด์ ห้ามลอก) |
 
 ## กฎที่ห้ามละเมิด (สรุป — รายละเอียดใน `CLAUDE.md` §4)
 1. **`pnpm` เท่านั้น** ห้าม `npm` / `yarn`

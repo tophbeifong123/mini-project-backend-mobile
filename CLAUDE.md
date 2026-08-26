@@ -3,13 +3,15 @@
 > **โปรเจกต์**: Flash Sale System — Mobile Backend Architecture & Performance Testing
 > **โจทย์ต้นทาง**: [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf)
 > **สถาปัตยกรรม (source of truth)**: [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md)
-> **สถานะ**: 📐 blueprint-only — **ยังไม่มีโค้ดใน repo** (`src/` ยังไม่ถูกสร้าง)
+> **สถานะ**: 🛠️ implemented — `src/` ครบทุก module · `docker-compose.yml` 1-click start · `loadtest.js` พร้อม
+> `build` / `lint` / `test` (30 tests) ผ่านหมด · **ยังไม่เคยรันบน container จริงและยังไม่เคยยิง k6**
 
 ---
 
 ## 0. ⚠️ อ่านก่อนเริ่มทุกครั้ง
 
-repo นี้ตอนนี้มีแต่ **เอกสารออกแบบ** ยังไม่มี `src/`, `package.json`, `docker-compose.yml`
+repo นี้มีทั้ง **เอกสารออกแบบ** และ **โค้ดจริง** แล้ว (`src/`, `package.json`, `docker-compose.yml`, `loadtest.js`)
+สิ่งที่ **ยังไม่เคยเกิดขึ้นเลย** คือการรันบน container จริงและการยิง k6 — ตัวเลข performance ทุกตัวในเอกสารยังเป็นค่าประมาณ
 เพราะฉะนั้น:
 
 - **ห้ามเดาว่าไฟล์มีอยู่แล้ว** — ตรวจสอบก่อนเสมอ (`ls`, `cat`) แล้วค่อยแก้
@@ -68,7 +70,7 @@ pnpm run test:cov
 pnpm run test:e2e
 
 # --- Migrations (TypeORM) ---
-pnpm run migration:generate -- src/migrations/<Name>
+pnpm run migration:generate -- src/database/migrations/<Name>
 pnpm run migration:run
 pnpm run migration:show
 pnpm run migration:revert         # ⚠️ ต้องขออนุญาตก่อน (§7)
@@ -250,7 +252,7 @@ pnpm run test      # 3. unit tests ผ่านหมด
 | [`docs/Architecture/old_architecture.md`](docs/Architecture/old_architecture.md) | ⚠️ **ฉบับเก่า archived** — เก็บไว้เทียบเฉยๆ **ห้ามใช้เป็นสเปก** (ขาด JWT, มีบั๊ก oversell/undersell) |
 | [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf) | โจทย์ต้นฉบับ |
 | [`docs/Requirement/products-seed.json`](docs/Requirement/products-seed.json) | ข้อมูลตั้งต้น |
-| [`docs/Summary_Best_Practice/agent/INDEX.md`](docs/Summary_Best_Practice/agent/INDEX.md) | กฎสรุปจากบทเรียน + **slide-errata** (โค้ดในสไลด์ที่ผิด ห้ามลอก) |
+| [`docs/Summary_Best_Practice/For_agent/INDEX.md`](docs/Summary_Best_Practice/For_agent/INDEX.md) | กฎสรุปจากบทเรียน + **slide-errata** (โค้ดในสไลด์ที่ผิด ห้ามลอก) |
 | [`docs/Summary_Best_Practice/For_human/`](docs/Summary_Best_Practice/For_human/) | ฉบับอ่านยาว ภาษาไทย |
 | [`handoff_log/INDEX.md`](handoff_log/INDEX.md) | **บันทึกส่งต่องาน** — อ่านตัวล่าสุดก่อนเริ่มงานต่อ (มีของที่ไม่ได้อยู่ในโค้ด: เหตุผล, ทางตัน, สิ่งที่ยังไม่พิสูจน์) |
 | [`AGENTS.md`](AGENTS.md) | pointer มาที่ไฟล์นี้ (สำหรับ AI tool อื่น) |

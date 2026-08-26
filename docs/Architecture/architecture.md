@@ -142,35 +142,55 @@ server {
 
 ```
 src/
-├─ main.ts                        # global ValidationPipe, graceful shutdown hooks
+├─ main.ts                        # global ValidationPipe, graceful shutdown, mount Bull-Board
 ├─ app.module.ts
 ├─ config/
-│  ├─ database.config.ts          # TypeORM replication (master/slaves) + pool sizing
-│  └─ data-source.ts              # CLI DataSource สำหรับ migration
+│  ├─ database.config.ts          # buildTypeOrmOptions() — replication (master/slaves) + pool sizing
+│  └─ env.validation.ts           # ตรวจ env ตอน bootstrap (fail fast)
+├─ database/
+│  ├─ data-source.ts              # CLI DataSource สำหรับ migration (master เท่านั้น)
+│  ├─ migrate-and-seed.ts         # bootstrap ของ container: migration → seed DB → seed Redis
+│  └─ migrations/                 # <ts>-InitSchema.ts (DDL ตาม §3.1.1)
+├─ database_config/database.module.ts    # TypeOrmModule.forRootAsync
+├─ bullmq_config/bullmq.module.ts        # BullModule.forRootAsync (redis-data) + queue 'orders'
+├─ bull_board/                    # /admin/queues + Basic Auth
+├─ logger/logger.module.ts        # nestjs-pino — single-line JSON + redact
+├─ common/
+│  ├─ middleware/correlation-id.middleware.ts
+│  ├─ interceptors/logging.interceptor.ts
+│  └─ filters/all-exceptions.filter.ts
 ├─ auth/                          # §4
 │  ├─ auth.controller.ts          # POST /api/v1/auth/token
 │  ├─ auth.service.ts             # sign JWT (ไม่แตะ DB)
 │  ├─ jwt.strategy.ts             # verify only — zero I/O
-│  └─ jwt-auth.guard.ts
+│  ├─ jwt-auth.guard.ts
+│  └─ dto/create-token.dto.ts
 ├─ products/                      # §5
 │  ├─ products.controller.ts      # GET /api/v1/products
 │  ├─ products.service.ts         # cache-aside + single-flight + stock overlay
-│  └─ product.entity.ts
+│  ├─ entities/product.entity.ts
+│  └─ dto/list-products.dto.ts
 ├─ orders/                        # §6
 │  ├─ orders.controller.ts        # POST /api/v1/orders → 202
 │  ├─ orders.service.ts           # Lua gatekeeper + enqueue (+ compensation)
 │  ├─ orders.processor.ts         # BullMQ worker → Primary DB
-│  └─ order.entity.ts
+│  ├─ entities/order.entity.ts
+│  ├─ dto/create-order.dto.ts
+│  └─ errors/sold-out.error.ts
 ├─ redis/
 │  ├─ redis.module.ts             # 2 connections: cache / data
 │  ├─ redis.service.ts
-│  ├─ lua/                        # .lua files โหลดด้วย defineCommand
-│  └─ redis.keys.ts               # ⚠️ key-builder รวมศูนย์ ห้ามต่อ string เอง
+│  ├─ redis.constants.ts          # injection token
+│  ├─ redis.keys.ts               # ⚠️ key-builder รวมศูนย์ ห้ามต่อ string เอง
+│  └─ lua/                        # .lua โหลดด้วย defineCommand (nest-cli.json ต้อง copy เป็น asset)
 ├─ health/                        # /health/live, /health/ready
-└─ common/
-   ├─ middleware/trace-id.middleware.ts
-   └─ interceptors/logging.interceptor.ts
+└─ seed/
+   ├─ seed.ts                     # products-seed.json → DB (remaining_stock = available_stock)
+   └─ seed-redis.ts               # DB → SET stock:flash_sale:* NX
 ```
+
+> โครง folder ยึดแนวของ reference project (module folder + `entities/` + `dto/` + `*_config/` แยก)
+> **migration อยู่ที่ `src/database/migrations/` ไม่ใช่ `src/migrations/`**
 
 จัดโมดูล **ตาม domain (feature) ไม่ใช่ตาม layer** — controller ทำแค่ HTTP, business logic อยู่ที่ service, ไม่มี DB access ใน controller *(B02)*
 
@@ -184,7 +204,7 @@ src/
 #### 3.1.1 DDL (baseline migration)
 
 ```sql
--- src/migrations/<ts>-InitSchema.ts
+-- src/database/migrations/<ts>-InitSchema.ts
 
 CREATE TABLE products (
   id                    VARCHAR(32)    PRIMARY KEY,           -- 'p-1001' มาจาก seed — ห้าม generate เอง
@@ -508,8 +528,9 @@ async createOrder(userId: string, productId: string) {
   // ⚠️ สต็อกถูกหักใน Redis ไปแล้ว ณ จุดนี้
   // ถ้า enqueue ล้มแล้วไม่ชดเชย = สต็อก 1 ชิ้นหายถาวร
   // → remainingStock จะไม่มีวันลงถึง 0 → ตกเกณฑ์ Data Integrity Proof
+  let job: Job<OrderJobData> | undefined;
   try {
-    await this.ordersQueue.add('process-order', { userId, productId }, {
+    job = await this.ordersQueue.add('process-order', { userId, productId, correlationId }, {
       jobId,
       attempts: 3,
       backoff: { type: 'exponential', delay: 200 },  // + jitter ที่ฝั่ง worker
@@ -519,6 +540,20 @@ async createOrder(userId: string, productId: string) {
   } catch (err) {
     await this.redis.compensate(userId, productId);  // INCR stock + DEL lock (atomic)
     throw new ServiceUnavailableException('Queue unavailable');
+  }
+
+  // ⚠️ FIX (b) — BullMQ เจอ `jobId` ซ้ำแล้ว **คืน job เดิมเงียบๆ ไม่ throw**
+  // ถ้าพึ่ง catch อย่างเดียว: DECR ไปแล้ว + queue.add() เป็น no-op = สต็อกหาย 1 ชิ้นถาวร
+  // → ต้องตรวจ "ค่าที่คืนมา" ด้วย ไม่ใช่ตรวจแค่ exception
+  if (!job) {
+    await this.redis.compensate(userId, productId);
+    throw new ServiceUnavailableException('Queue unavailable');
+  }
+  const state = await job.getState();
+  if (state === 'completed' || state === 'failed') {
+    // job record เดิมยังค้างอยู่ (removeOnComplete/Fail count 5000) → job ใหม่จะไม่ถูกรัน
+    await this.redis.compensate(userId, productId);
+    throw new ConflictException('Order already processed');
   }
 
   return { status: 'processing', orderJobId: jobId, message: 'Your order is in the queue.' };
@@ -574,10 +609,15 @@ export class OrdersProcessor extends WorkerHost {
         return { status: 'already_confirmed' };
       }
 
-      // ล้มจริง และยังไม่ commit → คืนสิทธิ์ให้คนอื่นแย่งต่อ
+      // ⚠️ FIX (a) — คืนสต็อก **เฉพาะตอนล้มเหลวถาวรจริง** เท่านั้น
+      // ถ้าคืนทุกครั้งที่ catch: attempt 1 เจอ deadlock 40P01 → คืนสต็อก → attempt 2 สำเร็จ
+      // → Redis สูงกว่า DB ถาวร 1 หน่วย ตกเกณฑ์ §9.3 ข้อ 4 (`compensated:{jobId}` กันได้แค่คืน "ซ้ำ")
       // compensate เป็น Lua ที่ INCR stock + DEL lock ในสเต็ปเดียว และ
       // guard ด้วย key `compensated:{jobId}` ไม่ให้คืนซ้ำเมื่อ retry
-      await this.redis.compensateOnce(job.id, userId, productId);
+      const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+      if (isFinalAttempt || err instanceof SoldOutError) {
+        await this.redis.compensateOnce(job.id, userId, productId);
+      }
 
       await queryRunner.release();
       if (err instanceof SoldOutError) return { status: 'sold_out' };  // ❌ อย่า throw
@@ -606,7 +646,7 @@ export class OrdersProcessor extends WorkerHost {
 **สามจุดที่ต่างจากโค้ดที่เขียนกันทั่วไป และเป็นจุดชี้ขาด:**
 1. **`committed` flag** — กัน `rollbackTransaction()` ถูกเรียกบน transaction ที่ commit ไปแล้ว (TypeORM จะ throw ทับ error เดิม กลบสาเหตุจริง)
 2. **Side effect หลัง commit อยู่นอก try เดิม** — ป้องกันเคสที่ Redis สะดุดหลัง DB commit แล้วระบบไป "คืนสต็อก" ทั้งที่ของขายไปแล้วจริง
-3. **`compensateOnce` guard ด้วย jobId** — BullMQ retry ได้ 3 ครั้ง ถ้า compensate ทุกครั้งจะคืนสต็อก 3 เท่า
+3. **`compensateOnce` guard ด้วย jobId + คืนเฉพาะ attempt สุดท้าย** — BullMQ retry ได้ 3 ครั้ง `compensated:{jobId}` กันการคืน *ซ้ำ* ส่วน `isFinalAttempt` กันการคืน *job ที่ยังไม่ตาย* (ต้องมีทั้งคู่)
 4. **`SoldOutError` → `return` ไม่ใช่ `throw`** — เป็น permanent failure การ retry ไม่มีทางสำเร็จ มีแต่เปลือง attempt *(B05 slide-errata #6, #8)*
 
 ### 6.4 Tier 4: Database Constraints
@@ -757,6 +797,6 @@ GROUP BY user_id HAVING COUNT(*) > 1;
 - 🧭 **ทำไมถึงเลือกสถาปัตยกรรมนี้ + ข้อดีข้อเสีย + บันทึกการถกเถียง**: [`docs/Architecture/architecture-rationale.md`](./architecture-rationale.md)
 - ⚠️ ฉบับเก่า (archived, ห้ามใช้เป็นสเปก): [`docs/Architecture/old_architecture.md`](./old_architecture.md)
 - ข้อมูลตั้งต้น: [`docs/Requirement/products-seed.json`](../Requirement/products-seed.json)
-- สรุปบทเรียน (agent): [`docs/Summary_Best_Practice/agent/INDEX.md`](../Summary_Best_Practice/agent/INDEX.md)
+- สรุปบทเรียน (agent): [`docs/Summary_Best_Practice/For_agent/INDEX.md`](../Summary_Best_Practice/For_agent/INDEX.md)
 - สรุปบทเรียน (ฉบับอ่าน): [`docs/Summary_Best_Practice/For_human/`](../Summary_Best_Practice/For_human/)
 - กติกาสำหรับ AI agent: [`CLAUDE.md`](../../CLAUDE.md)

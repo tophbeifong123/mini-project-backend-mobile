@@ -7,4 +7,5 @@
 
 ---
 
+- 2026-08-26 — [Backend Implementation](handoff_backend-implementation_26_08_2026.md) — สร้าง `flash-sale-backend` ทั้งโปรเจกต์ (NestJS + docker-compose + loadtest.js) ด้วย 3 agent + 1 agent ตรวจ requirement — **build/lint/test ผ่าน แต่ยังไม่ commit และยังไม่เคยรัน container**
 - 2026-08-26 — [Architecture Rationale + DB Schema](handoff_architecture-rationale-db-schema_26_08_2026.md) — เขียนสเปกสถาปัตยกรรมใหม่ทั้งชุด + เพิ่ม §3.1 DB schema + design review ด้วย 4 agent เจอ blocker 2 ข้อ — **กำลังทำ (รอตัดสินใจ 4 ข้อ, ยังไม่ commit)**

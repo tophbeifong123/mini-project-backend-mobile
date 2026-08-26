@@ -2,7 +2,8 @@
 
 High-throughput, low-latency backend สำหรับสถานการณ์ **Flash Sale** — รองรับ **1,000 concurrent readers** และ **write burst 500 คนแย่งสินค้า 50 ชิ้น** โดยการันตี **Zero Overselling** และ **1 ชิ้นต่อ 1 ผู้ใช้**
 
-> **สถานะปัจจุบัน**: 📐 **Blueprint** — ออกแบบเสร็จแล้ว ยังไม่เริ่ม implement (`src/` ยังไม่ถูกสร้าง)
+> **สถานะปัจจุบัน**: 🛠️ **Implemented** — `src/` ครบทุก module, `docker-compose.yml` 1-click start, `loadtest.js` พร้อมยิง
+> `pnpm run build` / `pnpm run lint` / `pnpm run test` ผ่านทั้งหมด (30 tests) · **ยังไม่เคยรันบน container จริง** (ดู [handoff ล่าสุด](handoff_log/INDEX.md))
 
 ---
 
@@ -19,7 +20,7 @@ High-throughput, low-latency backend สำหรับสถานการณ�
 | 📄 [**โจทย์ต้นฉบับ**](docs/Requirement/Flash%20Sale%20System.pdf) | Mobile Backend Architecture & Performance Testing |
 | 🌱 [**products-seed.json**](docs/Requirement/products-seed.json) | ข้อมูลสินค้าตั้งต้น (`p-1001` มีสต็อก 50 ชิ้น = ตัวที่ใช้ทดสอบ) |
 | 📖 [**สรุปบทเรียน (ฉบับอ่าน)**](docs/Summary_Best_Practice/For_human/) | Backend01–06 ภาษาไทยแบบละเอียด |
-| ⚙️ [**สรุปบทเรียน (ฉบับ agent)**](docs/Summary_Best_Practice/agent/INDEX.md) | กฎแบบย่อ + **slide-errata** (โค้ดในสไลด์ที่ผิด ห้ามลอก) |
+| ⚙️ [**สรุปบทเรียน (ฉบับ agent)**](docs/Summary_Best_Practice/For_agent/INDEX.md) | กฎแบบย่อ + **slide-errata** (โค้ดในสไลด์ที่ผิด ห้ามลอก) |
 | 📒 [**Handoff Log**](handoff_log/INDEX.md) | บันทึกส่งต่องานแต่ละรอบ — ตัดสินใจอะไรเพราะอะไร, ทางตันที่ลองแล้ว, อะไรยังไม่ชัวร์ |
 
 ---
@@ -73,16 +74,47 @@ k6 (1,000 read VUs + 500 write VUs)
 
 ## ⚡ เริ่มต้นใช้งาน
 
-> ⚠️ ยังไม่มีโค้ด — ส่วนนี้คือขั้นตอนที่ *จะ* ใช้เมื่อ implement เสร็จ
+### แบบ 1-click (ที่ใช้ตอนส่งงาน)
+
+```bash
+podman compose up -d          # Nginx + app ×3 + PG primary/replica + redis ×2
+podman compose ps             # รอจน healthy ครบ (~40-60 วิ ครั้งแรกเพราะต้อง build image)
+```
+
+**ไม่ต้องรัน migration / seed เอง** — `scripts/app-entrypoint.sh` ทำให้แล้วใน `app-1`
+(migration → seed DB → seed Redis counter) ส่วน `app-2`/`app-3` จะรอจนกว่าทั้งสองอย่างเสร็จค่อยรับ traffic
+และ nginx จะรอจน app ทั้งสามตัวตอบ `/health/live` ได้ก่อน
+
+```bash
+# ตรวจว่าระบบพร้อมจริง
+curl -s localhost:8080/health/ready
+curl -s 'localhost:8080/api/v1/products?page=1&limit=10' | head -c 400
+
+# ยิง load test
+./scripts/cache-stats.sh reset    # ล้างสถิติแคชก่อน
+k6 run loadtest.js
+./scripts/cache-stats.sh          # อ่าน Cache Hit/Miss Ratio ไปใส่รายงาน
+```
+
+Bull-Board (Queue dashboard): <http://localhost:8080/admin/queues> — user/pass จาก `BULL_BOARD_USER` / `BULL_BOARD_PASSWORD`
+
+### แบบ dev บนเครื่องตัวเอง
+
+`.env.example` ตั้งค่า host เป็นชื่อ container (`postgres-primary`, `redis-data`) ซึ่ง**ใช้จากเครื่องตัวเองไม่ได้**
+ถ้าจะรัน `pnpm run start:dev` นอก container ต้องชี้กลับมาที่ localhost ก่อน:
 
 ```bash
 cp .env.example .env
-podman compose up -d       # Nginx + 3 app + PG primary/replica + redis ×2
+# แก้ใน .env: DB_HOST=127.0.0.1  DB_REPLICA_HOST=127.0.0.1  DB_REPLICA_PORT=5433
+#             REDIS_CACHE_HOST=127.0.0.1  REDIS_DATA_HOST=127.0.0.1  REDIS_DATA_PORT=6380
+podman compose up -d postgres-primary postgres-replica redis-cache redis-data
+pnpm install
 pnpm run migration:run
-pnpm run seed              # โหลด products-seed.json เข้า DB
-pnpm run seed:redis        # SET stock:flash_sale:* จาก DB
-k6 run loadtest.js
+pnpm run seed && pnpm run seed:redis   # ลำดับนี้สลับไม่ได้
+pnpm run start:dev
 ```
+
+> ⚠️ ต้องใช้ **pnpm** เท่านั้น (`corepack enable` ถ้ายังไม่มี) — ห้าม `npm` / `yarn`
 
 ---
 
@@ -102,6 +134,6 @@ SELECT COUNT(*), COUNT(DISTINCT user_id) FROM orders WHERE product_id = 'p-1001'
 
 ## 📦 Deliverables
 
-- [ ] Source code + `docker-compose.yml` (1-click start)
-- [ ] `loadtest.js` (k6)
+- [x] Source code + `docker-compose.yml` (1-click start) — **ยังไม่ commit ขึ้น GitHub**
+- [x] `loadtest.js` (k6)
 - [ ] Report (PDF): diagram · cache invalidation strategy · การกันสั่งซื้อซ้ำ · ผล load test · ตารางเทียบกับกลุ่มเพื่อน · การแบ่งงานในทีม
