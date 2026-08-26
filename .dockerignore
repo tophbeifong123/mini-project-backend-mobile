@@ -1,0 +1,32 @@
+node_modules
+dist
+.git
+.gitignore
+.gitattributes
+.env
+.env.*
+!.env.example
+*.log
+coverage
+test
+handoff_log
+Dockerfile
+docker-compose.yml
+README.md
+CLAUDE.md
+AGENTS.md
+loadtest.js
+*.k6-summary.json
+*.zip
+.DS_Store
+@eaDir
+.vscode
+.idea
+
+# ⚠️ ไม่ ignore `docs/` ทั้งก้อน
+# scripts/app-entrypoint.sh → dist/database/migrate-and-seed.js ต้องอ่าน
+# docs/Requirement/products-seed.json ตอน seed DB (CLAUDE.md §2)
+# ตัดเฉพาะไฟล์หนักที่ไม่ได้ใช้ตอนรัน
+docs/**/*.pdf
+docs/**/*.png
+docs/**/*.jpg
