@@ -6,6 +6,11 @@
 >
 > **อ่านเอกสารนี้ก่อน แล้วค่อยไปอ่าน [`architecture.md`](architecture.md)**
 
+> ⚠️ **หมายเหตุ (2026-08-26)** — เอกสารนี้เขียนขึ้น**ก่อนจะมีโค้ดจริง** จึงเป็นฉบับ *ปูพื้นแนวคิด* เท่านั้น
+> โค้ดตัวอย่างในนี้ถูกไล่แก้ให้ตรงกับ `src/` ที่มีอยู่จริงแล้ว แต่ถ้าเจอจุดไหนขัดกัน
+> **ให้ยึด [`architecture.md`](architecture.md) และ [`../Codebase/Separate/01-codebase-primer.md`](../Codebase/Separate/01-codebase-primer.md) เป็นหลัก**
+> (อันหลังอ้าง `file:line` ของโค้ดจริง)
+
 ---
 
 ## 🗺️ แผนที่การอ่าน
@@ -657,13 +662,16 @@ BullMQ **ปฏิเสธ job ที่ id ซ้ำโดยอัตโน�
   } catch (err) {
     if (!committed) await queryRunner.rollbackTransaction();
     // ...
-    await this.redis.compensateOnce(job.id, userId, productId);  // คืนสต็อก
+    // คืนสต็อกเฉพาะ attempt สุดท้าย และ **ไม่คืน** ตอน sold-out (ดูสเปก §6.3)
+    if (isFinalAttempt) {
+      await this.redis.compensateOnce(job.id, userId, productId, requestToken);
+    }
   }
 
   // ── ออกมา "นอก" try เดิม โดยเจตนา ──
   try {
     await this.redis.markBought(productId, userId);
-    await this.redis.releaseInFlightLock(userId, productId);
+    await this.redis.releaseInFlightLock(userId, productId, requestToken);
     await this.redis.invalidateCatalogCache();
   } catch (e) {
     this.logger.error({ ... });   // กลืน error ทิ้ง — order สำเร็จไปแล้วจริง
@@ -785,6 +793,10 @@ stateDiagram-v2
 | ลืม compensate ตอน `queue.add()` ล้ม | สต็อกหายถาวร → `remaining_stock` ไม่ถึง 0 | ❌ |
 | เอา side effect ไว้ใน try เดิม | คืนสต็อกทั้งที่ขายไปแล้ว → oversell | ❌ |
 | compensate โดยไม่ guard ด้วย `jobId` | BullMQ retry 3 ครั้ง → คืนสต็อก 3 เท่า | ❌ |
+| compensate ทุกครั้งที่ catch (ไม่ดูว่า attempt สุดท้ายหรือยัง) | attempt 1 คืน แล้ว attempt 2 สำเร็จ → Redis สูงกว่า DB ถาวร | ❌ |
+| compensate ตอน `affected = 0` (sold out) | Redis สูงกว่า DB อยู่แล้ว การคืนทำให้ปล่อยคนถัดไปเข้ามาแล้วตายซ้ำ **วนไม่จบ** | ❌ |
+| ใช้ `jobId` เป็น token ของ lock | `jobId` ซ้ำทุกครั้งที่คนเดิมขอของเดิม → compare-and-delete แยกการถือครองไม่ออก | ❌ |
+| เทียบ `job.data` ที่ `queue.add()` คืนมา | BullMQ ไม่เคยอ่าน `data` กลับจาก Redis → เทียบยังไงก็ตรงเสมอ = เช็คตาย | ❌ |
 | ตีความ `nil` ว่าสต็อก 0 (ไม่มี `-4`) | ตอบ "ของหมด" ตลอดกาลอย่างเงียบสนิท | ❌ |
 | รวม Redis เป็นตัวเดียว + LRU | job หายกลางคัน ลูกค้าได้ 202 แต่ไม่มีของ | ❌ |
 | ลืม `proxy_http_version 1.1` | p95 แย่ลงมาก หาสาเหตุยาก | 🟡 |

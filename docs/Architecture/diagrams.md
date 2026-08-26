@@ -307,22 +307,36 @@ flowchart TD
 | เงื่อนไข | Retry? | คืนสต็อก? | สถานะสุดท้าย | เหตุผล |
 | :--- | :--: | :--: | :--- | :--- |
 | `affected = 1` + insert ผ่าน | — | ไม่ | **CONFIRMED** | สำเร็จ |
-| `affected = 0` (ของหมดใน DB) | ❌ | ✅ | `sold_out` → **`return`** | permanent — retry ไม่มีทางสำเร็จ มีแต่เปลือง attempt |
+| `affected = 0` (ของหมดใน DB) | ❌ | ❌ **ไม่คืน** | `sold_out` → **`return`** | permanent — retry ไม่มีทางสำเร็จ · **และการคืนตรงนี้ทำให้ระบบไม่ self-heal** (ดูหมายเหตุใต้ตาราง) |
 | PG `23505` (unique ซ้ำ) | ❌ | ❌ | `already_confirmed` → **`return`** | job นี้เคยสำเร็จแล้ว = **idempotency** ห้ามคืนสต็อก |
 | PG `23514` (check ติดลบ) | ❌ | ✅ | `failed` | แปลว่ามีบั๊ก — ต้อง alert |
-| PG `40P01` (deadlock) | ✅ | ✅ | retry | exponential backoff **+ jitter** |
-| เชื่อมต่อหลุด / timeout | ✅ | ✅ | retry | transient |
+| PG `40P01` (deadlock) | ✅ | เฉพาะ attempt สุดท้าย | retry | exponential backoff **+ jitter** · คืนตอน attempt 1 แล้ว attempt 2 สำเร็จ = Redis สูงกว่า DB ถาวร |
+| เชื่อมต่อหลุด / timeout | ✅ | เฉพาะ attempt สุดท้าย | retry | transient — เหตุผลเดียวกับแถวบน |
 | **side effect หลัง COMMIT ล้ม** | ❌ | ❌ **ห้ามคืนเด็ดขาด** | **CONFIRMED** | ⚠️ ของขายไปแล้วจริง ถ้าคืนสต็อกตรงนี้ = **oversell** |
 
 > แถวสุดท้ายคือบั๊กที่พบใน blueprint ฉบับเก่า — `markBought` / `invalidateCache` ถูกวางไว้ใน `try` เดียวกับ transaction ทำให้ Redis สะดุดหลัง commit แล้วระบบไปคืนสต็อกทั้งที่ order เกิดขึ้นแล้ว
+>
+> ⚠️ **แก้ 2026-08-26 — `affected = 0` เปลี่ยนจาก "คืน" เป็น "ไม่คืน"**
+> `affected = 0` แปลว่า Redis บอก "ผ่าน" แต่ DB บอก "หมด" = **Redis สูงกว่า DB อยู่ก่อนแล้ว**
+> ถ้าคืน จะดัน Redis ขึ้นอีก → ปล่อยคนถัดไปเข้ามา → job ตาย sold-out อีก → คืนอีก **วนไม่จบ**
+> `stock:flash_sale:p-1001` จะลู่เข้าหา 1 ไม่มีวันถึง 0 = ตกเกณฑ์ Data Integrity §9.3 ข้อ 4
+> การไม่คืนทำให้ counter ลู่ลงเข้าหา DB แล้วหยุดเอง (lock ปล่อยให้ TTL เก็บ)
 
 ### 6.3 ตารางกฎการชดเชย (Compensation Rules)
 
 | เกิดที่ | คืนสต็อก | ปลด lock | guard | ทำไม |
 | :--- | :--: | :--: | :--- | :--- |
-| `queue.add()` ล้ม (§3.3) | ✅ | ✅ | — | ยังไม่มี job ไม่มีใครมาทำต่อ |
-| worker ล้ม **ก่อน** COMMIT | ✅ | ✅ | `compensated:{jobId}` | BullMQ retry ได้ 3 ครั้ง ถ้าไม่ guard จะคืนสต็อก 3 เท่า |
+| `queue.add()` ล้ม (§3.3) | ✅ | ✅ CAS | — | ยังไม่มี job ไม่มีใครมาทำต่อ |
+| BullMQ dedup jobId ซ้ำ (job ที่เก็บอยู่เป็นของคำขออื่น) | ✅ | ✅ CAS | — | DECR รอบนี้ไม่มีใครกิน — ตรวจด้วย `queue.getJob()` ไม่ใช่ค่าที่ `add()` คืน |
+| ตรวจ job ที่เก็บอยู่**ไม่ได้** | ❌ | ❌ | — | ยืนยันไม่ได้ ≠ เป็นของคนอื่น · คืนผิดตอนของขายแล้วแย่กว่าไม่คืน |
+| worker ล้ม (transient) **ก่อน** COMMIT — attempt 1–2 | ❌ | ❌ | — | จะ retry ต่อ · คืนแล้ว retry สำเร็จ = Redis สูงกว่า DB ถาวร |
+| worker ล้ม (transient) **ก่อน** COMMIT — attempt สุดท้าย | ✅ | ✅ CAS | `compensated:{jobId}` (TTL 300s) | ตายจริงแล้ว ต้องคืนสิทธิ์ให้คนอื่น |
+| worker เจอ `affected = 0` (sold out) | ❌ | ❌ | — | Redis สูงกว่า DB อยู่แล้ว การคืนทำให้วนไม่จบ (§6.2) |
+| worker เจอ `23505` | ❌ | ❌ | — | job นี้เคยสำเร็จแล้ว = idempotency |
 | worker ล้ม **หลัง** COMMIT | ❌ | ❌ | — | ปล่อยให้ lock หมดอายุเอง (TTL 30s) |
+
+> **ปลด lock ทุกครั้งเป็น compare-and-delete** โดยเทียบกับ `requestToken` ที่ gatekeeper เขียนลงไป
+> (**ไม่ใช่** `jobId` ซึ่งซ้ำทุกครั้งที่คนเดิมขอของเดิม จน CAS แยกการถือครองไม่ออก — แก้ 2026-08-26)
 
 ---
 
@@ -348,8 +362,8 @@ stateDiagram-v2
     Retrying --> Processing: attempt < 3<br/>backoff + jitter
     Retrying --> Failed: attempt หมด
 
-    SoldOutAtDb --> Compensated
-    Failed --> Compensated
+    SoldOutAtDb --> [*]: ไม่คืนสต็อก<br/>(ปล่อย counter ลู่ลงหา DB)
+    Failed --> Compensated: เฉพาะ attempt สุดท้าย
 
     Confirmed --> [*]: SET bought · DEL lock<br/>invalidate cache
     Compensated --> [*]: INCR stock คืน · DEL lock
@@ -358,9 +372,11 @@ stateDiagram-v2
     note right of Reserved
         สต็อกถูกหักใน Redis แล้ว
         แต่ DB ยังไม่ถูกแตะ
-        ทุกทางออกจากสถานะนี้
-        ต้องจบที่ Confirmed
-        หรือ Compensated เท่านั้น
+        ทางออกปกติต้องจบที่
+        Confirmed หรือ Compensated
+        ยกเว้น SoldOutAtDb ที่จงใจ
+        ไม่คืน เพื่อให้ counter
+        ลู่ลงเข้าหา DB
     end note
 
     note right of Confirmed
@@ -369,7 +385,11 @@ stateDiagram-v2
     end note
 ```
 
-**Invariant ของ state machine**: ทุกเส้นทางที่ผ่าน `Reserved` **ต้อง** จบที่ `Confirmed` หรือ `Compensated` เสมอ — ถ้ามีเส้นทางไหนหลุดออกไปโดยไม่ผ่านสองสถานะนี้ แปลว่าสต็อกรั่ว และ `remainingStock` จะไม่ลงถึง 0
+**Invariant ของ state machine**: ทุกเส้นทางที่ผ่าน `Reserved` ต้องจบที่ `Confirmed` หรือ `Compensated`
+**ยกเว้นทางเดียวคือ `SoldOutAtDb`** ซึ่งจงใจไม่คืน เพราะการมาถึงสถานะนั้นแปลว่า Redis สูงกว่า DB อยู่แล้ว
+การไม่คืนคือสิ่งที่ทำให้ counter ลู่ลงเข้าหาความจริง (ดู §6.2)
+
+ถ้าเจอเส้นทาง**อื่น**ที่หลุดออกไปโดยไม่ผ่านสองสถานะนี้ แปลว่าสต็อกรั่ว และ `remainingStock` จะไม่ลงถึง 0
 
 ---
 

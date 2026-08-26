@@ -4,7 +4,7 @@
 > **โจทย์ต้นทาง**: [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf)
 > **สถาปัตยกรรม (source of truth)**: [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md)
 > **สถานะ**: 🛠️ implemented — `src/` ครบทุก module · `docker-compose.yml` 1-click start · `loadtest.js` พร้อม
-> `build` / `lint` / `test` (30 tests) ผ่านหมด · **ยังไม่เคยรันบน container จริงและยังไม่เคยยิง k6**
+> `build` / `lint` / `test` (32 tests) ผ่านหมด · **ยังไม่เคยรันบน container จริงและยังไม่เคยยิง k6**
 
 ---
 
