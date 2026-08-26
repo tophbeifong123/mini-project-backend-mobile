@@ -286,6 +286,7 @@ pnpm run test      # 3. unit tests ผ่านหมด
 | ไฟล์ | ใช้เมื่อไหร่ |
 | :--- | :--- |
 | [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) | **สเปกหลัก** — อ่านก่อนเขียนโค้ดทุกครั้ง (**§3.1 = DB schema / entity / migration**) |
+| [`docs/Codebase/`](docs/Codebase/README.md) | **โค้ดไฟล์ไหนเรียกไฟล์ไหน** — primer เดินโค้ดจากศูนย์ + บันทึก design review Q&A (อ้าง `file:line` ของโค้ดจริง) |
 | [`docs/Architecture/diagrams.md`](docs/Architecture/diagrams.md) | DFD / Control Flow / CSPEC / State Machine — ใช้ประกอบรายงานและตรวจ invariant |
 | [`docs/Architecture/architecture-rationale.md`](docs/Architecture/architecture-rationale.md) | **เหตุผลการออกแบบ + ข้อดีข้อเสีย + บันทึก design review** — อ่านก่อนจะแก้ดีไซน์ (§7 มี blocker ที่ยังไม่แก้ 2 ข้อ) |
 | [`docs/Architecture/old_architecture.md`](docs/Architecture/old_architecture.md) | ⚠️ **ฉบับเก่า archived** — เก็บไว้เทียบเฉยๆ **ห้ามใช้เป็นสเปก** (ขาด JWT, มีบั๊ก oversell/undersell) |

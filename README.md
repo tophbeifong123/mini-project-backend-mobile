@@ -14,6 +14,7 @@ High-throughput, low-latency backend สำหรับสถานการณ�
 | 🎓 [**Architecture Primer (เริ่มที่นี่)**](docs/Architecture/architecture-primer.md) | **ปูพื้นฐานตั้งแต่ศูนย์** — ทำไมต้องมีของเยอะขนาดนี้, ตัวละคร 7 ตัว, race condition, glossary, คำถามทดสอบตัวเอง |
 | 🏛️ [**System Architecture & Concurrency Blueprint**](docs/Architecture/architecture.md) | สเปกหลักของระบบ — **§3.1 DB schema/entity/migration**, read path, write path 4-tier, failure matrix, pooling, load test |
 | 🤖 [**CLAUDE.md**](CLAUDE.md) | กติกาสำหรับ AI agent และผู้พัฒนา — stack, คำสั่ง, API contract, DO/DON'T |
+| 🧭 [**Codebase Primer + Design Review Q&A**](docs/Codebase/README.md) | **โค้ดจริงทำงานยังไง** — เดิน request ทีละ hop, module graph, connection topology + บันทึกที่ reviewer 3 มุมถกกัน |
 | 📊 [**Dataflow & Control Flow Diagrams**](docs/Architecture/diagrams.md) | DFD Level 0–2, Control Flow, CSPEC, State Machine, Sequence — สำหรับใส่ในรายงาน |
 | 🧭 [**Architecture Rationale**](docs/Architecture/architecture-rationale.md) | **ทำไมถึงเลือกแบบนี้** — Decision Record, ข้อดี/ข้อเสีย, บันทึกการถกเถียงของ reviewer 3 มุมมอง |
 | 🗄️ [**old_architecture.md**](docs/Architecture/old_architecture.md) | ⚠️ **ฉบับเก่า เก็บไว้อ้างอิงเท่านั้น** — ห้ามใช้เป็นสเปก (มีสรุปปัญหาที่พบอยู่หัวไฟล์) |
