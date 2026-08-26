@@ -10,32 +10,39 @@ import { GatekeeperVerdict, RedisService } from '../redis/redis.service';
 import { OrderJobData, OrdersService } from './orders.service';
 
 describe('OrdersService', () => {
-  type QueueMock = jest.Mocked<Pick<Queue, 'add'>>;
+  type QueueMock = jest.Mocked<Pick<Queue, 'add' | 'getJob'>>;
   type RedisMock = jest.Mocked<Pick<RedisService, 'gatekeeper' | 'compensate'>>;
 
   let service: OrdersService;
   let queue: QueueMock;
   let redis: RedisMock;
-  let job: {
-    id: string;
-    data?: Partial<OrderJobData>;
-    getState: jest.Mock;
-  };
+  /** job ที่ "เก็บอยู่ใน Redis" — คือสิ่งที่ queue.getJob() คืนมา ไม่ใช่สิ่งที่ add() คืน */
+  let storedJob: { id: string; data: Partial<OrderJobData> } | undefined;
 
   const userId = 'user-999';
   const productId = 'p-1001';
   const jobId = `order:${userId}:${productId}`;
 
   beforeEach(() => {
-    job = { id: jobId, getState: jest.fn().mockResolvedValue('waiting') };
+    storedJob = undefined;
 
-    queue = { add: jest.fn() };
-    // จำลอง BullMQ ตอนสร้าง job ใหม่: job ที่คืนมาถือ payload ชุดเดียวกับที่ส่งเข้าไป
+    queue = { add: jest.fn(), getJob: jest.fn() };
+
+    // ⚠️ จำลอง BullMQ ให้ตรงความจริง: `add()` คืน Job ที่ประกอบจาก payload **ที่เราส่งเข้าไป**
+    //    ไม่เคยอ่านกลับจาก Redis (bullmq/classes/job.js:124-135)
+    //    และถ้า jobId ซ้ำ ฝั่ง Lua จะทิ้ง payload ใหม่เงียบๆ (addStandardJob-9.js:445)
+    //    → การเทียบ token จาก add() จึงตรงเสมอ = เช็คตาย นี่คือเหตุผลที่ต้องใช้ getJob()
     queue.add.mockImplementation(
       (_name: string, data: OrderJobData): Promise<Job<OrderJobData>> => {
-        job.data = data;
-        return Promise.resolve(job as unknown as Job<OrderJobData>);
+        storedJob ??= { id: jobId, data }; // มีอยู่แล้ว = ถูก dedup, payload เดิมคงอยู่
+        return Promise.resolve({
+          id: jobId,
+          data,
+        } as unknown as Job<OrderJobData>);
       },
+    );
+    queue.getJob.mockImplementation(() =>
+      Promise.resolve(storedJob as unknown as Job<OrderJobData>),
     );
 
     redis = {
@@ -160,31 +167,51 @@ describe('OrdersService', () => {
     });
   });
 
-  describe('blocker (b): BullMQ returns the EXISTING job on a duplicate jobId', () => {
+  describe('blocker (b): BullMQ dedups a duplicate jobId silently', () => {
     beforeEach(() => {
       redis.gatekeeper.mockResolvedValue(GatekeeperVerdict.ALLOWED);
     });
 
-    it('compensates and throws 409 when the returned job is already completed', async () => {
-      job.getState.mockResolvedValue('completed');
+    it('compensates and throws 409 when the STORED job belongs to an earlier request', async () => {
+      // job เดิมค้างอยู่ในคิว (lock หมดอายุก่อนมันถูกหยิบไปทำ)
+      // -> add() ถูก dedup, payload ใหม่ถูกทิ้ง, DECR รอบนี้ไม่มีใครกิน
+      storedJob = {
+        id: jobId,
+        data: { userId, productId, requestToken: 'token-of-an-older-request' },
+      };
 
       const error = await service
         .createOrder(userId, productId)
         .catch((err: unknown) => err);
 
       expect(error).toBeInstanceOf(ConflictException);
-      expect(redis.compensate).toHaveBeenCalledWith(userId, productId);
+      expect(redis.compensate).toHaveBeenCalledWith(
+        userId,
+        productId,
+        expect.any(String),
+      );
     });
 
-    it('compensates and throws 409 when the returned job already failed', async () => {
-      job.getState.mockResolvedValue('failed');
+    it('does NOT compensate when the stored job is OUR job, even if a worker already finished it', async () => {
+      // race ที่เช็คแบบเดิม (state === 'completed') จับผิด:
+      // worker ทำ job ของเราเสร็จภายใน roundtrip เดียว -> ของขายไปแล้วจริง
+      // ถ้าคืนสต็อกตรงนี้ Redis จะสูงกว่า DB และคนที่ได้ของจะได้ 409
+      await expect(
+        service.createOrder(userId, productId),
+      ).resolves.toMatchObject({ status: 'processing' });
 
-      const error = await service
-        .createOrder(userId, productId)
-        .catch((err: unknown) => err);
+      expect(redis.compensate).not.toHaveBeenCalled();
+    });
 
-      expect(error).toBeInstanceOf(ConflictException);
-      expect(redis.compensate).toHaveBeenCalledTimes(1);
+    it('does NOT compensate when the stored job cannot be read back', async () => {
+      // ยืนยันไม่ได้ != เป็นของคนอื่น — คืนผิดตอนของขายไปแล้วแย่กว่าไม่คืน
+      queue.getJob.mockRejectedValue(new Error('redis-data timeout'));
+
+      await expect(
+        service.createOrder(userId, productId),
+      ).resolves.toMatchObject({ status: 'processing' });
+
+      expect(redis.compensate).not.toHaveBeenCalled();
     });
 
     it('compensates and throws 503 when queue.add resolves to nothing', async () => {
@@ -195,7 +222,7 @@ describe('OrdersService', () => {
         .catch((err: unknown) => err);
 
       expect(error).toBeInstanceOf(ServiceUnavailableException);
-      expect(redis.compensate).toHaveBeenCalledWith(userId, productId);
+      expect(redis.compensate).toHaveBeenCalledTimes(1);
     });
 
     it('still compensates when queue.add genuinely throws', async () => {
@@ -206,36 +233,44 @@ describe('OrdersService', () => {
         .catch((err: unknown) => err);
 
       expect(error).toBeInstanceOf(ServiceUnavailableException);
-      expect(redis.compensate).toHaveBeenCalledWith(userId, productId);
+      expect(redis.compensate).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('lock token (requestToken)', () => {
+    beforeEach(() => {
+      redis.gatekeeper.mockResolvedValue(GatekeeperVerdict.ALLOWED);
     });
 
-    it('does NOT compensate for a freshly queued (waiting) job', async () => {
-      job.getState.mockResolvedValue('waiting');
-
+    it('writes a per-request token into the lock, not the jobId', async () => {
       await service.createOrder(userId, productId);
 
-      expect(redis.compensate).not.toHaveBeenCalled();
+      const tokenInLock = redis.gatekeeper.mock.calls[0][2];
+      expect(tokenInLock).not.toBe(jobId);
+      expect(typeof tokenInLock).toBe('string');
+      expect(tokenInLock.length).toBeGreaterThan(0);
     });
 
-    it('compensates when BullMQ returns a PRE-EXISTING job that is still waiting', async () => {
-      // in-flight lock หมดอายุก่อน job เดิมถูกหยิบไปทำ → gatekeeper ปล่อยผ่าน + DECR อีกครั้ง
-      // แต่ queue.add() คืน job เดิม (jobId ซ้ำ) ซึ่งกิน DECR ไปแค่ครั้งเดียว → ต้องคืนรอบนี้
-      queue.add.mockResolvedValue({
-        id: jobId,
-        data: {
-          userId,
-          productId,
-          requestToken: 'token-from-an-older-request',
-        },
-        getState: jest.fn().mockResolvedValue('waiting'),
-      } as unknown as Job<OrderJobData>);
+    it('uses a different token on every request so compare-and-delete can tell them apart', async () => {
+      await service.createOrder(userId, productId);
+      storedJob = undefined; // จำลองคำขอใหม่ที่ job เดิมหมดไปแล้ว
+      await service.createOrder(userId, productId);
 
-      const error = await service
-        .createOrder(userId, productId)
-        .catch((err: unknown) => err);
+      const [first, second] = redis.gatekeeper.mock.calls.map((c) => c[2]);
+      expect(first).not.toBe(second);
+    });
 
-      expect(error).toBeInstanceOf(ConflictException);
-      expect(redis.compensate).toHaveBeenCalledWith(userId, productId);
+    it('passes the same token to compensate() that it put in the lock', async () => {
+      queue.add.mockRejectedValue(new Error('redis down'));
+
+      await service.createOrder(userId, productId).catch(() => undefined);
+
+      const tokenInLock = redis.gatekeeper.mock.calls[0][2];
+      expect(redis.compensate).toHaveBeenCalledWith(
+        userId,
+        productId,
+        tokenInLock,
+      );
     });
   });
 });
