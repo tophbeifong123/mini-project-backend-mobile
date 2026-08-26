@@ -177,9 +177,11 @@ flowchart TD
 | **D2** | Fast stock counter | `redis-data` | `stock:flash_sale:{productId}` → integer | **ไม่มี TTL**, `noeviction` |
 | **D3** | Lock & purchase flag | `redis-data` | `lock:order:{u}:{p}` → token (PX 30s)<br/>`bought:{p}:{u}` → "1" | lock มี TTL, flag ไม่มี |
 | **D4** | Order job queue | `redis-data` | BullMQ `orders`, `jobId = order:{u}:{p}` | AOF on, `removeOnComplete: {count: 5000}` |
-| **D5** | products (เขียน) | PG **primary** | `id, name, price, available_stock, remaining_stock, is_flash_sale_active` | `CHECK (remaining_stock >= 0)` |
+| **D5** | products (เขียน) | PG **primary** | `id, name, description, price, available_stock, remaining_stock, is_flash_sale_active, created_at, updated_at` | `CHECK (remaining_stock >= 0)`<br/>`CHECK (remaining_stock <= available_stock)` |
 | **D6** | products (อ่าน) | PG **replica** | เหมือน D5 | read-only, มี lag 10–100ms |
 | **D7** | orders | PG **primary** | `id, user_id, product_id, status, created_at` | `UNIQUE (user_id, product_id)` |
+
+> 📐 **type เต็มของ D5/D7 อยู่ที่** [`architecture.md`](./architecture.md) **§3.1** — `price` เป็น `NUMERIC(10,2)` และ `products.id` เป็น `VARCHAR` PK ที่กำหนดเอง ไม่ใช่ uuid
 
 ### 4.2 Data Flow — สัญกรณ์: `=` ประกอบด้วย · `+` และ · `{}` ซ้ำได้ · `()` มีหรือไม่มีก็ได้ · `|` เลือกอย่างใดอย่างหนึ่ง
 

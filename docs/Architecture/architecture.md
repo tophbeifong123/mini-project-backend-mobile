@@ -13,6 +13,7 @@
 | 1.1 | Load Balancer: Nginx → **≥ 3 instances** | §2 |
 | 1.2 | Backend: NestJS **Modular structure** | §3 |
 | 1.3 | Database: PostgreSQL + TypeORM + **Connection Pooling** | §8 |
+| 1.3.1 | Schema / Entity / Migration | **§3.1** |
 | 1.4 | Caching & Invalidation: Redis | §5 |
 | 1.5 | Message Queue: **BullMQ** (async order processing) | §6.2 |
 | 1.6 | **Stateless Auth: JWT** (ห้าม in-memory session) | §4 |
@@ -172,6 +173,166 @@ src/
 ```
 
 จัดโมดูล **ตาม domain (feature) ไม่ใช่ตาม layer** — controller ทำแค่ HTTP, business logic อยู่ที่ service, ไม่มี DB access ใน controller *(B02)*
+
+---
+
+### 3.1 🗄️ Database Schema — Entities + DDL
+
+> เอกสารส่วนนี้คือ **สเปกของ `product.entity.ts` และ `order.entity.ts`** ที่ถูกอ้างถึงในโครงสร้างด้านบน
+> **type ทุกตัวที่นี่มีผลกับ API contract (§3 ของ `CLAUDE.md`) โดยตรง** — เดาเองไม่ได้
+
+#### 3.1.1 DDL (baseline migration)
+
+```sql
+-- src/migrations/<ts>-InitSchema.ts
+
+CREATE TABLE products (
+  id                    VARCHAR(32)    PRIMARY KEY,           -- 'p-1001' มาจาก seed — ห้าม generate เอง
+  name                  VARCHAR(255)   NOT NULL,
+  description           TEXT           NOT NULL DEFAULT '',
+  price                 NUMERIC(10,2)  NOT NULL,              -- เงิน = NUMERIC เท่านั้น ห้าม float
+  available_stock       INTEGER        NOT NULL,              -- สต็อกตั้งต้น — ห้าม UPDATE หลัง seed
+  remaining_stock       INTEGER        NOT NULL,              -- คงเหลือจริง (source of truth)
+  is_flash_sale_active  BOOLEAN        NOT NULL DEFAULT false,
+  created_at            TIMESTAMPTZ    NOT NULL DEFAULT now(),
+  updated_at            TIMESTAMPTZ    NOT NULL DEFAULT now(),
+
+  CONSTRAINT chk_positive_stock CHECK (remaining_stock >= 0),
+  CONSTRAINT chk_stock_ceiling  CHECK (remaining_stock <= available_stock),
+  CONSTRAINT chk_price_positive CHECK (price >= 0)
+);
+
+CREATE TABLE orders (
+  id          UUID         PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id     VARCHAR(64)  NOT NULL,                          -- = JWT claim `sub` — ไม่มี FK โดยเจตนา (§3.1.4)
+  product_id  VARCHAR(32)  NOT NULL REFERENCES products(id),
+  status      VARCHAR(16)  NOT NULL DEFAULT 'CONFIRMED',
+  created_at  TIMESTAMPTZ  NOT NULL DEFAULT now(),
+
+  CONSTRAINT uq_user_product_order UNIQUE (user_id, product_id),   -- ⭐ ด่านที่ 4 ของ "1 ชิ้น/คน"
+  CONSTRAINT chk_order_status CHECK (status IN ('CONFIRMED', 'CANCELLED'))
+);
+
+CREATE INDEX idx_orders_product ON orders (product_id);           -- ใช้ตอนพิสูจน์ Data Integrity (§9.3)
+```
+
+> `gen_random_uuid()` เป็น built-in ตั้งแต่ PostgreSQL 13 — บน PG 16 ไม่ต้องลง `pgcrypto`
+
+**หมายเหตุเรื่อง index ของ read path** — ⚠️ **ฉบับก่อนหน้ามี `CREATE INDEX idx_products_flash_sale ... WHERE is_flash_sale_active = true` เอกสารนี้ตัดออกโดยตั้งใจ**
+`GET /api/v1/products` แสดงสินค้า**ทุกตัว** (`meta.total = 20`) ไม่ได้ filter ตาม `is_flash_sale_active` เลย index ตัวนั้นจึงแทบไม่มีวันถูกใช้ (และตารางมีแค่ 20 แถว planner จะเลือก seq scan อยู่ดี)
+→ **สิ่งที่จำเป็นจริงคือ `ORDER BY id` ที่แน่นอน** ไม่ใช่ index เพิ่ม เพราะ `LIMIT/OFFSET` ที่ไม่มี `ORDER BY` ที่ deterministic จะ **ข้ามหรือคืนแถวซ้ำ** ได้ ซึ่ง `id` เป็น PK มี index อยู่แล้ว
+
+#### 3.1.2 Entity — `products/product.entity.ts`
+
+```typescript
+import { Column, Entity, PrimaryColumn } from 'typeorm';
+
+// ⚠️ node-postgres คืนคอลัมน์ NUMERIC มาเป็น **string** เสมอ (กัน precision หาย)
+// ถ้าไม่แปลง response จะเป็น "price": "2990.00" ซึ่ง **ผิด API contract** ที่บังคับเป็น number
+// → k6 ของกลุ่มอื่นที่ assert `price === 2990` จะพังทันที
+const numericTransformer = {
+  to:   (value: number): number => value,
+  from: (value: string | null): number => (value === null ? 0 : Number(value)),
+};
+
+@Entity('products')
+export class Product {
+  @PrimaryColumn({ type: 'varchar', length: 32 })
+  id!: string;                       // ⚠️ ห้ามใช้ @PrimaryGeneratedColumn — id มาจาก seed
+
+  @Column({ type: 'varchar', length: 255 })
+  name!: string;
+
+  @Column({ type: 'text', default: '' })
+  description!: string;
+
+  @Column({ type: 'numeric', precision: 10, scale: 2, transformer: numericTransformer })
+  price!: number;
+
+  @Column({ name: 'available_stock', type: 'int' })
+  availableStock!: number;
+
+  @Column({ name: 'remaining_stock', type: 'int' })
+  remainingStock!: number;
+
+  @Column({ name: 'is_flash_sale_active', type: 'boolean', default: false })
+  isFlashSaleActive!: boolean;
+
+  @Column({ name: 'created_at', type: 'timestamptz', default: () => 'now()' })
+  createdAt!: Date;
+
+  @Column({ name: 'updated_at', type: 'timestamptz', default: () => 'now()' })
+  updatedAt!: Date;
+}
+```
+
+#### 3.1.3 Entity — `orders/order.entity.ts`
+
+```typescript
+import { Column, Entity, Index, PrimaryGeneratedColumn, Unique } from 'typeorm';
+
+export enum OrderStatus {
+  CONFIRMED = 'CONFIRMED',
+  CANCELLED = 'CANCELLED',
+}
+
+@Entity('orders')
+@Unique('uq_user_product_order', ['userId', 'productId'])
+export class Order {
+  @PrimaryGeneratedColumn('uuid')
+  id!: string;
+
+  @Column({ name: 'user_id', type: 'varchar', length: 64 })
+  userId!: string;                   // = JWT `sub` เท่านั้น ห้ามรับจาก body (invariant §4 ข้อ 2)
+
+  @Index()
+  @Column({ name: 'product_id', type: 'varchar', length: 32 })
+  productId!: string;
+
+  @Column({ type: 'varchar', length: 16, default: OrderStatus.CONFIRMED })
+  status!: OrderStatus;
+
+  @Column({ name: 'created_at', type: 'timestamptz', default: () => 'now()' })
+  createdAt!: Date;
+}
+```
+
+#### 3.1.4 การตัดสินใจที่ต้องรู้ ไม่งั้นจะ "แก้ให้ถูกหลัก" แล้วพัง
+
+| # | การตัดสินใจ | เหตุผล | ถ้าทำตรงข้ามจะพังยังไง |
+| :-- | :--- | :--- | :--- |
+| 1 | **`price` เป็น `NUMERIC` + transformer** | เงินห้ามเป็น float; แต่ driver คืน string | response เป็น `"2990.00"` → **ผิด contract → กลุ่มอื่นยิงเราไม่ผ่าน** |
+| 2 | **`products.id` เป็น `VARCHAR` PK ที่กำหนดเอง** | `p-1001` มาจาก seed และ §9.3 query ด้วยค่านี้ | ใช้ `@PrimaryGeneratedColumn('uuid')` → **seed เข้าไม่ได้ทั้งชุด** |
+| 3 | **ไม่มีตาราง `users` และ `user_id` ไม่มี FK** | `/auth/token` ออก token ให้ `userId` อะไรก็ได้โดย **ไม่แตะ DB** (§4) — ไม่มี user จริงในระบบ | เติม FK → **INSERT order พังทุกใบ** เพราะไม่มีแถวใน `users` |
+| 4 | **`available_stock` ห้าม UPDATE หลัง seed** | เป็นตัวหารของทุกการพิสูจน์ใน §9.3 และเป็นเพดานของ `chk_stock_ceiling` | ถ้าขยับ จะพิสูจน์ oversell ไม่ได้อีกเลย |
+| 5 | **`orders` ไม่มีสถานะ `RESERVED`** | worker `INSERT` ครั้งเดียวตอน commit ด้วย `CONFIRMED` — ช่วง "จองแล้วยังไม่ยืนยัน" อยู่ใน **Redis เท่านั้น** | สร้าง enum ครบ 3 ค่าแล้วรอข้อมูลที่ไม่มีวันมา (เทียบ state machine ที่ [`diagrams.md`](./diagrams.md) §7) |
+| 6 | **ไม่มีคอลัมน์ `quantity`** | โจทย์บังคับ 1 ชิ้น/คน และ `UNIQUE (user_id, product_id)` เป็นตัวบังคับ | มี `quantity` เมื่อไหร่ `UNIQUE` ก็กัน oversell ไม่ได้อีก |
+
+> **`chk_stock_ceiling` ทำอะไรได้และทำอะไรไม่ได้** — มันกันไม่ให้ `remaining_stock` โตเกินสต็อกตั้งต้น (เช่นถ้าอนาคตมี path คืนสต็อกใน DB)
+> ⚠️ แต่ **มันจับ drift ระหว่าง Redis กับ DB ไม่ได้** เพราะ compensation เกิดฝั่ง Redis ล้วน ส่วน `remaining_stock` ใน DB ไม่เคยเพิ่มขึ้นเลยในดีไซน์ปัจจุบัน — ตัวจับ drift ตัวเดียวที่มีคือ **§9.3 ข้อ 4**
+
+#### 3.1.5 การแมป seed → คอลัมน์ → response
+
+| `products-seed.json` | คอลัมน์ | field ใน response (§3 ของ `CLAUDE.md`) |
+| :--- | :--- | :--- |
+| `productId` | `id` | `productId` |
+| `name` | `name` | `name` |
+| `description` | `description` | *(ไม่ส่งออก)* |
+| `price` | `price` `NUMERIC(10,2)` | `price` — **number** |
+| `availableStock` | `available_stock` **และ** `remaining_stock` *(ตอน seed ตั้งเท่ากัน)* | `availableStock` |
+| — | `remaining_stock` | `remainingStock` — ⚠️ **response อ่านจาก Redis counter ไม่ใช่จากคอลัมน์นี้** (§5.2) |
+| `isFlashSaleActive` | `is_flash_sale_active` | `isFlashSaleActive` |
+
+> `pnpm run seed` ตั้ง `remaining_stock = available_stock` แล้ว `pnpm run seed:redis` จึงคัดลอกค่านั้นไปเป็น `stock:flash_sale:{id}` ด้วย `SET ... NX`
+> **ลำดับนี้สลับไม่ได้** และคอลัมน์ `remaining_stock` ยังเป็น **source of truth** เสมอ ส่วน counter ใน Redis เป็นเพียงสำเนาที่เร็วกว่า
+
+#### 3.1.6 จุดที่ write ทั้งหมดไปรวมกัน
+
+worker ทุกตัวใน 3 instance (รวม 15 concurrent — §8) `UPDATE` **แถวเดียวกัน** คือ `products` ของ `p-1001`
+→ PostgreSQL จะ **serialize พวกมันที่ row lock ของแถวนั้น** ซึ่ง **ถูกต้องและตั้งใจ**: ของมี 50 ชิ้น = `UPDATE` สำเร็จ 50 ครั้ง ไม่ใช่ปริมาณที่ต้องกังวล
+ส่วน `INSERT INTO orders` ขอแค่ `KEY SHARE` บนแถว products (จาก FK) ซึ่ง **ไม่ชนกับ `FOR NO KEY UPDATE`** ที่ `UPDATE` ถือไว้ จึงไม่เกิด lock escalation
+
+> ✅ นี่คือเหตุผลที่ **PostgreSQL ไม่ใช่คอขวด** ในระบบนี้ — คอขวดอยู่ที่ `redis-data` (ดู [`architecture-rationale.md`](./architecture-rationale.md) §6 Q3)
 
 ---
 
@@ -450,15 +611,15 @@ export class OrdersProcessor extends WorkerHost {
 
 ### 6.4 Tier 4: Database Constraints
 
+> 📐 **schema เต็มอยู่ที่ §3.1** — constraint พวกนี้ถูกสร้างมาพร้อมตารางใน baseline migration แล้ว ไม่ใช่ `ALTER TABLE` ทีหลัง
+> ส่วนนี้ยกมาย้ำเฉพาะตัวที่ทำหน้าที่เป็น **ด่านที่ 4** ของ write path
+
 ```sql
-ALTER TABLE orders
-  ADD CONSTRAINT uq_user_product_order UNIQUE (user_id, product_id);
+-- ⭐ 1 ชิ้น/คน — ทะลุไม่ได้แม้โค้ดจะมีบั๊ก
+CONSTRAINT uq_user_product_order UNIQUE (user_id, product_id)
 
-ALTER TABLE products
-  ADD CONSTRAINT chk_positive_stock CHECK (remaining_stock >= 0);
-
-CREATE INDEX idx_products_flash_sale ON products (is_flash_sale_active)
-  WHERE is_flash_sale_active = true;
+-- ⭐ zero-oversell — ต่อให้ Lua, BullMQ และ atomic UPDATE พังพร้อมกัน
+CONSTRAINT chk_positive_stock CHECK (remaining_stock >= 0)
 ```
 
 Constraint คือด่านที่ **ไม่พึ่งความถูกต้องของโค้ดเลย** — ต่อให้ Redis พัง, worker มีบั๊ก, หรือมี process แปลกปลอมเขียนเข้ามา ฐานข้อมูลก็ยังปฏิเสธ. ทุกอย่างข้างบนคือ optimization เพื่อ *ไม่ให้ traffic ไปถึงตรงนี้*, ส่วนตรงนี้คือ *ความถูกต้อง*
@@ -593,6 +754,7 @@ GROUP BY user_id HAVING COUNT(*) > 1;
 - 🎓 **อ่านไม่เข้าใจ? เริ่มที่นี่ก่อน**: [`docs/Architecture/architecture-primer.md`](./architecture-primer.md) — ฉบับปูพื้นฐานตั้งแต่ศูนย์ (ไม่ใช่สเปก)
 - โจทย์: [`docs/Requirement/Flash Sale System.pdf`](../Requirement/Flash%20Sale%20System.pdf)
 - 📊 ไดอะแกรม DFD / Control Flow / CSPEC: [`docs/Architecture/diagrams.md`](./diagrams.md)
+- 🧭 **ทำไมถึงเลือกสถาปัตยกรรมนี้ + ข้อดีข้อเสีย + บันทึกการถกเถียง**: [`docs/Architecture/architecture-rationale.md`](./architecture-rationale.md)
 - ⚠️ ฉบับเก่า (archived, ห้ามใช้เป็นสเปก): [`docs/Architecture/old_architecture.md`](./old_architecture.md)
 - ข้อมูลตั้งต้น: [`docs/Requirement/products-seed.json`](../Requirement/products-seed.json)
 - สรุปบทเรียน (agent): [`docs/Summary_Best_Practice/agent/INDEX.md`](../Summary_Best_Practice/agent/INDEX.md)

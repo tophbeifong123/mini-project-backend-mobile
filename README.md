@@ -11,14 +11,16 @@ High-throughput, low-latency backend สำหรับสถานการณ�
 | เอกสาร | คำอธิบาย |
 | :--- | :--- |
 | 🎓 [**Architecture Primer (เริ่มที่นี่)**](docs/Architecture/architecture-primer.md) | **ปูพื้นฐานตั้งแต่ศูนย์** — ทำไมต้องมีของเยอะขนาดนี้, ตัวละคร 7 ตัว, race condition, glossary, คำถามทดสอบตัวเอง |
-| 🏛️ [**System Architecture & Concurrency Blueprint**](docs/Architecture/architecture.md) | สเปกหลักของระบบ — read path, write path 4-tier, failure matrix, pooling, load test |
+| 🏛️ [**System Architecture & Concurrency Blueprint**](docs/Architecture/architecture.md) | สเปกหลักของระบบ — **§3.1 DB schema/entity/migration**, read path, write path 4-tier, failure matrix, pooling, load test |
 | 🤖 [**CLAUDE.md**](CLAUDE.md) | กติกาสำหรับ AI agent และผู้พัฒนา — stack, คำสั่ง, API contract, DO/DON'T |
 | 📊 [**Dataflow & Control Flow Diagrams**](docs/Architecture/diagrams.md) | DFD Level 0–2, Control Flow, CSPEC, State Machine, Sequence — สำหรับใส่ในรายงาน |
+| 🧭 [**Architecture Rationale**](docs/Architecture/architecture-rationale.md) | **ทำไมถึงเลือกแบบนี้** — Decision Record, ข้อดี/ข้อเสีย, บันทึกการถกเถียงของ reviewer 3 มุมมอง |
 | 🗄️ [**old_architecture.md**](docs/Architecture/old_architecture.md) | ⚠️ **ฉบับเก่า เก็บไว้อ้างอิงเท่านั้น** — ห้ามใช้เป็นสเปก (มีสรุปปัญหาที่พบอยู่หัวไฟล์) |
 | 📄 [**โจทย์ต้นฉบับ**](docs/Requirement/Flash%20Sale%20System.pdf) | Mobile Backend Architecture & Performance Testing |
 | 🌱 [**products-seed.json**](docs/Requirement/products-seed.json) | ข้อมูลสินค้าตั้งต้น (`p-1001` มีสต็อก 50 ชิ้น = ตัวที่ใช้ทดสอบ) |
 | 📖 [**สรุปบทเรียน (ฉบับอ่าน)**](docs/Summary_Best_Practice/For_human/) | Backend01–06 ภาษาไทยแบบละเอียด |
 | ⚙️ [**สรุปบทเรียน (ฉบับ agent)**](docs/Summary_Best_Practice/agent/INDEX.md) | กฎแบบย่อ + **slide-errata** (โค้ดในสไลด์ที่ผิด ห้ามลอก) |
+| 📒 [**Handoff Log**](handoff_log/INDEX.md) | บันทึกส่งต่องานแต่ละรอบ — ตัดสินใจอะไรเพราะอะไร, ทางตันที่ลองแล้ว, อะไรยังไม่ชัวร์ |
 
 ---
 

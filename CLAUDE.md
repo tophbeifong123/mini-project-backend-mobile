@@ -169,6 +169,9 @@ k6 run loadtest.js
 - **`try/catch` รอบทุกการเรียก cache พร้อม fallback ไป DB** — Redis คือ optimization ไม่ใช่ dependency ที่ขาดไม่ได้ (สำหรับ *cache*; stock counter เป็นคนละเรื่อง)
 - **ใช้ NestJS exceptions มาตรฐาน** (`ConflictException`, `ServiceUnavailableException`, ...)
 - **Migration สำหรับทุกการเปลี่ยน schema** และอ่านไฟล์ที่ generate มาก่อน commit เสมอ
+- **`price` ต้องมี `transformer` แปลง `NUMERIC` → `number`** — driver คืน `numeric` เป็น **string** ถ้าไม่แปลง response จะเป็น `"2990.00"` = **ผิด contract §3** (ดู `docs/Architecture/architecture.md` §3.1)
+- **`products.id` เป็น `@PrimaryColumn` varchar (`p-1001`)** ห้าม `@PrimaryGeneratedColumn` — ไม่งั้น seed เข้าไม่ได้
+- **ไม่มีตาราง `users` และ `orders.user_id` ไม่มี FK โดยเจตนา** — `/auth/token` ออก token โดยไม่แตะ DB
 - **Graceful shutdown** (`app.enableShutdownHooks()`) ไม่งั้น deploy ทีไรเกิด stalled job ทุกที
 - **Bull-Board ต้องมี auth คลุม** — มันเปิดดู payload และกด retry/remove job ได้
 
@@ -241,11 +244,13 @@ pnpm run test      # 3. unit tests ผ่านหมด
 
 | ไฟล์ | ใช้เมื่อไหร่ |
 | :--- | :--- |
-| [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) | **สเปกหลัก** — อ่านก่อนเขียนโค้ดทุกครั้ง |
+| [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) | **สเปกหลัก** — อ่านก่อนเขียนโค้ดทุกครั้ง (**§3.1 = DB schema / entity / migration**) |
 | [`docs/Architecture/diagrams.md`](docs/Architecture/diagrams.md) | DFD / Control Flow / CSPEC / State Machine — ใช้ประกอบรายงานและตรวจ invariant |
+| [`docs/Architecture/architecture-rationale.md`](docs/Architecture/architecture-rationale.md) | **เหตุผลการออกแบบ + ข้อดีข้อเสีย + บันทึก design review** — อ่านก่อนจะแก้ดีไซน์ (§7 มี blocker ที่ยังไม่แก้ 2 ข้อ) |
 | [`docs/Architecture/old_architecture.md`](docs/Architecture/old_architecture.md) | ⚠️ **ฉบับเก่า archived** — เก็บไว้เทียบเฉยๆ **ห้ามใช้เป็นสเปก** (ขาด JWT, มีบั๊ก oversell/undersell) |
 | [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf) | โจทย์ต้นฉบับ |
 | [`docs/Requirement/products-seed.json`](docs/Requirement/products-seed.json) | ข้อมูลตั้งต้น |
 | [`docs/Summary_Best_Practice/agent/INDEX.md`](docs/Summary_Best_Practice/agent/INDEX.md) | กฎสรุปจากบทเรียน + **slide-errata** (โค้ดในสไลด์ที่ผิด ห้ามลอก) |
 | [`docs/Summary_Best_Practice/For_human/`](docs/Summary_Best_Practice/For_human/) | ฉบับอ่านยาว ภาษาไทย |
+| [`handoff_log/INDEX.md`](handoff_log/INDEX.md) | **บันทึกส่งต่องาน** — อ่านตัวล่าสุดก่อนเริ่มงานต่อ (มีของที่ไม่ได้อยู่ในโค้ด: เหตุผล, ทางตัน, สิ่งที่ยังไม่พิสูจน์) |
 | [`AGENTS.md`](AGENTS.md) | pointer มาที่ไฟล์นี้ (สำหรับ AI tool อื่น) |

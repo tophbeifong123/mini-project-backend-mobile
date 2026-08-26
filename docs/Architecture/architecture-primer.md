@@ -1013,6 +1013,7 @@ worker จะอ่านเจอสต็อกเก่า แล้วตั
 | 3 | [`architecture.md` §7](architecture.md) (Failure Matrix) | ตารางบั๊กที่จะเจอ |
 | 4 | [`CLAUDE.md` §4](../../CLAUDE.md) (11 invariants) | เช็คลิสต์ตอนเขียนโค้ด |
 | 5 | [`diagrams.md`](diagrams.md) | DFD / CSPEC / State Machine — **เอาไปใส่รายงานตรงๆ ได้** |
+| 6 | [`architecture-rationale.md`](architecture-rationale.md) | **ทำไมถึงเลือกแบบนี้** + ข้อดีข้อเสีย + บันทึกการถกเถียงของ reviewer 3 มุมมอง |
 
 ### ถ้าสนใจแค่มุมใดมุมหนึ่ง
 
