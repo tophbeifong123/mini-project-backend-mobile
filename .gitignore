@@ -37,6 +37,3 @@ desktop.ini
 # Synology Drive
 @eaDir/
 .@__thumb/
-
-# ไฟล์อ้างอิงจากเพื่อน (ใช้ดูโครง folder เท่านั้น ห้าม commit — ขนาด ~2MB)
-6610110189.zip
