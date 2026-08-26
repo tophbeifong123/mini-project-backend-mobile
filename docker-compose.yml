@@ -1,0 +1,348 @@
+# =============================================================================
+# Flash Sale System — 1-click stack
+#
+#   podman compose up -d          # ยกทั้งระบบ (migration + seed ทำอัตโนมัติบน app-1)
+#   podman compose ps             # ดูสถานะ + healthcheck
+#   podman compose logs -f app-1
+#   podman compose down           # หยุด (ข้อมูลยังอยู่ใน volume)
+#   podman compose down -v        # ⚠️ ลบ volume ด้วย — ข้อมูล DB หายหมด (ต้องขออนุญาตก่อน)
+#
+# Topology (architecture.md §1):
+#   k6 → nginx :8080 → app-1/2/3 :3000
+#                        ├─ postgres-primary :5432   (writes, atomic decrement)
+#                        ├─ postgres-replica :5433   (catalog reads, streaming replication)
+#                        ├─ redis-cache      :6379   (allkeys-lru — metadata cache)
+#                        └─ redis-data       :6380   (noeviction + AOF — stock/lock/BullMQ)
+#
+# หมายเหตุ podman: ไฟล์นี้เลี่ยง syntax ที่เป็นของ docker โดยเฉพาะ
+#   - ไม่ใช้ `depends_on.condition: service_completed_successfully`
+#   - ไม่ใช้ YAML anchor / x-extension (เขียนซ้ำแบบตรงไปตรงมาแทน)
+# =============================================================================
+
+services:
+  # ===========================================================================
+  # PostgreSQL Primary — รับ write ทั้งหมด และส่ง WAL ให้ standby
+  # ===========================================================================
+  postgres-primary:
+    image: postgres:16-alpine
+    container_name: fs-postgres-primary
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: flashsale
+      POSTGRES_PASSWORD: flashsale
+      POSTGRES_DB: flashsale
+      # อ่านโดย scripts/primary-init.sh (role + slot + pg_hba)
+      POSTGRES_REPLICATION_USER: replicator
+      POSTGRES_REPLICATION_PASSWORD: replpass
+      REPLICATION_SLOT_NAME: replica_1_slot
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_primary_data:/var/lib/postgresql/data
+      - ./scripts/primary-init.sh:/docker-entrypoint-initdb.d/10-primary-init.sh:ro
+    command:
+      - postgres
+      # architecture.md §8 — 3 instances × (master + replica) × pool 10 = 60 ≤ 80% ของ 100
+      - -c
+      - max_connections=100
+      # --- streaming replication ---
+      - -c
+      - wal_level=replica
+      - -c
+      - max_wal_senders=10
+      - -c
+      - max_replication_slots=10
+      - -c
+      - wal_keep_size=256MB
+      - -c
+      - max_slot_wal_keep_size=1GB
+      - -c
+      - track_commit_timestamp=on
+      # --- tuning สำหรับ burst write ---
+      - -c
+      - shared_buffers=256MB
+      - -c
+      - synchronous_commit=on
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U flashsale -d flashsale"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  # ===========================================================================
+  # PostgreSQL Replica — hot standby (read-only) ใช้อ่าน catalog เท่านั้น
+  # ⚠️ ห้ามอ่านข้อมูลที่ต้อง lock จากตัวนี้ (CLAUDE.md §6) — replication lag
+  # ===========================================================================
+  postgres-replica:
+    image: postgres:16-alpine
+    container_name: fs-postgres-replica
+    restart: unless-stopped
+    environment:
+      PGPASSWORD: replpass
+      POSTGRES_REPLICATION_USER: replicator
+      REPLICATION_SLOT_NAME: replica_1_slot
+      PRIMARY_HOST: postgres-primary
+      PRIMARY_PORT: 5432
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_replica_data:/var/lib/postgresql/data
+      - ./scripts/replica-entrypoint.sh:/usr/local/bin/replica-entrypoint.sh:ro
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+    entrypoint: ["bash", "/usr/local/bin/replica-entrypoint.sh"]
+    command:
+      - -c
+      - hot_standby=on
+      - -c
+      - hot_standby_feedback=on
+      # standby ต้องมี max_connections ไม่น้อยกว่า primary ไม่งั้นไม่ยอม start
+      - -c
+      - max_connections=100
+    healthcheck:
+      # ต้องพร้อมใช้งาน "และ" อยู่ในโหมด recovery จริง (คือ streaming อยู่)
+      test:
+        - CMD-SHELL
+        - pg_isready -U flashsale -d flashsale && psql -U flashsale -d flashsale -tAc 'SELECT pg_is_in_recovery()' | grep -q t
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 15s
+
+  # ===========================================================================
+  # Redis #1 — cache ล้วน (allkeys-lru) : metadata cache เท่านั้น
+  # ===========================================================================
+  redis-cache:
+    image: redis:7-alpine
+    container_name: fs-redis-cache
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./redis/redis-cache.conf:/usr/local/etc/redis/redis.conf:ro
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================================================
+  # Redis #2 — data/queue (noeviction + AOF) : stock counter, lock, BullMQ
+  # ⚠️ ถ้าตัวนี้ evict ข้อมูล = ระบบพังเงียบๆ (CLAUDE.md §4.11)
+  # ===========================================================================
+  redis-data:
+    image: redis:7-alpine
+    container_name: fs-redis-data
+    restart: unless-stopped
+    ports:
+      - "6380:6379"
+    volumes:
+      - ./redis/redis-data.conf:/usr/local/etc/redis/redis.conf:ro
+      - redis_data_data:/data
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # ===========================================================================
+  # NestJS app-1 — เป็นตัวเดียวที่รัน migration + seed (RUN_MIGRATIONS=true)
+  # ไม่ publish port ออก host: เข้าถึงผ่าน nginx :8080 เท่านั้น
+  # ===========================================================================
+  app-1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flash-sale-backend:latest
+    container_name: fs-app-1
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      INSTANCE_ID: app-1
+      # migration + seed DB + seed Redis stock ทำที่ instance นี้เท่านั้น
+      RUN_MIGRATIONS: "true"
+
+      JWT_SECRET: flash-sale-dev-secret-change-me
+      JWT_EXPIRES_IN: 15m
+
+      DB_HOST: postgres-primary
+      DB_PORT: "5432"
+      DB_USERNAME: flashsale
+      DB_PASSWORD: flashsale
+      DB_DATABASE: flashsale
+      DB_REPLICA_HOST: postgres-replica
+      DB_REPLICA_PORT: "5432"
+      DB_POOL_SIZE: "10"
+
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_CACHE_PORT: "6379"
+      REDIS_DATA_HOST: redis-data
+      REDIS_DATA_PORT: "6379"
+
+      CATALOG_CACHE_TTL_BASE: "30"
+      CATALOG_CACHE_TTL_JITTER: "30"
+      ORDER_LOCK_TTL_MS: "30000"
+      WORKER_CONCURRENCY: "5"
+
+      BULL_BOARD_USER: admin
+      BULL_BOARD_PASSWORD: admin
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-data:
+        condition: service_healthy
+    healthcheck:
+      # /health/live ต้องไม่แตะ DB (CLAUDE.md §5.4)
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  # ===========================================================================
+  # NestJS app-2 — รอจน schema + seed พร้อม (ดู scripts/app-entrypoint.sh)
+  # ===========================================================================
+  app-2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flash-sale-backend:latest
+    container_name: fs-app-2
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      INSTANCE_ID: app-2
+
+      JWT_SECRET: flash-sale-dev-secret-change-me
+      JWT_EXPIRES_IN: 15m
+
+      DB_HOST: postgres-primary
+      DB_PORT: "5432"
+      DB_USERNAME: flashsale
+      DB_PASSWORD: flashsale
+      DB_DATABASE: flashsale
+      DB_REPLICA_HOST: postgres-replica
+      DB_REPLICA_PORT: "5432"
+      DB_POOL_SIZE: "10"
+
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_CACHE_PORT: "6379"
+      REDIS_DATA_HOST: redis-data
+      REDIS_DATA_PORT: "6379"
+
+      CATALOG_CACHE_TTL_BASE: "30"
+      CATALOG_CACHE_TTL_JITTER: "30"
+      ORDER_LOCK_TTL_MS: "30000"
+      WORKER_CONCURRENCY: "5"
+
+      BULL_BOARD_USER: admin
+      BULL_BOARD_PASSWORD: admin
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-data:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  # ===========================================================================
+  # NestJS app-3
+  # ===========================================================================
+  app-3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flash-sale-backend:latest
+    container_name: fs-app-3
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      INSTANCE_ID: app-3
+
+      JWT_SECRET: flash-sale-dev-secret-change-me
+      JWT_EXPIRES_IN: 15m
+
+      DB_HOST: postgres-primary
+      DB_PORT: "5432"
+      DB_USERNAME: flashsale
+      DB_PASSWORD: flashsale
+      DB_DATABASE: flashsale
+      DB_REPLICA_HOST: postgres-replica
+      DB_REPLICA_PORT: "5432"
+      DB_POOL_SIZE: "10"
+
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_CACHE_PORT: "6379"
+      REDIS_DATA_HOST: redis-data
+      REDIS_DATA_PORT: "6379"
+
+      CATALOG_CACHE_TTL_BASE: "30"
+      CATALOG_CACHE_TTL_JITTER: "30"
+      ORDER_LOCK_TTL_MS: "30000"
+      WORKER_CONCURRENCY: "5"
+
+      BULL_BOARD_USER: admin
+      BULL_BOARD_PASSWORD: admin
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-data:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  # ===========================================================================
+  # Nginx — จุดเดียวที่ k6 ยิงเข้ามา (least_conn + keepalive, ดู nginx.conf)
+  # ===========================================================================
+  nginx:
+    image: nginx:alpine
+    container_name: fs-nginx
+    restart: unless-stopped
+    ports:
+      - "8080:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      app-1:
+        condition: service_healthy
+      app-2:
+        condition: service_healthy
+      app-3:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_primary_data:
+  postgres_replica_data:
+  redis_data_data:
