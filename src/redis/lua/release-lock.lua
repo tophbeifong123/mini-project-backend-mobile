@@ -3,7 +3,7 @@
 -- ไม่งั้นจะไปลบ lock ของ request รอบใหม่ที่ตั้งขึ้นหลัง TTL หมด
 --
 -- KEYS[1] lock:order:{userId}:{productId}
--- ARGV[1] token (= jobId ที่ gatekeeper เขียนลงไป)
+-- ARGV[1] token (= requestToken ที่ gatekeeper เขียนลงไป — สุ่มใหม่ทุกคำขอ)
 --
 -- return 1 = ลบแล้ว | 0 = ไม่ใช่เจ้าของ / lock หมดอายุไปแล้ว
 

@@ -20,10 +20,12 @@ export interface OrderJobData {
   productId: string;
   correlationId?: string;
   /**
-   * token สุ่มต่อ "คำขอ" (ไม่ใช่ต่อ job) — ใช้แยกว่า job ที่ `queue.add()` คืนมา
-   * เป็นตัวที่เราเพิ่งสร้าง หรือเป็น job เดิมที่ BullMQ คืนมาเงียบๆ เพราะ jobId ซ้ำ
+   * token สุ่ม **ต่อคำขอ** (ไม่ใช่ต่อ job) — load-bearing 2 อย่าง:
+   *  1. เป็นค่าที่ gatekeeper เขียนลง `lock:order:*` ทำให้ compare-and-delete
+   *     แยกการถือครองคนละครั้งได้จริง (jobId ซ้ำทุกครั้งที่คนเดิมขอของเดิม)
+   *  2. เป็นตัวพิสูจน์ว่า job ที่เก็บอยู่ใน Redis เป็นของคำขอนี้ ไม่ใช่ของเก่าที่ BullMQ dedup
    */
-  requestToken?: string;
+  requestToken: string;
 }
 
 /** response 202 ตาม CLAUDE.md §3 — byte-exact */
@@ -67,11 +69,16 @@ export class OrdersService {
   ): Promise<CreateOrderResponse> {
     const jobId = buildOrderJobId(userId, productId);
 
+    // token สุ่มใหม่ "ทุกคำขอ" — ไม่ใช่ jobId ซึ่งซ้ำทุกครั้งที่คนเดิมขอของเดิม
+    // ใช้ 2 อย่าง: (1) ค่าใน lock เพื่อให้ compare-and-delete แยกการถือครองได้จริง
+    //             (2) ตัวพิสูจน์ว่า job ที่อยู่ในคิวเป็นของคำขอนี้ (ดูด้านล่าง)
+    const requestToken = randomUUID();
+
     // ── Tier 1: Lua gatekeeper — 3 เช็ค + 2 เขียน ใน 1 roundtrip ที่ atomic ──
     const verdict = await this.redis.gatekeeper(
       userId,
       productId,
-      jobId,
+      requestToken,
       this.lockTtlMs,
     );
 
@@ -108,7 +115,6 @@ export class OrdersService {
 
     // ⚠️ ตั้งแต่บรรทัดนี้ไป สต็อกถูก DECR ใน Redis ไปแล้ว
     // ทุก exit path ที่ไม่มี job วิ่งต่อ **ต้อง** ชดเชยคืน (CLAUDE.md §4 ข้อ 6)
-    const requestToken = randomUUID();
     let job: Job<OrderJobData> | undefined;
     try {
       job = await this.ordersQueue.add(
@@ -123,7 +129,7 @@ export class OrdersService {
         },
       );
     } catch (err) {
-      await this.compensate(userId, productId, jobId);
+      await this.compensate(userId, productId, jobId, requestToken);
       this.logger.error(
         `enqueue failed for ${jobId}: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -132,23 +138,34 @@ export class OrdersService {
 
     // ── Blocker (b) fix (architecture-rationale.md §7b) ──
     // BullMQ เจอ jobId ซ้ำแล้ว **คืน job เดิมเงียบๆ ไม่ throw** -> catch ข้างบนไม่เคยทำงาน
-    // ถ้าไม่ตรวจค่าที่คืนมา จะได้ 202 ทั้งที่ไม่มี job ใหม่วิ่ง = สต็อกหายถาวร 1 ชิ้น
+    // ถ้าไม่ตรวจ จะได้ 202 ทั้งที่ไม่มี job ใหม่วิ่ง = สต็อกหายถาวร 1 ชิ้น
     if (!job) {
-      await this.compensate(userId, productId, jobId);
+      await this.compensate(userId, productId, jobId, requestToken);
       throw new ServiceUnavailableException('Queue unavailable');
     }
 
-    // `requestToken` ที่ไม่ตรง = BullMQ คืน **job เดิม** มา (jobId ซ้ำ) ไม่ใช่ job ที่เราเพิ่งสร้าง
-    // ครอบคลุมทุก state รวมถึง waiting/active/delayed ซึ่งเกิดได้เมื่อ in-flight lock หมดอายุ
-    // ก่อนที่ job เดิมจะถูกหยิบไปทำ — job เดิมกิน DECR ไปแค่ครั้งเดียว รอบนี้จึงต้องคืน
-    const isPreexistingJob =
-      typeof job.data?.requestToken === 'string' &&
-      job.data.requestToken !== requestToken;
+    // ⚠️ ห้ามเทียบกับ `job.data` ที่ `add()` คืนมา — มันคือ object literal ที่เราส่งเข้าไปเอง
+    //    `Job.create()` เขียนกลับแค่ `job.id` ไม่เคยอ่าน data จาก Redis
+    //    (node_modules/bullmq/dist/cjs/classes/job.js:124-135)
+    //    และตอน jobId ซ้ำ ฝั่ง Lua แค่ `return jobId` โดยทิ้ง payload ใหม่
+    //    (scripts/addStandardJob-9.js:445) -> เทียบยังไงก็ตรงเสมอ = เช็คตาย
+    //
+    // ต้อง **อ่าน job กลับจาก Redis** (`getJob` -> Job.fromId -> HGETALL) แล้วเทียบ
+    // token ที่ "เก็บอยู่จริง" กับของเรา คำถามเดียวที่ต้องตอบคือ:
+    //   DECR ของคำขอนี้ ไปเป็นทุนให้ job ที่มีอยู่จริงหรือเปล่า
+    // ถ้าใช่ = job ของเราจะรัน ไม่ต้องสน state · ถ้าไม่ใช่ = โดน dedup ต้องคืน
+    // ต้นทุนเท่าเดิมกับ getState() ที่ถอดออกไป (1 roundtrip บน redis-data)
+    const stored = await this.readStoredJob(jobId);
 
-    const state = await this.getJobState(job);
-    if (isPreexistingJob || state === 'completed' || state === 'failed') {
-      // ไม่มีใครประมวลผล DECR รอบนี้อีกแล้ว -> ต้องคืนเดี๋ยวนี้
-      await this.compensate(userId, productId, jobId);
+    if (stored === null) {
+      // อ่านไม่ได้ / job ถูก trim ไปแล้ว — **ห้ามคืนสต็อก**
+      // คืนผิดตอนที่ของขายไปแล้วแย่กว่าไม่คืน (Redis สูงกว่า DB = ปล่อยคนที่ 51 เข้ามา)
+      this.logger.error(
+        `cannot verify queued job ${jobId} — assuming ours and NOT compensating`,
+      );
+    } else if (stored.data?.requestToken !== requestToken) {
+      // token ที่เก็บอยู่เป็นของคำขออื่น = เราโดน dedup, DECR รอบนี้ไม่มีใครกิน
+      await this.compensate(userId, productId, jobId, requestToken);
       throw new ConflictException('Order already processed');
     }
 
@@ -159,13 +176,19 @@ export class OrdersService {
     };
   }
 
-  /** อ่าน state แบบไม่ให้ error ของ Redis มากลบสาเหตุจริง */
-  private async getJobState(job: Job<OrderJobData>): Promise<string | null> {
+  /**
+   * อ่าน job ที่ "เก็บอยู่จริง" ใน Redis กลับมา (ไม่ใช่ object ที่ add() คืน)
+   * คืน `null` เมื่ออ่านไม่ได้หรือไม่มี job — ผู้เรียกต้องตีความว่า "ยืนยันไม่ได้"
+   * ไม่ใช่ "เป็นของคนอื่น" (ดูเหตุผลที่จุดเรียกใช้)
+   */
+  private async readStoredJob(
+    jobId: string,
+  ): Promise<Job<OrderJobData> | null> {
     try {
-      return await job.getState();
+      return (await this.ordersQueue.getJob(jobId)) ?? null;
     } catch (err) {
       this.logger.warn(
-        `getState failed for job ${String(job.id)}: ${err instanceof Error ? err.message : String(err)}`,
+        `getJob failed for ${jobId}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return null;
     }
@@ -176,9 +199,10 @@ export class OrdersService {
     userId: string,
     productId: string,
     jobId: string,
+    requestToken: string,
   ): Promise<void> {
     try {
-      await this.redis.compensate(userId, productId);
+      await this.redis.compensate(userId, productId, requestToken);
     } catch (err) {
       this.logger.error(
         `COMPENSATION FAILED for ${jobId} — stock leaked by 1: ${err instanceof Error ? err.message : String(err)}`,

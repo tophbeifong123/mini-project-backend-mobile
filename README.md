@@ -3,7 +3,7 @@
 High-throughput, low-latency backend สำหรับสถานการณ์ **Flash Sale** — รองรับ **1,000 concurrent readers** และ **write burst 500 คนแย่งสินค้า 50 ชิ้น** โดยการันตี **Zero Overselling** และ **1 ชิ้นต่อ 1 ผู้ใช้**
 
 > **สถานะปัจจุบัน**: 🛠️ **Implemented** — `src/` ครบทุก module, `docker-compose.yml` 1-click start, `loadtest.js` พร้อมยิง
-> `pnpm run build` / `pnpm run lint` / `pnpm run test` ผ่านทั้งหมด (30 tests) · **ยังไม่เคยรันบน container จริง** (ดู [handoff ล่าสุด](handoff_log/INDEX.md))
+> `pnpm run build` / `pnpm run lint` / `pnpm run test` ผ่านทั้งหมด (32 tests) · **ยังไม่เคยรันบน container จริงและยังไม่เคยยิง k6** (ดู [handoff ล่าสุด](handoff_log/INDEX.md))
 
 ---
 
@@ -14,6 +14,7 @@ High-throughput, low-latency backend สำหรับสถานการณ�
 | 🎓 [**Architecture Primer (เริ่มที่นี่)**](docs/Architecture/architecture-primer.md) | **ปูพื้นฐานตั้งแต่ศูนย์** — ทำไมต้องมีของเยอะขนาดนี้, ตัวละคร 7 ตัว, race condition, glossary, คำถามทดสอบตัวเอง |
 | 🏛️ [**System Architecture & Concurrency Blueprint**](docs/Architecture/architecture.md) | สเปกหลักของระบบ — **§3.1 DB schema/entity/migration**, read path, write path 4-tier, failure matrix, pooling, load test |
 | 🤖 [**CLAUDE.md**](CLAUDE.md) | กติกาสำหรับ AI agent และผู้พัฒนา — stack, คำสั่ง, API contract, DO/DON'T |
+| 🧭 [**Codebase Primer + Design Review Q&A**](docs/Codebase/README.md) | **โค้ดจริงทำงานยังไง** — เดิน request ทีละ hop, module graph, connection topology + บันทึกที่ reviewer 3 มุมถกกัน |
 | 📊 [**Dataflow & Control Flow Diagrams**](docs/Architecture/diagrams.md) | DFD Level 0–2, Control Flow, CSPEC, State Machine, Sequence — สำหรับใส่ในรายงาน |
 | 🧭 [**Architecture Rationale**](docs/Architecture/architecture-rationale.md) | **ทำไมถึงเลือกแบบนี้** — Decision Record, ข้อดี/ข้อเสีย, บันทึกการถกเถียงของ reviewer 3 มุมมอง |
 | 🗄️ [**old_architecture.md**](docs/Architecture/old_architecture.md) | ⚠️ **ฉบับเก่า เก็บไว้อ้างอิงเท่านั้น** — ห้ามใช้เป็นสเปก (มีสรุปปัญหาที่พบอยู่หัวไฟล์) |
@@ -91,10 +92,15 @@ curl -s localhost:8080/health/ready
 curl -s 'localhost:8080/api/v1/products?page=1&limit=10' | head -c 400
 
 # ยิง load test
-./scripts/cache-stats.sh reset    # ล้างสถิติแคชก่อน
+RESET_CONFIRM=yes pnpm run reset   # ⚠️ ต้องรันก่อนยิง "ทุกรอบ" ไม่ใช่แค่รอบแรก
+./scripts/cache-stats.sh reset     # ล้างสถิติแคช
 k6 run loadtest.js
-./scripts/cache-stats.sh          # อ่าน Cache Hit/Miss Ratio ไปใส่รายงาน
+./scripts/cache-stats.sh           # อ่าน Cache Hit/Miss Ratio ไปใส่รายงาน
 ```
+
+> ⚠️ **ไม่ `reset` = ยิงรอบสองได้ 409 ทั้งหมด** — `seed` ใช้ `ON CONFLICT` ที่ไม่แตะ `remaining_stock`,
+> `seed:redis` ใช้ `SET … NX`, และ `bought:*` ไม่มี TTL จึงแก้ตัวเองไม่ได้
+> เรื่องนี้สำคัญตอนยิงข้ามกลุ่มด้วย เพราะกลุ่มเพื่อนใช้ `user-1..user-500` ชุดเดียวกับ `loadtest.js` ของเรา
 
 Bull-Board (Queue dashboard): <http://localhost:8080/admin/queues> — user/pass จาก `BULL_BOARD_USER` / `BULL_BOARD_PASSWORD`
 
@@ -134,6 +140,6 @@ SELECT COUNT(*), COUNT(DISTINCT user_id) FROM orders WHERE product_id = 'p-1001'
 
 ## 📦 Deliverables
 
-- [x] Source code + `docker-compose.yml` (1-click start) — **ยังไม่ commit ขึ้น GitHub**
+- [x] Source code + `docker-compose.yml` (1-click start)
 - [x] `loadtest.js` (k6)
 - [ ] Report (PDF): diagram · cache invalidation strategy · การกันสั่งซื้อซ้ำ · ผล load test · ตารางเทียบกับกลุ่มเพื่อน · การแบ่งงานในทีม

@@ -48,7 +48,7 @@ export class OrdersProcessor extends WorkerHost {
   }
 
   async process(job: Job<OrderJobData>): Promise<OrderJobResult> {
-    const { userId, productId } = job.data;
+    const { userId, productId, requestToken } = job.data;
     const jobId = job.id ?? `order:${userId}:${productId}`;
 
     // ⚠️ กับดัก Read-Write Split: repository.findOne() จะวิ่งไป replica ที่มี lag
@@ -98,14 +98,28 @@ export class OrdersProcessor extends WorkerHost {
       // (compensated:{jobId} กันการคืน "ซ้ำ" ได้ แต่ไม่ได้กันการคืน job ที่ยังไม่ตาย)
       const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
 
-      if (isFinalAttempt || err instanceof SoldOutError) {
-        await this.redis.compensateOnce(jobId, userId, productId);
+      if (err instanceof SoldOutError) {
+        // ⚠️ **ห้ามคืนสต็อกตรงนี้** — SoldOutError เกิดเมื่อ Redis บอก "ผ่าน"
+        //    แต่ DB บอก "หมดแล้ว" ซึ่งแปลว่า Redis สูงกว่า DB อยู่ก่อนแล้ว
+        //    ถ้าคืน จะดัน Redis ขึ้นอีก -> ปล่อยคนถัดไปเข้ามา -> job ตาย sold-out อีก
+        //    -> คืนอีก วนไม่จบ และ stock counter จะลู่เข้าหา 1 ไม่มีวันถึง 0
+        //    (ตกเกณฑ์ Data Integrity §9.3 ข้อ 4)
+        //    การไม่คืน ทำให้ Redis ลู่ลงเข้าหา DB แล้วหยุดเอง
+        //    ปล่อย lock ทิ้งไว้ให้ TTL เก็บ — ไม่ใช่ path ที่ต้องรีบคืนสิทธิ์
+        this.logger.warn(
+          `job ${jobId} sold out — Redis was ahead of DB, NOT compensating (lets the counter converge)`,
+        );
+        // ❌ อย่า throw — permanent failure (CLAUDE.md §4 ข้อ 10)
+        return { status: 'sold_out' };
       }
 
-      if (err instanceof SoldOutError) {
-        // ❌ อย่า throw — permanent failure (CLAUDE.md §4 ข้อ 10)
-        this.logger.warn(`job ${jobId} sold out — no retry`);
-        return { status: 'sold_out' };
+      if (isFinalAttempt) {
+        await this.redis.compensateOnce(
+          jobId,
+          userId,
+          productId,
+          requestToken ?? jobId,
+        );
       }
 
       this.logger.error(
@@ -124,8 +138,15 @@ export class OrdersProcessor extends WorkerHost {
     // = Redis บวกเกินจริง -> oversell (CLAUDE.md §4 ข้อ 7)
     try {
       await this.redis.markBought(productId, userId);
-      // ปล่อย lock ด้วย compare-and-delete — token = jobId ที่ gatekeeper เขียนไว้
-      await this.redis.releaseInFlightLock(userId, productId, jobId);
+      // ⚠️ ลำดับ 3 บรรทัดนี้สลับไม่ได้ — markBought ต้องมาก่อนปล่อย lock เสมอ
+      //    ถ้าปล่อย lock ก่อน จะมีช่องที่ retry เข้ามาเจอ "ไม่มี lock ไม่มี bought แต่ stock > 0"
+      //    -> ผ่าน gatekeeper -> DECR อีกหน่วยที่ไม่มีใครกิน
+      // token = requestToken ที่ gatekeeper เขียนลง lock (ไม่ใช่ jobId ซึ่งซ้ำทุกครั้ง)
+      await this.redis.releaseInFlightLock(
+        userId,
+        productId,
+        requestToken ?? jobId,
+      );
       await this.redis.invalidateCatalogCache();
     } catch (err) {
       this.logger.error(

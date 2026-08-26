@@ -1,8 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
@@ -64,6 +60,9 @@ export class ProductsService {
    */
   private readonly inFlight = new Map<string, Promise<CatalogPage>>();
 
+  /** นับ response ที่ remainingStock มาจากแคชแทน Redis (redis-data อ่านไม่ได้) */
+  private degradedReads = 0;
+
   constructor(
     @InjectRepository(Product)
     private readonly productsRepository: Repository<Product>,
@@ -108,18 +107,38 @@ export class ProductsService {
   }
 
   /**
-   * ห้ามกลืน error ของ stock counter — ถ้าอ่าน redis-data ไม่ได้ เราจะไม่รู้ว่า
-   * remainingStock ถูกต้องไหม การตอบค่าจาก DB ที่ค้างอยู่ = โกหกผู้ใช้ในข้อที่โจทย์ให้น้ำหนักสูงสุด
+   * อ่าน stock counter — ถ้า redis-data ล่ม ให้ **degrade ไม่ใช่ล้ม**
+   *
+   * เดิมที่นี่โยน 503 ด้วยเหตุผลว่า `remainingStock` เป็น "เงื่อนไขสำคัญ" ของโจทย์
+   * แต่ read path **ไม่ใช่พื้นผิวของความถูกต้อง** — ไม่มีใครซื้อของจาก response ของ GET
+   * ตัวตัดสินว่าใครได้ของคือ `gatekeeper.lua` ฝั่ง write เท่านั้น
+   * เลขที่เก่าไปนิดจึงทำให้ oversell ไม่ได้ ทำให้ซื้อซ้ำไม่ได้ ทำให้ Redis/DB เพี้ยนไม่ได้
+   *
+   * ในทางกลับกัน การโยน 503 ทำให้ reader ทั้ง 1,000 คนอ่านอะไรไม่ได้เลย
+   * (และถ้า redis ค้างแทนที่จะ error จะกลายเป็น 504 จาก nginx ซึ่งแย่กว่าอีก
+   *  — ดู `commandTimeout` ใน redis.module.ts)
+   *
+   * ⚠️ `fallbackRemainingStock` คือค่า DB ตอนเติมแคช ระหว่าง burst มันอาจบอก 47 ทั้งที่จริงเป็น 0
+   *    เพราะฉะนั้นต้อง **นับและ log ให้เห็น** ไม่ใช่เงียบ — รายงานต้องบอกได้ว่าเสิร์ฟ degraded ไปกี่ใบ
    */
   private async readStocks(productIds: string[]): Promise<(string | null)[]> {
     try {
       return await this.redis.getStocks(productIds);
     } catch (err) {
+      this.degradedReads += 1;
       this.logger.error(
-        `stock counter read failed: ${err instanceof Error ? err.message : String(err)}`,
+        `stock counter read failed — serving cached fallback ` +
+          `(degraded responses so far: ${this.degradedReads}): ` +
+          (err instanceof Error ? err.message : String(err)),
       );
-      throw new ServiceUnavailableException('Stock service unavailable');
+      // คืน null ทุกช่อง → ตัว merge จะใช้ fallbackRemainingStock ให้เอง
+      return productIds.map(() => null);
     }
+  }
+
+  /** จำนวน response ที่เสิร์ฟด้วยสต็อกจากแคชเพราะอ่าน redis-data ไม่ได้ (สำหรับรายงาน) */
+  getDegradedReadCount(): number {
+    return this.degradedReads;
   }
 
   /** cache miss -> แชร์ promise เดียวกันทุกคนที่ขอหน้าเดียวกันอยู่ในขณะนั้น */

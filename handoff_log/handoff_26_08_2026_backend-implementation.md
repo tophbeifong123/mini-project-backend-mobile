@@ -1,8 +1,8 @@
 # Handoff — Backend Implementation (2026-08-26)
 
-**วันที่:** 2026-08-26 · **ผู้บันทึก:** NuiGates (ร่วมกับ Claude Code / Opus 5) · **สถานะ:** โค้ดครบ ผ่าน build/lint/test — **ยังไม่ commit และยังไม่เคยรันบน container**
+**วันที่:** 2026-08-26 · **ผู้บันทึก:** NuiGates (ร่วมกับ Claude Code / Opus 5) · **สถานะ:** โค้ดครบ ผ่าน build/lint/test · merge เข้า `main` แล้ว — **ยังไม่เคยรันบน container และยังไม่เคยยิง k6**
 **ขอบเขต:** สร้าง `flash-sale-backend` ทั้งโปรเจกต์จากศูนย์ — NestJS ครบทุก module, docker-compose, nginx, loadtest.js
-**ต่อจาก:** [`handoff_architecture-rationale-db-schema_26_08_2026.md`](handoff_architecture-rationale-db-schema_26_08_2026.md) (§6 ข้อ 6 "เริ่มเขียน `src/`")
+**ต่อจาก:** [`handoff_26_08_2026_architecture-rationale-db-schema.md`](handoff_26_08_2026_architecture-rationale-db-schema.md) (§6 ข้อ 6 "เริ่มเขียน `src/`")
 
 ---
 
@@ -10,7 +10,9 @@
 
 - **มีโค้ดจริงแล้ว** — 45 ไฟล์ใน `src/` + config/docker/scripts ที่ root + `loadtest.js`
 - `pnpm run build` ✅ · `pnpm run lint` ✅ (0 error 0 warning) · `pnpm run test` ✅ **30 tests / 3 suites**
-- **ยังไม่ commit อะไรเลย** — ทุกอย่างอยู่ใน working tree (`git ls-files` มีแต่ docs)
+- **commit + push แล้ว** — 11 commits แตกตามชั้นสถาปัตยกรรม (toolchain → schema → redis → domain → bootstrap → infra → test → docs)
+  ทำบน branch `feat/backend-implementation` แล้ว fast-forward เข้า `main` (`9df1f6f..c2d13d4`) จากนั้นลบ branch ทิ้ง
+  ตรวจก่อน push: tracked 98 ไฟล์ · `.env` ไม่ติดไป · `6610110189.zip` ไม่ติดไป
 - **ยังไม่เคยรัน container และยังไม่เคยยิง k6** — เครื่องนี้ docker daemon ไม่ทำงาน, ไม่มี podman, ไม่มี k6
 - คนมารับช่วงต่อจะเจอ: ระบบที่ควรจะ `podman compose up -d` แล้วใช้งานได้เลย **แต่ยังไม่มีใครพิสูจน์**
 
@@ -96,7 +98,7 @@
 
 ## 6. ก้าวถัดไป (เรียงลำดับ)
 
-1. **`git add` ทั้งโปรเจกต์แล้ว commit + push** — ตอนนี้ grader เห็นแต่ docs (deliverable ข้อ 1 ตกทันที)
+1. ~~`git add` ทั้งโปรเจกต์แล้ว commit + push~~ ✅ **เสร็จแล้ว** — `main` อยู่ที่ `c2d13d4` (deliverable ข้อ 1 ผ่าน)
 2. **หาเครื่องที่มี podman/docker แล้ว `podman compose up -d`** — ตรวจ `bash` ใน `postgres:16-alpine` ก่อนเป็นอย่างแรก
 3. **ยิง `k6 run loadtest.js`** แล้วพิสูจน์ Data Integrity ตาม `architecture.md` §9.3 ทั้ง 4 ข้อ (รวมข้อ 4: `GET stock:flash_sale:p-1001` = `"0"`)
 4. **เก็บ Cache Hit/Miss** ด้วย `./scripts/cache-stats.sh` (reset ก่อนยิง อ่านหลังยิง)
@@ -130,4 +132,4 @@
 | วิธีสตาร์ท / วิธี dev นอก container | `README.md` |
 | Cache Hit/Miss สำหรับรายงาน | `scripts/cache-stats.sh` |
 | k6 | `loadtest.js` |
-| handoff รอบก่อน | `handoff_log/handoff_architecture-rationale-db-schema_26_08_2026.md` |
+| handoff รอบก่อน | `handoff_log/handoff_26_08_2026_architecture-rationale-db-schema.md` |

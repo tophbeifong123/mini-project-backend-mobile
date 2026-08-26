@@ -5,13 +5,15 @@
 > เก็บไว้เฉพาะกฎที่ "พลาดแล้วพัง" เพื่อไม่ให้เนื้อหาสองไฟล์แตกกันเอง
 
 **โปรเจกต์**: Flash Sale System — NestJS + Nginx (3 instances) + PostgreSQL replication + Redis ×2 + BullMQ + JWT
-**สถานะ**: 📐 blueprint-only — ยังไม่มี `src/` ในrepo อย่าเดาว่ามีไฟล์อยู่แล้ว ให้ตรวจสอบก่อน
+**สถานะ**: 🛠️ implemented — `src/` ครบ · `docker-compose.yml` 1-click start · `loadtest.js` พร้อม · build/lint/test ผ่าน (32 tests)
+**แต่ยังไม่เคยรันบน container และยังไม่เคยยิง k6** — ตัวเลข performance ในเอกสารทุกตัวยังเป็นค่าประมาณ
 
 ## เอกสารที่ต้องอ่าน
 | ไฟล์ | คืออะไร |
 | :--- | :--- |
 | [`CLAUDE.md`](CLAUDE.md) | **กติกาฉบับเต็ม** — stack, คำสั่ง, API contract, DO/DON'T, checklist |
 | [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) | **สเปกสถาปัตยกรรม** — source of truth ถ้าโค้ดขัดกับเอกสาร เอกสารถูก |
+| [`docs/Codebase/README.md`](docs/Codebase/README.md) | **โค้ดจริงทำงานยังไง** — เดิน request ทีละ hop อ้าง `file:line` + บันทึก design review |
 | [`docs/Architecture/diagrams.md`](docs/Architecture/diagrams.md) | DFD + Control Flow + CSPEC (ตารางตัดสินใจของ gatekeeper และ worker) |
 | [`docs/Architecture/old_architecture.md`](docs/Architecture/old_architecture.md) | ⚠️ ฉบับเก่า archived — **ห้ามใช้เป็นสเปก** |
 | [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf) | โจทย์ต้นฉบับ |
@@ -30,10 +32,19 @@
 10. **ห้ามเก็บ state ที่ต้องแชร์ใน memory** รวมถึง L1 cache ที่มี `remainingStock`
 11. **API contract เปลี่ยนไม่ได้** (`CLAUDE.md` §3) — กลุ่มอื่นจะเอา k6 มายิงระบบเรา
 
+## กับดักที่เคยพลาดมาแล้ว (อย่าทำซ้ำ)
+- **ห้ามเทียบ `job.data` ที่ `queue.add()` คืนมา** — BullMQ ไม่เคยอ่าน `data` กลับจาก Redis (เขียนกลับแค่ `job.id`) เทียบยังไงก็ตรงเสมอ = เช็คตาย ต้องใช้ `queue.getJob(jobId)`
+- **ห้าม compensate ตอน `affected = 0` (sold out)** — Redis สูงกว่า DB อยู่แล้ว คืนไปจะวนไม่จบ counter ลู่เข้าหา 1 ไม่ถึง 0
+- **ห้าม compensate ทุกครั้งที่ catch** — ต้องเช็ค `isFinalAttempt` ก่อน ไม่งั้น retry สำเร็จทีหลัง = Redis สูงกว่า DB ถาวร
+- **ห้ามใช้ `jobId` เป็น token ของ lock** — ซ้ำทุกครั้งที่คนเดิมขอของเดิม ทำให้ compare-and-delete แยกการถือครองไม่ออก ใช้ `requestToken` สุ่มต่อคำขอ
+- **ห้ามลบ `commandTimeout` ของ ioredis** — `maxRetriesPerRequest: null` เพียวๆ ทำให้คำสั่ง**ค้าง** ไม่ reject → `catch` fallback ไม่ทำงาน → 504
+- **ยิง k6 ต้อง `RESET_CONFIRM=yes pnpm run reset` ก่อนทุกรอบ** ไม่งั้นได้ 409 ล้วน
+
 ## ก่อนบอกว่าเสร็จ
 ```bash
 pnpm run build && pnpm run lint && pnpm run test
 ```
+ถ้าแก้ไฟล์ใน `docs/Codebase/Separate/` ต้องรัน `node scripts/build-all-in-one.mjs` ด้วย
 ถ้าแตะ write path ต้องพิสูจน์ Data Integrity ด้วย (`docs/Architecture/architecture.md` §9.3):
 `remaining_stock = 0` · `orders = 50 แถว` · `unique users = 50` · `redis GET stock:flash_sale:p-1001 = "0"`
 

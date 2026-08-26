@@ -27,6 +27,7 @@
     "migration:revert": "pnpm run typeorm -- migration:revert",
     "seed": "ts-node -r tsconfig-paths/register src/seed/seed.ts",
     "seed:redis": "ts-node -r tsconfig-paths/register src/seed/seed-redis.ts",
+    "reset": "ts-node -r tsconfig-paths/register src/database/reset.ts",
     "migrate:seed": "ts-node -r tsconfig-paths/register src/database/migrate-and-seed.ts"
   },
   "dependencies": {

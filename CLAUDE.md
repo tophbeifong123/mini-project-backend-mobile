@@ -4,7 +4,7 @@
 > **โจทย์ต้นทาง**: [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf)
 > **สถาปัตยกรรม (source of truth)**: [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md)
 > **สถานะ**: 🛠️ implemented — `src/` ครบทุก module · `docker-compose.yml` 1-click start · `loadtest.js` พร้อม
-> `build` / `lint` / `test` (30 tests) ผ่านหมด · **ยังไม่เคยรันบน container จริงและยังไม่เคยยิง k6**
+> `build` / `lint` / `test` (32 tests) ผ่านหมด · **ยังไม่เคยรันบน container จริงและยังไม่เคยยิง k6**
 
 ---
 
@@ -17,6 +17,59 @@ repo นี้มีทั้ง **เอกสารออกแบบ** แล
 - **ห้ามเดาว่าไฟล์มีอยู่แล้ว** — ตรวจสอบก่อนเสมอ (`ls`, `cat`) แล้วค่อยแก้
 - เมื่อเริ่มเขียนโค้ด ให้ยึด [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) เป็นสเปก ถ้าโค้ดกับเอกสารขัดกัน **ถือว่าเอกสารถูก** จนกว่าจะตกลงกันใหม่ (แล้วต้องแก้เอกสารด้วย)
 - โจทย์บังคับ **API contract แบบเป๊ะๆ** เพราะกลุ่มอื่นจะเอา k6 script มายิงระบบเรา — เปลี่ยน path / field / status code เมื่อไหร่ = ยิงข้ามกลุ่มไม่ได้ (ดู §3)
+
+---
+
+## 0.1 🚧 สิ่งที่ **ยังไม่ได้ทำ** (อัปเดตหลัง design review รอบ 2 — 2026-08-26)
+
+> อ่านตารางนี้ก่อนจะพูดว่าอะไร "เสร็จแล้ว" — ของที่อยู่ในนี้คือของที่ **ยังไม่มีใครพิสูจน์**
+> รายละเอียดเต็มอยู่ใน [`handoff_log/handoff_26_08_2026_backend-implementation.md`](handoff_log/handoff_26_08_2026_backend-implementation.md) §5
+
+### ❌ ยังไม่เคยเกิดขึ้นเลย
+
+| อะไร | ทำไมถึงสำคัญ |
+| :--- | :--- |
+| **ไม่เคย `podman compose up -d`** | replication / healthcheck / entrypoint / ลำดับ seed ยังเป็นทฤษฎีล้วน — เครื่องที่พัฒนาไม่มี podman และ docker daemon ไม่ทำงาน |
+| **ไม่เคยยิง k6** | **ตัวเลข performance ทุกตัวในเอกสารเป็นค่าประมาณ** (p95 < 200ms, hit ratio ≥ 90%, "450 คนจบใน ~1ms") ห้ามเอาไปใส่รายงานว่าเป็นผลการวัด |
+| **ไม่เคยพิสูจน์ Data Integrity** | §9.3 ทั้ง 4 ข้อ (`remaining_stock = 0`, `orders = 50/50`, ไม่มีใครได้เกิน 1, Redis counter = `"0"`) ยังไม่เคยรันสักข้อ |
+| **ไม่เคยยิงข้ามกลุ่ม** | เป็น deliverable ตรงๆ (§9 ตารางเทียบกับกลุ่มเพื่อน) |
+| **ไม่มี e2e test** | `pnpm run test:e2e` exit non-zero ("no tests found") — มีแต่ unit test 32 ข้อ |
+| **ยังไม่ได้ทำรายงาน PDF** | diagram มีวัตถุดิบอยู่แล้วใน [`diagrams.md`](docs/Architecture/diagrams.md) แต่ยังไม่มีตัวรายงาน |
+| **ยังไม่ได้เก็บ dashboard** | Cache Hit/Miss (ใช้ `./scripts/cache-stats.sh`) และภาพ Bull-Board ตอน Completed = 50 |
+
+### ⚠️ 2 ข้อที่ต้องเช็คก่อน demo (ใช้เวลารวมไม่ถึงนาที)
+
+```bash
+podman run --rm postgres:16-alpine bash -c 'echo ok'   # ถ้าไม่มี bash → replica ไม่ขึ้น → ทั้งระบบไม่ขึ้น
+podman compose version                                  # podman-compose (python) ไม่เคารพ condition: service_healthy
+```
+
+### 🕳️ รูที่ **รู้ตัวแล้วแต่จงใจยังไม่ปิด**
+
+อย่า "แก้ให้ถูกหลัก" โดยไม่อ่านเหตุผลก่อน — บางข้อการแก้ผิดทางทำให้แย่ลง
+
+| รู | สภาพตอนนี้ |
+| :--- | :--- |
+| `23505` ไม่คืนสต็อกใน Redis | ถูกต้องสำหรับเคสที่ตั้งใจ (retry ของ job ที่ commit แล้ว) แต่ถ้า `bought:` key หายและ job record เดิมถูก evict → Redis ต่ำกว่า DB ถาวร · **reviewer ทั้ง 3 เห็นตรงกันว่าปล่อยไว้ถูกแล้ว** — การคืนตรงนี้จะทำให้ retry ปกติคืนซ้ำ |
+| ไม่มี reconciliation Redis ↔ DB | ตัวจับ drift ตัวเดียวที่มีคือการรัน §9.3 ข้อ 4 ด้วยมือ |
+| `WORKER_CONCURRENCY` อ่านตอน decorate class | เห็นเฉพาะ env จริงของ container ปรับจาก `.env` แล้วไม่มีผล |
+| `proxy_read_timeout 5s` ใน nginx | มาจาก `architecture.md` §2 — ถ้า p99 จริงเกิน 5s จะกลายเป็น 504 |
+| job stall เกิน `maxStalledCount` | BullMQ ทิ้ง job ไป `failed` **โดยไม่เรียก handler** → `compensateOnce` ไม่ทำงาน → สต็อกหาย 1 ชิ้น · เกิดได้เมื่อ event loop ตันเกิน 30 วิ |
+| ไม่มี e2e test | ทางเดียวที่จะพิสูจน์ทั้ง 4 เส้นทางคือยิงจริง |
+
+### ✅ ปิดไปแล้วรอบนี้ (2026-08-26 — design review รอบ 2)
+
+| เดิม | แก้เป็นอะไร |
+| :--- | :--- |
+| `job.data.requestToken` จาก `queue.add()` — **เป็น dead code** BullMQ ไม่เคยอ่าน `data` กลับจาก Redis | อ่าน job กลับด้วย `queue.getJob(jobId)` แล้วเทียบ token ที่เก็บอยู่จริง (round trip เท่าเดิม) |
+| `SoldOutError` คืนสต็อก → ระบบไม่ self-heal (202 → job ตาย → คืน → วนใหม่) | **ไม่คืน** — ปล่อยให้ counter ลู่ลงเข้าหา DB แล้วหยุดเอง |
+| lock เก็บ `jobId` ซึ่งซ้ำทุกครั้ง → compare-and-delete แยกการถือครองไม่ออก | lock เก็บ `requestToken` สุ่มใหม่ทุกคำขอ · `compensate*.lua` เปลี่ยนจาก `DEL` เปล่าเป็น compare-and-delete |
+| read path โยน 503 เมื่อ `MGET` ล้ม → reader 1,000 คนอ่านไม่ได้เลย | degrade เป็น `fallbackRemainingStock` + นับ + log |
+| `invalidateCatalogCache()` 50 ครั้งใน ~300 ms | debounce ≤ 1 ครั้ง/วินาที (trailing ไม่ทิ้งงาน) |
+| ioredis ไม่มี `commandTimeout` → คำสั่งค้าง `catch` ไม่ทำงาน | `commandTimeout: 1000` |
+| `compensated:` TTL 86,400 วิ | 300 วิ |
+| ไม่มีทาง reset → ยิงรอบสองได้ 409 ล้วน | `RESET_CONFIRM=yes pnpm run reset` |
+| เอกสาร 4 จุดบรรยายโค้ดที่ไม่มีอยู่จริง | แก้แล้วทั้ง §8, ADR-4, Q3, §6 |
 
 ---
 
@@ -78,6 +131,10 @@ pnpm run migration:revert         # ⚠️ ต้องขออนุญาต�
 # --- Seed & Reset ก่อนทดสอบทุกครั้ง ---
 pnpm run seed                     # โหลด docs/Requirement/products-seed.json เข้า DB
 pnpm run seed:redis               # SET stock:flash_sale:* จาก DB (NX) — ขาดไม่ได้
+
+# --- Reset ก่อนยิงรอบใหม่ (ขาดไม่ได้ถ้าจะยิงมากกว่า 1 รอบ) ---
+RESET_CONFIRM=yes pnpm run reset   # ⚠️ ลบ orders ทั้งตาราง + stock/bought/lock ใน redis-data แล้ว seed ใหม่
+                                   # ไม่รัน = ยิงรอบสองได้ 409 ทั้งหมด (seed ใช้ NX + ON CONFLICT จึงแก้เองไม่ได้)
 
 # --- Load Test ---
 k6 run loadtest.js
@@ -168,7 +225,11 @@ k6 run loadtest.js
 - **Strict typing** — เลี่ยง `any`; mock ในเทสต์ใช้ `jest.Mocked<Repository<T>>` ไม่ใช่ `any`
 - **TTL ทุก key ใน `redis-cache`** พร้อม jitter (key ที่ไม่มี TTL = memory leak)
 - **ปล่อย Redis lock ผ่าน Lua compare-and-delete** (เทียบ token ก่อนลบ)
-- **`try/catch` รอบทุกการเรียก cache พร้อม fallback ไป DB** — Redis คือ optimization ไม่ใช่ dependency ที่ขาดไม่ได้ (สำหรับ *cache*; stock counter เป็นคนละเรื่อง)
+- **`try/catch` รอบทุกการเรียก cache พร้อม fallback ไป DB** — Redis คือ optimization ไม่ใช่ dependency ที่ขาดไม่ได้
+  ⚠️ กฎนี้จะเป็นจริงได้**ก็ต่อเมื่อ ioredis มี `commandTimeout`** (`redis.module.ts`) — `maxRetriesPerRequest: null` เพียวๆ แปลว่า "ไม่ยอมแพ้"
+  คำสั่งจะ**ค้าง**ไม่ reject ตอน Redis สะดุด → `catch` ไม่มีวันทำงาน → request ค้างจนชน `proxy_read_timeout` ของ nginx กลายเป็น 504 **ห้ามลบบรรทัดนั้น**
+- **stock counter (`redis-data`) อ่านไม่ได้ ให้ degrade ไม่ใช่ล้ม** — read path ไม่ใช่พื้นผิวของความถูกต้อง (ตัวตัดสินคือ `gatekeeper.lua` ฝั่ง write)
+  ตอบ `fallbackRemainingStock` จากแคช + นับ + log ระดับ error ไว้รายงาน **ห้ามเงียบ**
 - **ใช้ NestJS exceptions มาตรฐาน** (`ConflictException`, `ServiceUnavailableException`, ...)
 - **Migration สำหรับทุกการเปลี่ยน schema** และอ่านไฟล์ที่ generate มาก่อน commit เสมอ
 - **`price` ต้องมี `transformer` แปลง `NUMERIC` → `number`** — driver คืน `numeric` เป็น **string** ถ้าไม่แปลง response จะเป็น `"2990.00"` = **ผิด contract §3** (ดู `docs/Architecture/architecture.md` §3.1)
@@ -247,6 +308,7 @@ pnpm run test      # 3. unit tests ผ่านหมด
 | ไฟล์ | ใช้เมื่อไหร่ |
 | :--- | :--- |
 | [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md) | **สเปกหลัก** — อ่านก่อนเขียนโค้ดทุกครั้ง (**§3.1 = DB schema / entity / migration**) |
+| [`docs/Codebase/`](docs/Codebase/README.md) | **โค้ดไฟล์ไหนเรียกไฟล์ไหน** — primer เดินโค้ดจากศูนย์ + บันทึก design review Q&A (อ้าง `file:line` ของโค้ดจริง) |
 | [`docs/Architecture/diagrams.md`](docs/Architecture/diagrams.md) | DFD / Control Flow / CSPEC / State Machine — ใช้ประกอบรายงานและตรวจ invariant |
 | [`docs/Architecture/architecture-rationale.md`](docs/Architecture/architecture-rationale.md) | **เหตุผลการออกแบบ + ข้อดีข้อเสีย + บันทึก design review** — อ่านก่อนจะแก้ดีไซน์ (§7 มี blocker ที่ยังไม่แก้ 2 ข้อ) |
 | [`docs/Architecture/old_architecture.md`](docs/Architecture/old_architecture.md) | ⚠️ **ฉบับเก่า archived** — เก็บไว้เทียบเฉยๆ **ห้ามใช้เป็นสเปก** (ขาด JWT, มีบั๊ก oversell/undersell) |

@@ -22,6 +22,15 @@ function buildOptions(
     connectionName,
     // BullMQ บังคับ null และ worker/blocking command ก็ต้องการแบบนี้เช่นกัน
     maxRetriesPerRequest: null,
+    /**
+     * ⚠️ ขาดบรรทัดนี้ไม่ได้ — `maxRetriesPerRequest: null` แปลว่า "ไม่ยอมแพ้"
+     * ถ้าไม่มี timeout ด้วย คำสั่งจะ **ค้าง** ไม่ reject ตอน Redis สะดุด
+     * → `try/catch` + fallback ที่เขียนไว้ทุกที่ไม่มีวันทำงาน
+     * → request ค้างจนชน `proxy_read_timeout 5s` ของ nginx แล้วกลายเป็น 504
+     * ซึ่งขัดกับกฎ `CLAUDE.md` §6 ที่ว่า "Redis คือ optimization ไม่ใช่ dependency"
+     * ตั้ง 1 วิ: นานกว่า p99 ปกติหลายสิบเท่า แต่สั้นกว่า timeout ของ nginx มาก
+     */
+    commandTimeout: 1_000,
     enableReadyCheck: true,
     lazyConnect: false,
     // exponential backoff แบบมีเพดาน — ระหว่าง flash sale ห้าม hammer redis

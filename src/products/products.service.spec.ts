@@ -1,4 +1,3 @@
-import { ServiceUnavailableException } from '@nestjs/common';
 import { Repository } from 'typeorm';
 
 import { RedisService } from '../redis/redis.service';
@@ -103,12 +102,18 @@ describe('ProductsService', () => {
       expect(result.data[0].remainingStock).toBe(50);
     });
 
-    it('surfaces a 503 instead of silently serving a stale stock number', async () => {
+    it('degrades to the cached fallback instead of failing the whole read', async () => {
+      // read path ไม่ใช่พื้นผิวของความถูกต้อง — ไม่มีใครซื้อของจาก response ของ GET
+      // ตัวตัดสินคือ gatekeeper.lua ฝั่ง write เท่านั้น
+      // การโยน 503 ทำให้ reader ทั้ง 1,000 คนอ่านอะไรไม่ได้เลย เพื่อกัน "เลขเก่านิดหน่อย"
       redis.getStocks.mockRejectedValue(new Error('redis-data down'));
 
-      await expect(service.listProducts(1, 10)).rejects.toBeInstanceOf(
-        ServiceUnavailableException,
-      );
+      const result = await service.listProducts(1, 10);
+
+      expect(result.data).toHaveLength(1);
+      // ใช้ fallbackRemainingStock ที่ติดมากับ metadata cache
+      expect(result.data[0].remainingStock).toBe(50);
+      expect(service.getDegradedReadCount()).toBe(1);
     });
   });
 
