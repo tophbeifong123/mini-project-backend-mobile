@@ -134,6 +134,6 @@ SELECT COUNT(*), COUNT(DISTINCT user_id) FROM orders WHERE product_id = 'p-1001'
 
 ## 📦 Deliverables
 
-- [x] Source code + `docker-compose.yml` (1-click start) — **ยังไม่ commit ขึ้น GitHub**
+- [x] Source code + `docker-compose.yml` (1-click start)
 - [x] `loadtest.js` (k6)
 - [ ] Report (PDF): diagram · cache invalidation strategy · การกันสั่งซื้อซ้ำ · ผล load test · ตารางเทียบกับกลุ่มเพื่อน · การแบ่งงานในทีม
