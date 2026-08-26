@@ -20,6 +20,45 @@ repo นี้มีทั้ง **เอกสารออกแบบ** แล
 
 ---
 
+## 0.1 🚧 สิ่งที่ **ยังไม่ได้ทำ** (อัปเดต 2026-08-26)
+
+> อ่านตารางนี้ก่อนจะพูดว่าอะไร "เสร็จแล้ว" — ของที่อยู่ในนี้คือของที่ **ยังไม่มีใครพิสูจน์**
+> รายละเอียดเต็มอยู่ใน [`handoff_log/handoff_26_08_2026_backend-implementation.md`](handoff_log/handoff_26_08_2026_backend-implementation.md) §5
+
+### ❌ ยังไม่เคยเกิดขึ้นเลย
+
+| อะไร | ทำไมถึงสำคัญ |
+| :--- | :--- |
+| **ไม่เคย `podman compose up -d`** | replication / healthcheck / entrypoint / ลำดับ seed ยังเป็นทฤษฎีล้วน — เครื่องที่พัฒนาไม่มี podman และ docker daemon ไม่ทำงาน |
+| **ไม่เคยยิง k6** | **ตัวเลข performance ทุกตัวในเอกสารเป็นค่าประมาณ** (p95 < 200ms, hit ratio ≥ 90%, "450 คนจบใน ~1ms") ห้ามเอาไปใส่รายงานว่าเป็นผลการวัด |
+| **ไม่เคยพิสูจน์ Data Integrity** | §9.3 ทั้ง 4 ข้อ (`remaining_stock = 0`, `orders = 50/50`, ไม่มีใครได้เกิน 1, Redis counter = `"0"`) ยังไม่เคยรันสักข้อ |
+| **ไม่เคยยิงข้ามกลุ่ม** | เป็น deliverable ตรงๆ (§9 ตารางเทียบกับกลุ่มเพื่อน) |
+| **ไม่มี e2e test** | `pnpm run test:e2e` exit non-zero ("no tests found") — มีแต่ unit test 30 ข้อ |
+| **ยังไม่ได้ทำรายงาน PDF** | diagram มีวัตถุดิบอยู่แล้วใน [`diagrams.md`](docs/Architecture/diagrams.md) แต่ยังไม่มีตัวรายงาน |
+| **ยังไม่ได้เก็บ dashboard** | Cache Hit/Miss (ใช้ `./scripts/cache-stats.sh`) และภาพ Bull-Board ตอน Completed = 50 |
+
+### ⚠️ 2 ข้อที่ต้องเช็คก่อน demo (ใช้เวลารวมไม่ถึงนาที)
+
+```bash
+podman run --rm postgres:16-alpine bash -c 'echo ok'   # ถ้าไม่มี bash → replica ไม่ขึ้น → ทั้งระบบไม่ขึ้น
+podman compose version                                  # podman-compose (python) ไม่เคารพ condition: service_healthy
+```
+
+### 🕳️ รูที่ **รู้ตัวแล้วแต่จงใจยังไม่ปิด**
+
+อย่า "แก้ให้ถูกหลัก" โดยไม่อ่านเหตุผลก่อน — บางข้อการแก้ผิดทางทำให้แย่ลง
+
+| รู | สภาพตอนนี้ |
+| :--- | :--- |
+| `23505` ไม่คืนสต็อกใน Redis | ถูกต้องสำหรับเคสที่ตั้งใจ (retry ของ job ที่ commit แล้ว) แต่ถ้า `bought:` key หายและ job record เดิมถูก evict → Redis ต่ำกว่า DB ถาวร |
+| `SoldOutError` คืนสต็อก | ถ้า DB กับ Redis เพี้ยนกันไปแล้ว การคืนตรงนี้ทำให้ระบบ **ไม่ self-heal** (202 → job ตาย → คืน → วนใหม่) |
+| ไม่มี reconciliation Redis ↔ DB | ตัวจับ drift ตัวเดียวที่มีคือการรัน §9.3 ข้อ 4 ด้วยมือ |
+| `invalidateCatalogCache()` ล้าง `catalog:page:*` ทั้งหมดทุกครั้งที่ order สำเร็จ | ทำตาม [`architecture.md`](docs/Architecture/architecture.md) §5.4 ตรงตัว แต่ = ล้างแคช 50 ครั้งระหว่าง burst → **ถ้า hit ratio ในรายงานไม่ถึง 90% ให้มาดูตรงนี้ก่อน** |
+| `WORKER_CONCURRENCY` อ่านตอน decorate class | เห็นเฉพาะ env จริงของ container ปรับจาก `.env` แล้วไม่มีผล |
+| `proxy_read_timeout 5s` ใน nginx | มาจาก `architecture.md` §2 — ถ้า p99 จริงเกิน 5s จะกลายเป็น 504 |
+
+---
+
 ## 1. 🛠️ Tech Stack
 
 | ชั้น | เทคโนโลยี | หมายเหตุ |
