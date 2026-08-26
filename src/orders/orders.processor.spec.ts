@@ -129,7 +129,10 @@ describe('OrdersProcessor', () => {
     expect(queryRunner.commitTransaction).toHaveBeenCalledTimes(1);
   });
 
-  it('returns sold_out (never throws) when affected === 0, and compensates', async () => {
+  it('returns sold_out (never throws) when affected === 0, and does NOT compensate', async () => {
+    // affected === 0 แปลว่า Redis บอกผ่านแต่ DB บอกหมด = Redis สูงกว่า DB อยู่ก่อนแล้ว
+    // ถ้าคืนสต็อกตรงนี้จะดัน Redis ขึ้นอีก -> ปล่อยคนถัดไป -> ตาย sold-out -> คืนอีก วนไม่จบ
+    // และ counter จะลู่เข้าหา 1 ไม่มีวันถึง 0 (ตกเกณฑ์ Data Integrity §9.3 ข้อ 4)
     updateQb.execute.mockResolvedValue({ affected: 0 });
 
     await expect(processor.process(createJob())).resolves.toEqual({
@@ -137,11 +140,7 @@ describe('OrdersProcessor', () => {
     });
 
     expect(queryRunner.rollbackTransaction).toHaveBeenCalledTimes(1);
-    expect(redis.compensateOnce).toHaveBeenCalledWith(
-      'order:user-999:p-1001',
-      'user-999',
-      'p-1001',
-    );
+    expect(redis.compensateOnce).not.toHaveBeenCalled();
     // permanent failure -> ห้ามทำ side effect หลัง commit
     expect(redis.markBought).not.toHaveBeenCalled();
   });

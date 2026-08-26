@@ -5,7 +5,9 @@
 -- KEYS[2] stock:flash_sale:{productId}        fast stock counter
 -- KEYS[3] bought:{productId}:{userId}         committed flag
 -- ARGV[1] lock_ttl_ms   (เช่น 30000)
--- ARGV[2] jobId / order token
+-- ARGV[2] requestToken — token **สุ่มใหม่ทุกคำขอ** (ไม่ใช่ jobId)
+--         jobId เหมือนกันทุกครั้งที่ user คนเดิมขอสินค้าเดิม -> compare-and-delete
+--         จะแยกการถือครองคนละครั้งไม่ออก ทำให้ release-lock.lua กลายเป็นของประดับ
 
 -- 0) stock counter ต้องมีอยู่จริง ห้ามตีความ nil ว่า 0
 --    (nil = ยังไม่ seed หรือถูก evict -> ต้องแยกออกจาก "ของหมด")
@@ -31,5 +33,5 @@ end
 
 -- 4) จองสิทธิ์: หักสต็อก + ตั้ง mutex พร้อมกันแบบ atomic
 redis.call('DECR', KEYS[2])
-redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[1])
+redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[1])   -- ค่าใน lock = requestToken
 return 1                 -- ALLOWED

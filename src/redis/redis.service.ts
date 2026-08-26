@@ -21,13 +21,18 @@ interface LuaCommands {
     token: string,
   ): Promise<number>;
 
-  compensateStock(stockKey: string, lockKey: string): Promise<number>;
+  compensateStock(
+    stockKey: string,
+    lockKey: string,
+    requestToken: string,
+  ): Promise<number>;
 
   compensateStockOnce(
     guardKey: string,
     stockKey: string,
     lockKey: string,
     guardTtlSeconds: string,
+    requestToken: string,
   ): Promise<number>;
 
   releaseLock(lockKey: string, token: string): Promise<number>;
@@ -57,14 +62,27 @@ const LUA_SCRIPTS: readonly LuaScriptDefinition[] = [
   { name: 'releaseLock', file: 'release-lock.lua', numberOfKeys: 1 },
 ] as const;
 
-/** guard key ของ compensation อยู่นานพอให้ครอบทุก retry ของ job (BullMQ backoff) */
-const COMPENSATION_GUARD_TTL_SECONDS = 86_400;
+/**
+ * guard key ของ compensation ต้องอยู่นานพอครอบ retry chain ของ job เดียวเท่านั้น
+ * `attempts: 3` + exponential backoff 200ms = จบใน ~2 วินาที → 300 วิเหลือเฟือ
+ *
+ * ⚠️ เดิมตั้งไว้ 86,400 วิ (24 ชม.) ซึ่งยาวเกินความจำเป็น ~5 order of magnitude
+ *    guard ที่อยู่นานกว่างานของมัน = guard ที่บล็อกการคืนสต็อกที่ถูกต้องในอนาคตแบบเงียบๆ
+ */
+const COMPENSATION_GUARD_TTL_SECONDS = 300;
+
+/** ล้าง metadata cache ได้ไม่เกิน 1 ครั้งต่อช่วงเวลานี้ (ดู invalidateCatalogCache) */
+const CATALOG_FLUSH_MIN_INTERVAL_MS = 1_000;
 
 @Injectable()
 export class RedisService implements OnModuleInit {
   private readonly logger = new Logger(RedisService.name);
   private readonly catalogTtlBase: number;
   private readonly catalogTtlJitter: number;
+
+  /** state ของ debounce ใน invalidateCatalogCache() — per-process, ไม่ใช่ shared state */
+  private lastCatalogFlushAt = 0;
+  private pendingCatalogFlush?: NodeJS.Timeout;
 
   constructor(
     @Inject(REDIS_CACHE_CLIENT) private readonly cache: Redis,
@@ -141,7 +159,7 @@ export class RedisService implements OnModuleInit {
   async gatekeeper(
     userId: string,
     productId: string,
-    jobId: string,
+    requestToken: string,
     lockTtlMs: number,
   ): Promise<number> {
     return this.dataClient.gatekeeper(
@@ -149,15 +167,20 @@ export class RedisService implements OnModuleInit {
       RedisKeys.stock(productId),
       RedisKeys.bought(productId, userId),
       String(lockTtlMs),
-      jobId,
+      requestToken,
     );
   }
 
-  /** ชดเชยจาก API path เมื่อ enqueue ไม่สำเร็จ — INCR stock + DEL lock ใน Lua เดียว */
-  async compensate(userId: string, productId: string): Promise<void> {
+  /** ชดเชยจาก API path เมื่อ enqueue ไม่สำเร็จ — INCR stock + ปล่อย lock ใน Lua เดียว */
+  async compensate(
+    userId: string,
+    productId: string,
+    requestToken: string,
+  ): Promise<void> {
     await this.dataClient.compensateStock(
       RedisKeys.stock(productId),
       RedisKeys.orderLock(userId, productId),
+      requestToken,
     );
   }
 
@@ -166,12 +189,14 @@ export class RedisService implements OnModuleInit {
     jobId: string,
     userId: string,
     productId: string,
+    requestToken: string,
   ): Promise<number> {
     return this.dataClient.compensateStockOnce(
       RedisKeys.compensated(jobId),
       RedisKeys.stock(productId),
       RedisKeys.orderLock(userId, productId),
       String(COMPENSATION_GUARD_TTL_SECONDS),
+      requestToken,
     );
   }
 
@@ -248,10 +273,44 @@ export class RedisService implements OnModuleInit {
   }
 
   /**
-   * ล้าง metadata cache ทั้งหมด — ใช้ SMEMBERS ของ index
+   * ล้าง metadata cache ทั้งหมด — **debounce ไม่เกิน 1 ครั้ง/วินาที**
+   *
+   * โจทย์ข้อ 2.3 กฎ 4 บังคับให้ invalidate หลัง DB update สำเร็จ ซึ่งยังทำอยู่
+   * แต่ของ 50 ชิ้นขายหมดใน window ~300ms = ล้างทั้งแคช 50 ครั้งรวดตอนที่
+   * reader 1,000 คนกำลังยิงอยู่พอดี ซึ่งไม่ใช่สิ่งที่กฎข้อนั้นต้องการ
+   *
+   * ตัวที่ทำให้ `remainingStock` ถูกต้องคือ stock overlay (§5.2) ไม่ใช่การ invalidate
+   * การล้างแคชมีไว้เผื่อ metadata เปลี่ยน (เช่น `isFlashSaleActive`) ซึ่ง 1 วินาทีถือว่าสด
+   *
+   * เป็น **trailing debounce** ไม่ใช่การทิ้ง — คำขอที่ตกอยู่ใน window
+   * จะถูกรวบไปทำรอบเดียวหลังครบ 1 วิ จึงไม่มีการล้างที่หายไปเฉยๆ
+   *
    * ❌ ห้ามใช้ `KEYS pattern` (O(N) + บล็อก Redis ทั้งตัว — CLAUDE.md §6)
    */
   async invalidateCatalogCache(): Promise<void> {
+    const now = Date.now();
+    const sinceLast = now - this.lastCatalogFlushAt;
+
+    if (sinceLast >= CATALOG_FLUSH_MIN_INTERVAL_MS) {
+      this.lastCatalogFlushAt = now;
+      await this.flushCatalogCache();
+      return;
+    }
+
+    // อยู่ใน window แล้ว — จองรอบ trailing ไว้รอบเดียว ที่เหลือเกาะไปด้วย
+    if (this.pendingCatalogFlush) {
+      return;
+    }
+    this.pendingCatalogFlush = setTimeout(() => {
+      this.pendingCatalogFlush = undefined;
+      this.lastCatalogFlushAt = Date.now();
+      void this.flushCatalogCache();
+    }, CATALOG_FLUSH_MIN_INTERVAL_MS - sinceLast);
+    this.pendingCatalogFlush.unref();
+  }
+
+  /** การล้างจริง — ไม่มี debounce (ใช้ภายในและตอน shutdown) */
+  private async flushCatalogCache(): Promise<void> {
     const indexKey = RedisKeys.catalogIndex();
     try {
       const keys = await this.cache.smembers(indexKey);
