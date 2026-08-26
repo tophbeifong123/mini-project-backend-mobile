@@ -50,7 +50,7 @@ COPY --from=builder /app/docs/Requirement/products-seed.json ./docs/Requirement/
 
 # entrypoint: migrate+seed บน app-1 เท่านั้น แล้วค่อย exec server
 COPY scripts/app-entrypoint.sh /app/scripts/app-entrypoint.sh
-RUN chmod +x /app/scripts/app-entrypoint.sh
+RUN sed -i 's/\r$//' /app/scripts/app-entrypoint.sh && chmod +x /app/scripts/app-entrypoint.sh
 
 # ไม่รันด้วย root
 USER node
