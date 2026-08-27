@@ -20,7 +20,7 @@ repo นี้มีทั้ง **เอกสารออกแบบ** แล
 
 ---
 
-## 0.1 🚧 สิ่งที่ **ยังไม่ได้ทำ** (อัปเดตหลัง design review รอบ 2 — 2026-08-26)
+## 0.1 🚧 สิ่งที่ **ยังไม่ได้ทำ** (อัปเดตหลังยิง k6 จริงครั้งแรก — 2026-08-27)
 
 > อ่านตารางนี้ก่อนจะพูดว่าอะไร "เสร็จแล้ว" — ของที่อยู่ในนี้คือของที่ **ยังไม่มีใครพิสูจน์**
 > รายละเอียดเต็มอยู่ใน [`handoff_log/handoff_26_08_2026_backend-implementation.md`](handoff_log/handoff_26_08_2026_backend-implementation.md) §5
@@ -29,15 +29,13 @@ repo นี้มีทั้ง **เอกสารออกแบบ** แล
 
 | อะไร | ทำไมถึงสำคัญ |
 | :--- | :--- |
-| **ไม่เคย `podman compose up -d`** | replication / healthcheck / entrypoint / ลำดับ seed ยังเป็นทฤษฎีล้วน — เครื่องที่พัฒนาไม่มี podman และ docker daemon ไม่ทำงาน |
-| **ไม่เคยยิง k6** | **ตัวเลข performance ทุกตัวในเอกสารเป็นค่าประมาณ** (p95 < 200ms, hit ratio ≥ 90%, "450 คนจบใน ~1ms") ห้ามเอาไปใส่รายงานว่าเป็นผลการวัด |
-| **ไม่เคยพิสูจน์ Data Integrity** | §9.3 ทั้ง 4 ข้อ (`remaining_stock = 0`, `orders = 50/50`, ไม่มีใครได้เกิน 1, Redis counter = `"0"`) ยังไม่เคยรันสักข้อ |
 | **ไม่เคยยิงข้ามกลุ่ม** | เป็น deliverable ตรงๆ (§9 ตารางเทียบกับกลุ่มเพื่อน) |
-| **ไม่มี e2e test** | `pnpm run test:e2e` exit non-zero ("no tests found") — มีแต่ unit test 32 ข้อ |
+| **ไม่มี e2e test** | `pnpm run test:e2e` exit non-zero ("no tests found") — มีแต่ unit test 35 ข้อ |
 | **ยังไม่ได้ทำรายงาน PDF** | diagram มีวัตถุดิบอยู่แล้วใน [`diagrams.md`](docs/Architecture/diagrams.md) แต่ยังไม่มีตัวรายงาน |
 | **ยังไม่ได้เก็บ dashboard** | Cache Hit/Miss (ใช้ `./scripts/cache-stats.sh`) และภาพ Bull-Board ตอน Completed = 50 |
+| **ยังไม่เคยยิงที่โหลดต่ำกว่าเพดาน** | ตัวเลข latency ที่มีตอนนี้มาจากการยิงเกินเพดานราว 2 เท่า ใช้เทียบกับกลุ่มเพื่อนตรงๆ ไม่ได้ — เพดานที่วัดได้คือ ~1,500 rps (ที่ 400 VUs: p95 237ms, error 0) |
 
-### ⚠️ 2 ข้อที่ต้องเช็คก่อน demo (ใช้เวลารวมไม่ถึงนาที)
+### ⚠️ ถ้าจะรันด้วย podman ต้องเช็คก่อน (บน `docker compose` ผ่านมาแล้ว)
 
 ```bash
 podman run --rm postgres:16-alpine bash -c 'echo ok'   # ถ้าไม่มี bash → replica ไม่ขึ้น → ทั้งระบบไม่ขึ้น
@@ -53,11 +51,25 @@ podman compose version                                  # podman-compose (python
 | `23505` ไม่คืนสต็อกใน Redis | ถูกต้องสำหรับเคสที่ตั้งใจ (retry ของ job ที่ commit แล้ว) แต่ถ้า `bought:` key หายและ job record เดิมถูก evict → Redis ต่ำกว่า DB ถาวร · **reviewer ทั้ง 3 เห็นตรงกันว่าปล่อยไว้ถูกแล้ว** — การคืนตรงนี้จะทำให้ retry ปกติคืนซ้ำ |
 | ไม่มี reconciliation Redis ↔ DB | ตัวจับ drift ตัวเดียวที่มีคือการรัน §9.3 ข้อ 4 ด้วยมือ |
 | `WORKER_CONCURRENCY` อ่านตอน decorate class | เห็นเฉพาะ env จริงของ container ปรับจาก `.env` แล้วไม่มีผล |
-| `proxy_read_timeout 5s` ใน nginx | มาจาก `architecture.md` §2 — ถ้า p99 จริงเกิน 5s จะกลายเป็น 504 |
+| `proxy_read_timeout 5s` ใน nginx | **ยืนยันแล้วว่าเกิดจริง** — ที่ 1,000 VUs มี 504 ระดับหมื่นครั้ง · ปล่อยไว้เพราะค่านี้มาจาก `architecture.md` §2 และการดันขึ้นแค่ซ่อนอาการ |
+| `reset` ไม่ล้าง BullMQ job | `jobId` เป็น deterministic (`order:{userId}:{productId}`) job เก่าจึงชนกับรอบใหม่ได้ · ต้องล้างเองด้วย `redis-cli --scan --pattern 'bull:orders:*' \| xargs redis-cli DEL` |
 | job stall เกิน `maxStalledCount` | BullMQ ทิ้ง job ไป `failed` **โดยไม่เรียก handler** → `compensateOnce` ไม่ทำงาน → สต็อกหาย 1 ชิ้น · เกิดได้เมื่อ event loop ตันเกิน 30 วิ |
 | ไม่มี e2e test | ทางเดียวที่จะพิสูจน์ทั้ง 4 เส้นทางคือยิงจริง |
 
-### ✅ ปิดไปแล้วรอบนี้ (2026-08-26 — design review รอบ 2)
+### ✅ ปิดไปแล้ว (2026-08-27 — ยิง k6 จริงครั้งแรก)
+
+> ทั้ง 3 ข้อเจอจากการรันจริง ไม่ใช่จากการอ่านโค้ด · ตัวเลขทั้งหมดใน
+> [`handoff_log/handoff_27_08_2026_load-test-first-run.md`](handoff_log/handoff_27_08_2026_load-test-first-run.md)
+
+| เดิม | แก้เป็นอะไร |
+| :--- | :--- |
+| ไฟล์ seed มีโหมด `-rwx------` บนโฮสต์ (SynologyDrive) · `COPY` คงโหมดไว้ → ในอิมเมจเป็น `root:root 0700` แต่รันด้วย `USER node` → `EACCES` → app-1 restart วน → **ทั้งสแตกไม่ขึ้น** | `Dockerfile` เพิ่ม `RUN chmod 0644` หลัง `COPY` |
+| `proxy_next_upstream` ใช้ default (`error timeout`) + `max_fails=3` → 1 คำขอที่ timeout กิน backend ครบ 3 ตัว แล้ว nginx ตัด backend ออกหมด → **502 จำนวน 115,005 ครั้ง และ write path ไม่ถูกทดสอบเลย** | `nginx.conf`: `proxy_next_upstream error;` + `max_fails=0` ทั้ง 3 upstream |
+| `gatekeeper()` ไม่มี `try/catch` · `commandTimeout` ยกเลิกแค่ฝั่ง client → Lua `DECR` ไปแล้วแต่แอปไม่รู้ → ไม่ชดเชย → **สต็อกหาย 8 ชิ้นจาก 50** | `compensate-if-reserved.lua` (ใหม่) ใช้ค่าใน `lock:order:*` เป็นหลักฐานแทนการเดา · ตอบ 503 แทน 500 · unit test เพิ่ม 3 ข้อ |
+
+**ผลหลังแก้ (k6 run 003):** §9.3 ผ่านครบ 4 ข้อ — `remaining_stock = 0` · `orders = 50/50` · Redis counter `"0"` · ไม่มีใครได้เกิน 1 ชิ้น · `202 accepted = 50` พอดี · `500 unhandled = 0`
+
+### ✅ ปิดไปแล้ว (2026-08-26 — design review รอบ 2)
 
 | เดิม | แก้เป็นอะไร |
 | :--- | :--- |

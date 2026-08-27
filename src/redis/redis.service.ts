@@ -27,6 +27,12 @@ interface LuaCommands {
     requestToken: string,
   ): Promise<number>;
 
+  compensateStockIfReserved(
+    stockKey: string,
+    lockKey: string,
+    requestToken: string,
+  ): Promise<number>;
+
   compensateStockOnce(
     guardKey: string,
     stockKey: string,
@@ -58,6 +64,11 @@ interface LuaScriptDefinition {
 const LUA_SCRIPTS: readonly LuaScriptDefinition[] = [
   { name: 'gatekeeper', file: 'gatekeeper.lua', numberOfKeys: 3 },
   { name: 'compensateStock', file: 'compensate.lua', numberOfKeys: 2 },
+  {
+    name: 'compensateStockIfReserved',
+    file: 'compensate-if-reserved.lua',
+    numberOfKeys: 2,
+  },
   { name: 'compensateStockOnce', file: 'compensate-once.lua', numberOfKeys: 3 },
   { name: 'releaseLock', file: 'release-lock.lua', numberOfKeys: 1 },
 ] as const;
@@ -178,6 +189,28 @@ export class RedisService implements OnModuleInit {
     requestToken: string,
   ): Promise<void> {
     await this.dataClient.compensateStock(
+      RedisKeys.stock(productId),
+      RedisKeys.orderLock(userId, productId),
+      requestToken,
+    );
+  }
+
+  /**
+   * ชดเชยเมื่อ **ไม่รู้ว่า gatekeeper รันไปหรือยัง** (เช่น ioredis โยน `Command timed out`)
+   *
+   * `commandTimeout` ยกเลิกแค่การรอฝั่ง client — คำสั่งที่ Redis รับไปแล้วยังรันจนจบ
+   * จึงห้ามเหมาว่า "ไม่สำเร็จ" แล้วเดินต่อ (สต็อกจะรั่ว) และห้ามเหมาว่า "สำเร็จ"
+   * แล้ว INCR ทิ้งไว้ (Redis จะสูงกว่า DB) — ให้ `compensate-if-reserved.lua`
+   * ใช้ค่าใน lock เป็นหลักฐานตัดสินแทนการเดา
+   *
+   * @returns 1 = พิสูจน์ได้ว่าจองไปแล้วและคืนเรียบร้อย · 0 = ไม่ได้จอง ไม่ได้แตะอะไร
+   */
+  async compensateIfReserved(
+    userId: string,
+    productId: string,
+    requestToken: string,
+  ): Promise<number> {
+    return this.dataClient.compensateStockIfReserved(
       RedisKeys.stock(productId),
       RedisKeys.orderLock(userId, productId),
       requestToken,

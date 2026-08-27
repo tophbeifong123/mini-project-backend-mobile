@@ -75,12 +75,30 @@ export class OrdersService {
     const requestToken = randomUUID();
 
     // ── Tier 1: Lua gatekeeper — 3 เช็ค + 2 เขียน ใน 1 roundtrip ที่ atomic ──
-    const verdict = await this.redis.gatekeeper(
-      userId,
-      productId,
-      requestToken,
-      this.lockTtlMs,
-    );
+    //
+    // ⚠️ ต้องมี try/catch — `commandTimeout: 1_000` (redis.module.ts) ยกเลิกแค่
+    //    "การรอ" ฝั่ง client เท่านั้น มันไม่มีทางยกเลิกคำสั่งที่ Redis รับไปรันแล้ว
+    //    ตอนโหลดพีคจน Redis ตอบช้ากว่า 1 วินาที Lua จะ **DECR ไปเรียบร้อยแล้ว**
+    //    แต่ฝั่งเราได้ error → ถ้าปล่อยให้ทะลุขึ้นไปเป็น 500 เฉยๆ จะไม่มีใครคืนสต็อก
+    //    (วัดจริงจาก k6 run 002: unhandled 8 ครั้ง = ของหาย 8 ชิ้นจาก 50 พอดี)
+    //
+    //    Lua atomic รับประกันว่า "รันครบหรือไม่รันเลย" แต่ไม่ได้รับประกันว่า
+    //    **ผู้เรียกจะได้รู้ผล** — สถานะที่สามนี้ต้องจัดการเอง (CLAUDE.md §4 ข้อ 6)
+    let verdict: number;
+    try {
+      verdict = await this.redis.gatekeeper(
+        userId,
+        productId,
+        requestToken,
+        this.lockTtlMs,
+      );
+    } catch (err) {
+      await this.compensateIfReserved(userId, productId, jobId, requestToken);
+      this.logger.error(
+        `gatekeeper failed for ${jobId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw new ServiceUnavailableException('Stock service unavailable');
+    }
 
     switch (verdict) {
       case GatekeeperVerdict.ALREADY_PURCHASED:
@@ -191,6 +209,42 @@ export class OrdersService {
         `getJob failed for ${jobId}: ${err instanceof Error ? err.message : String(err)}`,
       );
       return null;
+    }
+  }
+
+  /**
+   * ชดเชยเมื่อ **ยืนยันไม่ได้** ว่า gatekeeper รันไปหรือยัง
+   *
+   * ห้ามใช้ `compensate()` ตรงนี้เด็ดขาด — `compensate.lua` สั่ง `INCR` โดยไม่มีเงื่อนไข
+   * ถ้า Lua ไม่เคยรัน (เช่น Redis หลุดก่อนรับคำสั่ง) จะกลายเป็นการเพิ่มสต็อกลอยๆ
+   * → Redis สูงกว่า DB → ปล่อยคนที่ 51 เข้ามา ซึ่งแย่กว่าปัญหาเดิม
+   *
+   * `compensate-if-reserved.lua` เช็ค `lock:order:*` ว่าเป็น `requestToken` ของเราไหม
+   * ก่อนตัดสินใจ — lock จะมีค่านั้นได้ก็ต่อเมื่อ gatekeeper.lua รันถึงบรรทัด SET
+   * ซึ่ง atomic คู่กับ DECR อยู่แล้ว จึงปลอดภัยทั้งสองทาง
+   */
+  private async compensateIfReserved(
+    userId: string,
+    productId: string,
+    jobId: string,
+    requestToken: string,
+  ): Promise<void> {
+    try {
+      const restored = await this.redis.compensateIfReserved(
+        userId,
+        productId,
+        requestToken,
+      );
+      if (restored === 1) {
+        this.logger.warn(
+          `gatekeeper timed out but the reservation was real — stock restored for ${jobId}`,
+        );
+      }
+    } catch (err) {
+      // ชดเชยไม่สำเร็จ = สต็อกหาย 1 ชิ้น ต้องดังที่สุดเพื่อให้ตามเก็บได้
+      this.logger.error(
+        `COMPENSATION FAILED for ${jobId} — stock may have leaked by 1: ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 

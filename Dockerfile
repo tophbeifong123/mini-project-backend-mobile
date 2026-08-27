@@ -47,6 +47,10 @@ COPY --from=builder /app/src/redis/lua ./dist/redis/lua
 # ข้อมูลตั้งต้นสำหรับ seed — dist/database/migrate-and-seed.js อ่านไฟล์นี้
 # path ตรงกันทั้งตอนรัน ts-node (<repo>/docs/...) และตอนรัน dist (/app/docs/...)
 COPY --from=builder /app/docs/Requirement/products-seed.json ./docs/Requirement/products-seed.json
+# ⚠️ COPY คงโหมดของไฟล์ต้นทางไว้ — บาง checkout (เช่นบน SynologyDrive) ไฟล์เป็น
+# `-rwx------` ทำให้ในอิมเมจเป็น root:root 0700 แล้ว `USER node` อ่านไม่ได้
+# → seed ล้มด้วย EACCES → app-1 restart วน → ทั้งสแตกไม่ขึ้น
+RUN chmod 0644 ./docs/Requirement/products-seed.json
 
 # entrypoint: migrate+seed บน app-1 เท่านั้น แล้วค่อย exec server
 COPY scripts/app-entrypoint.sh /app/scripts/app-entrypoint.sh

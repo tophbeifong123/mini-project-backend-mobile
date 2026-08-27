@@ -11,7 +11,9 @@ import { OrderJobData, OrdersService } from './orders.service';
 
 describe('OrdersService', () => {
   type QueueMock = jest.Mocked<Pick<Queue, 'add' | 'getJob'>>;
-  type RedisMock = jest.Mocked<Pick<RedisService, 'gatekeeper' | 'compensate'>>;
+  type RedisMock = jest.Mocked<
+    Pick<RedisService, 'gatekeeper' | 'compensate' | 'compensateIfReserved'>
+  >;
 
   let service: OrdersService;
   let queue: QueueMock;
@@ -48,8 +50,11 @@ describe('OrdersService', () => {
     redis = {
       gatekeeper: jest.fn(),
       compensate: jest.fn(),
+      compensateIfReserved: jest.fn(),
     };
     redis.compensate.mockResolvedValue(undefined);
+    // 0 = ไม่พบ lock ของเรา → gatekeeper ไม่ได้รัน → ไม่มีอะไรต้องคืน
+    redis.compensateIfReserved.mockResolvedValue(0);
 
     const config = {
       get: jest.fn((_key: string, defaultValue: unknown) => defaultValue),
@@ -234,6 +239,52 @@ describe('OrdersService', () => {
 
       expect(error).toBeInstanceOf(ServiceUnavailableException);
       expect(redis.compensate).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('gatekeeper throws: commandTimeout cancels the WAIT, not the command', () => {
+    // k6 run 002 (2026-08-27): ioredis โยน `Command timed out` 8 ครั้ง → 500 → ไม่มีใครคืนสต็อก
+    // → ของหาย 8 ชิ้นจาก 50 พอดี (DB remaining_stock = 8, orders = 42/50)
+
+    it('restores the stock when the lock proves the reservation was real', async () => {
+      redis.gatekeeper.mockRejectedValue(new Error('Command timed out'));
+      redis.compensateIfReserved.mockResolvedValue(1); // lock ถือ token ของเรา = DECR เกิดขึ้นแล้ว
+
+      await expect(
+        service.createOrder(userId, productId),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+      expect(redis.compensateIfReserved).toHaveBeenCalledTimes(1);
+      // ต้องคืนด้วย token ตัวเดียวกับที่ gatekeeper พยายามเขียนลง lock
+      const [, , attemptedToken] = redis.gatekeeper.mock.calls[0];
+      const [, , compensatedToken] = redis.compensateIfReserved.mock.calls[0];
+      expect(compensatedToken).toBe(attemptedToken);
+
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it('never uses the unconditional compensate() — that would put Redis ahead of the DB', async () => {
+      redis.gatekeeper.mockRejectedValue(new Error('Command timed out'));
+      redis.compensateIfReserved.mockResolvedValue(0); // Lua ไม่เคยรัน
+
+      await expect(
+        service.createOrder(userId, productId),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
+
+      // compensate() สั่ง INCR โดยไม่มีเงื่อนไข — เรียกตรงนี้เมื่อไหร่ = เติมสต็อกลอยๆ
+      expect(redis.compensate).not.toHaveBeenCalled();
+      expect(redis.compensateIfReserved).toHaveBeenCalledTimes(1);
+    });
+
+    it('still answers 503 when the compensation itself fails, and does not mask it as 500', async () => {
+      redis.gatekeeper.mockRejectedValue(new Error('Command timed out'));
+      redis.compensateIfReserved.mockRejectedValue(
+        new Error('redis-data down'),
+      );
+
+      await expect(
+        service.createOrder(userId, productId),
+      ).rejects.toBeInstanceOf(ServiceUnavailableException);
     });
   });
 
