@@ -20,7 +20,8 @@ import exec from 'k6/execution';
 import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
-const BASE_URL = __ENV.BASE_URL || 'http://localhost:8080';
+const BASE_URL = (__ENV.BASE_URL || 'http://localhost:8080').replace(/\/+$/, '');
+const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '10s';
 
 // สินค้าเป้าหมายของ write burst — availableStock = 50 (products-seed.json)
 const TARGET_PRODUCT_ID = __ENV.TARGET_PRODUCT_ID || 'p-1001';
@@ -57,7 +58,7 @@ export const options = {
       // 1,000 concurrent readers
       executor: 'constant-vus',
       vus: 1000,
-      duration: '60s',
+      duration: '30s',
       exec: 'readProducts',
       startTime: '5s',
       tags: { scenario_kind: 'read' },
@@ -68,8 +69,8 @@ export const options = {
       vus: 500,
       iterations: 3,
       exec: 'placeOrder',
-      startTime: '20s',
-      maxDuration: '30s',
+      startTime: '10s',
+      maxDuration: '20s',
       tags: { scenario_kind: 'write' },
     },
   },
@@ -93,6 +94,7 @@ export function setup() {
       `${BASE_URL}/api/v1/auth/token`,
       JSON.stringify({ userId }),
       {
+        timeout: REQ_TIMEOUT,
         headers: { 'Content-Type': 'application/json' },
         tags: { name: 'setup:auth-token' },
       },
@@ -141,7 +143,10 @@ export function readProducts() {
 
   const res = http.get(
     `${BASE_URL}/api/v1/products?page=${page}&limit=${limit}`,
-    { tags: { name: 'GET /api/v1/products' } },
+    {
+      timeout: REQ_TIMEOUT,
+      tags: { name: 'GET /api/v1/products' },
+    },
   );
 
   readLatency.add(res.timings.duration);
@@ -216,6 +221,7 @@ export function placeOrder(data) {
     `${BASE_URL}/api/v1/orders`,
     JSON.stringify({ productId: TARGET_PRODUCT_ID }),
     {
+      timeout: REQ_TIMEOUT,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${token}`,
@@ -229,7 +235,10 @@ export function placeOrder(data) {
   // ✅ ทุก status ด้านล่างคือ "ระบบทำงานถูกต้อง" — ไม่ใช่ error
   check(res, {
     'order: status เป็นค่าที่คาดไว้ (202/409/429/503)': (r) =>
-      r.status === 202 || r.status === 409 || r.status === 429 || r.status === 503,
+      r.status === 202 ||
+      r.status === 409 ||
+      r.status === 429 ||
+      r.status === 503,
   });
 
   switch (res.status) {
@@ -245,7 +254,9 @@ export function placeOrder(data) {
         },
         'order 202: orderJobId === order:{userId}:{productId}': (r) => {
           try {
-            return r.json('orderJobId') === `order:${userId}:${TARGET_PRODUCT_ID}`;
+            return (
+              r.json('orderJobId') === `order:${userId}:${TARGET_PRODUCT_ID}`
+            );
           } catch (e) {
             return false;
           }
@@ -256,12 +267,16 @@ export function placeOrder(data) {
     case 409:
       // ซื้อไปแล้ว หรือ ของหมด — ถูกต้องตามโจทย์
       orders409.add(1);
-      check(res, { 'order 409: duplicate/sold-out (correct behaviour)': () => true });
+      check(res, {
+        'order 409: duplicate/sold-out (correct behaviour)': () => true,
+      });
       break;
     case 429:
       // กดรัวขณะมี order in-flight — หลักฐานว่า lock ทำงาน
       orders429.add(1);
-      check(res, { 'order 429: in-flight lock hit (correct behaviour)': () => true });
+      check(res, {
+        'order 429: in-flight lock hit (correct behaviour)': () => true,
+      });
       break;
     case 503:
       // stock counter ยังไม่ถูก seed — ต้องแยกจาก "ของหมด" ให้ชัด
@@ -312,11 +327,19 @@ export function handleSummary(data) {
   lines.push('');
   lines.push('  READ PATH — GET /api/v1/products');
   lines.push(`    200 OK                     : ${c('reads_ok_200')}`);
-  lines.push(`    contract violations        : ${c('reads_bad_contract')}   (ต้อง = 0)`);
-  lines.push(`    p95 latency                : ${trend('read_products_latency', 'p(95)')} ms`);
-  lines.push(`    avg latency                : ${trend('read_products_latency', 'avg')} ms`);
+  lines.push(
+    `    contract violations        : ${c('reads_bad_contract')}   (ต้อง = 0)`,
+  );
+  lines.push(
+    `    p95 latency                : ${trend('read_products_latency', 'p(95)')} ms`,
+  );
+  lines.push(
+    `    avg latency                : ${trend('read_products_latency', 'avg')} ms`,
+  );
   lines.push('');
-  lines.push('  WRITE PATH — POST /api/v1/orders   (409/429 = ถูกต้อง ไม่ใช่ error)');
+  lines.push(
+    '  WRITE PATH — POST /api/v1/orders   (409/429 = ถูกต้อง ไม่ใช่ error)',
+  );
   lines.push(`    202 accepted (เข้าคิว)      : ${accepted}`);
   lines.push(`    409 conflict (ซ้ำ/ของหมด)   : ${conflict}`);
   lines.push(`    429 throttled (กดรัว)       : ${throttled}`);
@@ -325,13 +348,21 @@ export function handleSummary(data) {
   lines.push(`    ⚠️ unexpected status        : ${unexpected}   (ต้อง = 0)`);
   lines.push(`    ────────────────────────────────────────────`);
   lines.push(`    total order requests       : ${totalOrders}`);
-  lines.push(`    p95 latency                : ${trend('place_order_latency', 'p(95)')} ms`);
+  lines.push(
+    `    p95 latency                : ${trend('place_order_latency', 'p(95)')} ms`,
+  );
   lines.push('');
   lines.push('  ตรวจ Data Integrity ต่อ (architecture.md §9.3):');
-  lines.push("    psql: SELECT remaining_stock FROM products WHERE id = 'p-1001';   -- ต้อง = 0");
-  lines.push("    psql: SELECT COUNT(*), COUNT(DISTINCT user_id) FROM orders");
-  lines.push("            WHERE product_id = 'p-1001';                             -- ต้อง = 50, 50");
-  lines.push('    redis-cli -p 6380 GET stock:flash_sale:p-1001                    -- ต้อง = "0"');
+  lines.push(
+    "    psql: SELECT remaining_stock FROM products WHERE id = 'p-1001';   -- ต้อง = 0",
+  );
+  lines.push('    psql: SELECT COUNT(*), COUNT(DISTINCT user_id) FROM orders');
+  lines.push(
+    "            WHERE product_id = 'p-1001';                             -- ต้อง = 50, 50",
+  );
+  lines.push(
+    '    redis-cli -p 6380 GET stock:flash_sale:p-1001                    -- ต้อง = "0"',
+  );
   lines.push('══════════════════════════════════════════════════════════════');
   lines.push('');
 

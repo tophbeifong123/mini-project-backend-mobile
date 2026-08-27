@@ -177,7 +177,7 @@ services:
       DB_DATABASE: flashsale
       DB_REPLICA_HOST: postgres-replica
       DB_REPLICA_PORT: "5432"
-      DB_POOL_SIZE: "10"
+      DB_POOL_SIZE: "8"
 
       REDIS_CACHE_HOST: redis-cache
       REDIS_CACHE_PORT: "6379"
@@ -233,7 +233,7 @@ services:
       DB_DATABASE: flashsale
       DB_REPLICA_HOST: postgres-replica
       DB_REPLICA_PORT: "5432"
-      DB_POOL_SIZE: "10"
+      DB_POOL_SIZE: "8"
 
       REDIS_CACHE_HOST: redis-cache
       REDIS_CACHE_PORT: "6379"
@@ -288,7 +288,172 @@ services:
       DB_DATABASE: flashsale
       DB_REPLICA_HOST: postgres-replica
       DB_REPLICA_PORT: "5432"
-      DB_POOL_SIZE: "10"
+      DB_POOL_SIZE: "8"
+
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_CACHE_PORT: "6379"
+      REDIS_DATA_HOST: redis-data
+      REDIS_DATA_PORT: "6379"
+
+      CATALOG_CACHE_TTL_BASE: "30"
+      CATALOG_CACHE_TTL_JITTER: "30"
+      ORDER_LOCK_TTL_MS: "30000"
+      WORKER_CONCURRENCY: "5"
+
+      BULL_BOARD_USER: admin
+      BULL_BOARD_PASSWORD: admin
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-data:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  # ===========================================================================
+  # NestJS app-4
+  # ===========================================================================
+  app-4:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flash-sale-backend:latest
+    container_name: fs-app-4
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      INSTANCE_ID: app-4
+
+      JWT_SECRET: flash-sale-dev-secret-change-me
+      JWT_EXPIRES_IN: 15m
+
+      DB_HOST: postgres-primary
+      DB_PORT: "5432"
+      DB_USERNAME: flashsale
+      DB_PASSWORD: flashsale
+      DB_DATABASE: flashsale
+      DB_REPLICA_HOST: postgres-replica
+      DB_REPLICA_PORT: "5432"
+      DB_POOL_SIZE: "8"
+
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_CACHE_PORT: "6379"
+      REDIS_DATA_HOST: redis-data
+      REDIS_DATA_PORT: "6379"
+
+      CATALOG_CACHE_TTL_BASE: "30"
+      CATALOG_CACHE_TTL_JITTER: "30"
+      ORDER_LOCK_TTL_MS: "30000"
+      WORKER_CONCURRENCY: "5"
+
+      BULL_BOARD_USER: admin
+      BULL_BOARD_PASSWORD: admin
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-data:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  # ===========================================================================
+  # NestJS app-5
+  # ===========================================================================
+  app-5:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flash-sale-backend:latest
+    container_name: fs-app-5
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      INSTANCE_ID: app-5
+
+      JWT_SECRET: flash-sale-dev-secret-change-me
+      JWT_EXPIRES_IN: 15m
+
+      DB_HOST: postgres-primary
+      DB_PORT: "5432"
+      DB_USERNAME: flashsale
+      DB_PASSWORD: flashsale
+      DB_DATABASE: flashsale
+      DB_REPLICA_HOST: postgres-replica
+      DB_REPLICA_PORT: "5432"
+      DB_POOL_SIZE: "8"
+
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_CACHE_PORT: "6379"
+      REDIS_DATA_HOST: redis-data
+      REDIS_DATA_PORT: "6379"
+
+      CATALOG_CACHE_TTL_BASE: "30"
+      CATALOG_CACHE_TTL_JITTER: "30"
+      ORDER_LOCK_TTL_MS: "30000"
+      WORKER_CONCURRENCY: "5"
+
+      BULL_BOARD_USER: admin
+      BULL_BOARD_PASSWORD: admin
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-data:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  # ===========================================================================
+  # NestJS app-6
+  # ===========================================================================
+  app-6:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: flash-sale-backend:latest
+    container_name: fs-app-6
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      INSTANCE_ID: app-6
+
+      JWT_SECRET: flash-sale-dev-secret-change-me
+      JWT_EXPIRES_IN: 15m
+
+      DB_HOST: postgres-primary
+      DB_PORT: "5432"
+      DB_USERNAME: flashsale
+      DB_PASSWORD: flashsale
+      DB_DATABASE: flashsale
+      DB_REPLICA_HOST: postgres-replica
+      DB_REPLICA_PORT: "5432"
+      DB_POOL_SIZE: "8"
 
       REDIS_CACHE_HOST: redis-cache
       REDIS_CACHE_PORT: "6379"
@@ -335,6 +500,12 @@ services:
       app-2:
         condition: service_healthy
       app-3:
+        condition: service_healthy
+      app-4:
+        condition: service_healthy
+      app-5:
+        condition: service_healthy
+      app-6:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health/live || exit 1"]
