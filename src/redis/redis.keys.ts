@@ -24,4 +24,7 @@ export const RedisKeys = {
 
   /** redis-cache · SET ของ catalog key ที่ยังมีชีวิต -> invalidate ได้โดยไม่ต้องใช้ KEYS */
   catalogIndex: (): string => `catalog:index`,
+
+  /** redis-cache · distributed throttle key สำหรับ invalidation ข้าม instance */
+  catalogFlushThrottle: (): string => `catalog:flush_throttle`,
 } as const;

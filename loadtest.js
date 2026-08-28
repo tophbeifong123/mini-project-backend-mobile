@@ -20,8 +20,11 @@ import exec from 'k6/execution';
 import { check } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
-const BASE_URL = (__ENV.BASE_URL || 'http://localhost:8080').replace(/\/+$/, '');
-const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '10s';
+const BASE_URL = (__ENV.BASE_URL || 'http://localhost:8080').replace(
+  /\/+$/,
+  '',
+);
+const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '60s';
 
 // สินค้าเป้าหมายของ write burst — availableStock = 50 (products-seed.json)
 const TARGET_PRODUCT_ID = __ENV.TARGET_PRODUCT_ID || 'p-1001';

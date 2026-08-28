@@ -107,17 +107,8 @@ const usePretty =
           ],
         },
 
-        autoLogging: {
-          // Bull-Board ยิง asset ย่อยเยอะมาก ไม่ต้อง log
-          ignore: (req: IncomingMessage) =>
-            (req.url ?? '').startsWith('/admin/queues') ||
-            (req.url ?? '').startsWith('/health/live'),
-        },
-
-        customSuccessMessage: (req: IncomingMessage, res: ServerResponse) =>
-          `${req.method ?? ''} ${req.url ?? ''} -> ${res.statusCode}`,
-        customErrorMessage: (req: IncomingMessage, res: ServerResponse) =>
-          `${req.method ?? ''} ${req.url ?? ''} -> ${res.statusCode} (failed)`,
+        // autoLogging ปิดไว้เพื่อไม่ให้ซ้ำซ้อนกับ LoggingInterceptor ที่ให้ข้อมูล durationMs + correlationId ละเอียดกว่า
+        autoLogging: false,
 
         transport: usePretty
           ? {

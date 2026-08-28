@@ -306,7 +306,7 @@ export class RedisService implements OnModuleInit {
   }
 
   /**
-   * ล้าง metadata cache ทั้งหมด — **debounce ไม่เกิน 1 ครั้ง/วินาที**
+   * ล้าง metadata cache ทั้งหมด — **distributed debounce ไม่เกิน 1 ครั้ง/วินาที ข้ามทุก instance**
    *
    * โจทย์ข้อ 2.3 กฎ 4 บังคับให้ invalidate หลัง DB update สำเร็จ ซึ่งยังทำอยู่
    * แต่ของ 50 ชิ้นขายหมดใน window ~300ms = ล้างทั้งแคช 50 ครั้งรวดตอนที่
@@ -315,8 +315,7 @@ export class RedisService implements OnModuleInit {
    * ตัวที่ทำให้ `remainingStock` ถูกต้องคือ stock overlay (§5.2) ไม่ใช่การ invalidate
    * การล้างแคชมีไว้เผื่อ metadata เปลี่ยน (เช่น `isFlashSaleActive`) ซึ่ง 1 วินาทีถือว่าสด
    *
-   * เป็น **trailing debounce** ไม่ใช่การทิ้ง — คำขอที่ตกอยู่ใน window
-   * จะถูกรวบไปทำรอบเดียวหลังครบ 1 วิ จึงไม่มีการล้างที่หายไปเฉยๆ
+   * ประสานงานระหว่าง 6 instance ด้วย distributed throttle บน redis-cache + trailing timer ในตัว
    *
    * ❌ ห้ามใช้ `KEYS pattern` (O(N) + บล็อก Redis ทั้งตัว — CLAUDE.md §6)
    */
@@ -326,7 +325,10 @@ export class RedisService implements OnModuleInit {
 
     if (sinceLast >= CATALOG_FLUSH_MIN_INTERVAL_MS) {
       this.lastCatalogFlushAt = now;
-      await this.flushCatalogCache();
+      const acquired = await this.tryAcquireFlushThrottle();
+      if (acquired) {
+        await this.flushCatalogCache();
+      }
       return;
     }
 
@@ -337,9 +339,32 @@ export class RedisService implements OnModuleInit {
     this.pendingCatalogFlush = setTimeout(() => {
       this.pendingCatalogFlush = undefined;
       this.lastCatalogFlushAt = Date.now();
-      void this.flushCatalogCache();
+      void this.tryAcquireFlushThrottle().then((acquired) => {
+        if (acquired) {
+          return this.flushCatalogCache();
+        }
+      });
     }, CATALOG_FLUSH_MIN_INTERVAL_MS - sinceLast);
     this.pendingCatalogFlush.unref();
+  }
+
+  /**
+   * จองสิทธิ์ flush ระดับ distributed เพื่อไม่ให้ 6 instances แย่งกัน flush ซ้ำซ้อน
+   */
+  private async tryAcquireFlushThrottle(): Promise<boolean> {
+    try {
+      const res = await this.cache.set(
+        RedisKeys.catalogFlushThrottle(),
+        '1',
+        'PX',
+        CATALOG_FLUSH_MIN_INTERVAL_MS,
+        'NX',
+      );
+      return res === 'OK';
+    } catch {
+      // ถ้า redis-cache สะดุด ให้ fallback ยอมให้ flush ได้
+      return true;
+    }
   }
 
   /** การล้างจริง — ไม่มี debounce (ใช้ภายในและตอน shutdown) */

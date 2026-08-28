@@ -27,6 +27,13 @@ services:
     image: postgres:16-alpine
     container_name: fs-postgres-primary
     restart: unless-stopped
+    mem_limit: 1024m
+    cpus: "1.0"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       POSTGRES_USER: flashsale
       POSTGRES_PASSWORD: flashsale
@@ -78,6 +85,13 @@ services:
     image: postgres:16-alpine
     container_name: fs-postgres-replica
     restart: unless-stopped
+    mem_limit: 1024m
+    cpus: "1.0"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       PGPASSWORD: replpass
       POSTGRES_REPLICATION_USER: replicator
@@ -101,6 +115,8 @@ services:
       # standby ต้องมี max_connections ไม่น้อยกว่า primary ไม่งั้นไม่ยอม start
       - -c
       - max_connections=100
+      - -c
+      - shared_buffers=256MB
     healthcheck:
       # ต้องพร้อมใช้งาน "และ" อยู่ในโหมด recovery จริง (คือ streaming อยู่)
       test:
@@ -118,6 +134,13 @@ services:
     image: redis:7-alpine
     container_name: fs-redis-cache
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "6379:6379"
     volumes:
@@ -137,6 +160,13 @@ services:
     image: redis:7-alpine
     container_name: fs-redis-data
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "6380:6379"
     volumes:
@@ -160,8 +190,16 @@ services:
     image: flash-sale-backend:latest
     container_name: fs-app-1
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.75"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-1
       # migration + seed DB + seed Redis stock ทำที่ instance นี้เท่านั้น
@@ -218,8 +256,16 @@ services:
     image: flash-sale-backend:latest
     container_name: fs-app-2
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.75"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-2
 
@@ -273,8 +319,16 @@ services:
     image: flash-sale-backend:latest
     container_name: fs-app-3
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.75"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-3
 
@@ -328,8 +382,16 @@ services:
     image: flash-sale-backend:latest
     container_name: fs-app-4
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.75"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-4
 
@@ -383,8 +445,16 @@ services:
     image: flash-sale-backend:latest
     container_name: fs-app-5
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.75"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-5
 
@@ -438,8 +508,16 @@ services:
     image: flash-sale-backend:latest
     container_name: fs-app-6
     restart: unless-stopped
+    mem_limit: 512m
+    cpus: "0.75"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     environment:
       NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-6
 
@@ -490,6 +568,13 @@ services:
     image: nginx:alpine
     container_name: fs-nginx
     restart: unless-stopped
+    mem_limit: 256m
+    cpus: "0.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
     ports:
       - "8080:80"
     volumes:
