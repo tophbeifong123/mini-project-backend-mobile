@@ -543,7 +543,16 @@ async createOrder(userId: string, productId: string) {
   // และเป็นตัวพิสูจน์ว่า job ที่อยู่ในคิวเป็นของคำขอนี้
   const requestToken = randomUUID();
 
-  const verdict = await this.redis.gatekeeper(userId, productId, requestToken, LOCK_TTL_MS);
+  // ⚠️ ต้องมี try/catch — `commandTimeout` (redis.module.ts) ยกเลิกแค่การรอฝั่ง client
+  // ถ้า Lua "รันถึง DECR ไปแล้ว" ก่อนจะ timeout ฝั่งเราจะไม่รู้ผล ต้องชดเชยแบบ "เดาไม่ได้"
+  // (compensateIfReserved ใช้ค่าใน lock:order:* เป็นหลักฐานแทนการเดา — ดู §6.3 ตารางชดเชย)
+  let verdict: number;
+  try {
+    verdict = await this.redis.gatekeeper(userId, productId, requestToken, LOCK_TTL_MS);
+  } catch (err) {
+    await this.compensateIfReserved(userId, productId, jobId, requestToken);
+    throw new ServiceUnavailableException('Stock service unavailable');
+  }
 
   switch (verdict) {
     case -1: throw new ConflictException('You already purchased this product');
@@ -710,7 +719,13 @@ CONSTRAINT chk_positive_stock CHECK (remaining_stock >= 0)
 
 Constraint คือด่านที่ **ไม่พึ่งความถูกต้องของโค้ดเลย** — ต่อให้ Redis พัง, worker มีบั๊ก, หรือมี process แปลกปลอมเขียนเข้ามา ฐานข้อมูลก็ยังปฏิเสธ. ทุกอย่างข้างบนคือ optimization เพื่อ *ไม่ให้ traffic ไปถึงตรงนี้*, ส่วนตรงนี้คือ *ความถูกต้อง*
 
-Error mapping: `23505` → 409 · `23514` (check) → 400 · `40P01` (deadlock) → retry แบบ exponential + jitter *(B03)*
+Error mapping (**ในตัว worker ไม่ใช่ HTTP** — client ได้ 202 ไปตั้งแต่ตอน enqueue แล้ว จึงไม่มี error ตัวไหนกลายเป็น status code ให้ client เห็น · ดู `orders.processor.ts`):
+
+| code | worker ทำอะไร |
+| :--- | :--- |
+| `23505` unique_violation | `return { status: 'already_confirmed' }` — **ไม่ retry ไม่คืนสต็อก** (idempotency) |
+| `23514` check_violation | ไม่มี branch แยก → ตกไป transient (retry) · **เข้าไม่ถึงโดยการออกแบบ** เพราะ `WHERE remaining_stock > 0` กัน `chk_positive_stock` ไว้แล้ว (ยืนยัน 2026-08-29 · ดู `diagrams.md` §6.2) |
+| `40P01` deadlock | retry แบบ exponential + jitter · compensate เฉพาะ attempt สุดท้าย *(B03)* |
 
 ---
 
@@ -767,9 +782,9 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 | RAM | **6 GB** | redis จองไว้แล้ว 768 MB (256 + 512) · PG primary `shared_buffers=256MB` · PG replica default 128MB · ที่เหลือหาร 6 Node process |
 | Storage | **30 GB** | ดู §8.2 ข้อ 3 |
 
-> ⚠️ **ไม่มี resource limit เลย** — `docker-compose.yml` ไม่มี `mem_limit` / `cpus` / `deploy.resources`
-> และ `Dockerfile` ไม่ได้ตั้ง `NODE_OPTIONS` / `--max-old-space-size`
-> → V8 ของทั้ง 6 process คำนวณ heap จาก RAM ของ **โฮสต์ (6 GB)** แต่ละตัว — ไม่มีอะไรคุมผลรวม
+> ✅ **แก้แล้ว (2026-08-28)** — เดิมไม่มี resource limit เลย ตอนนี้ `docker-compose.yml` มี `mem_limit`/`cpus`
+> ทุก service แล้ว (app-N: `mem_limit 512m`, `cpus 0.75`) และ `NODE_OPTIONS: "--max-old-space-size=384"`
+> ใน environment ของ app-N ด้วย — ดู `handoff_log/handoff_28_08_2026_performance-tuning-and-review-fixes.md` ข้อ 3
 
 ### 8.2 🧭 เพดานจริงอยู่ตรงไหน (จุดที่จะตันก่อน)
 
@@ -780,18 +795,20 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 2. **`redis-data` เป็น single thread ตัวเดียว** ที่รับงานทั้ง 4 อย่างพร้อมกัน:
    `gatekeeper.lua` (write) · BullMQ queue · `MGET stock:*` **ทุก read request ไม่เคยแคช** · AOF fsync
    → เพิ่ม app instance = เพิ่มโหลดให้ redis ตัวเดียวนี้ตรงๆ
-3. **Disk 30 GB — log ไม่มี rotation** `docker-compose.yml` ไม่มี `logging:` สัก service → json-file driver โตไม่จำกัด
-   และ **1 API request = ≈ 3 บรรทัด JSON log** (pino-http + `LoggingInterceptor` + nginx access log) ≈ 600–800 bytes
-   → ทดสอบระดับล้าน request กิน disk ระดับ GB
+3. **Disk 30 GB — log rotation** ✅ **แก้แล้ว (2026-08-28)**: ทุก service ใน `docker-compose.yml` มี `logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}` แล้ว
+   และตัด duplicate logging ออกแล้ว (`pino-http autoLogging: false` — เหลือ **1 บรรทัด/request** ไม่ใช่ 3 เหมือนเดิม)
 4. **Row lock แถวเดียว** — 30 concurrent worker ทั้งคลัสเตอร์ `UPDATE products` ของ `p-1001` แถวเดียวกัน
    จำนวน worker ที่เพิ่มจึง **ไม่ช่วยให้ขายเร็วขึ้น** — มีแต่ค้างรอโดยกิน pool connection ไว้
 5. **single-flight เป็น per-process** (`products.service.ts` ใช้ `Map` ใน RAM)
    แคชหลุดทีไร → มี **6 query วิ่งเข้า replica พร้อมกัน** (ไม่ใช่ 1) — เพิ่ม instance = เพิ่มจำนวนนี้
-6. **`invalidateCatalogCache()` debounce เป็น per-process** — ≤ 1 ครั้ง/วินาที **ต่อ process**
-   6 instance → flush ได้ถึง 6 ครั้ง/วินาที → ตี read path แรงขึ้นตามจำนวน instance
+6. ~~`invalidateCatalogCache()` debounce เป็น per-process~~ ✅ **แก้แล้ว (2026-08-28) — ไม่ใช่บั๊กอีกต่อไป**
+   เดิมกลัวว่า 6 instance จะ flush ได้ถึง 6 ครั้ง/วินาที เพราะ debounce เป็น `Map` ใน RAM ต่อ process
+   ตอนนี้ `redis.service.ts` ใช้ **distributed throttle** ข้าม instance จริง: หลัง per-process debounce แล้ว
+   ต้องแย่งชิง `SET catalog:flush_throttle 1 PX 1000 NX` บน `redis-cache` ก่อน — เฉพาะ instance ที่ชนะถึงจะ flush จริง
+   ผลคือ flush ทั้งคลัสเตอร์ไม่เกิน **1 ครั้ง/วินาทีจริง** ไม่ใช่ 6 ครั้ง (`RedisKeys.catalogFlushThrottle()`)
 
 > **สรุป**: ข้อ 1–2 ทำให้การเพิ่ม instance จาก 6 เป็น 8–10 บน VM ตัวนี้ **ได้ผลลดลงหรือติดลบ**
-> ข้อ 5–6 ทำให้การเพิ่ม instance **ไปเพิ่มโหลดให้ replica และ redis-cache** ด้วย
+> ข้อ 5 ทำให้การเพิ่ม instance **ไปเพิ่มโหลดให้ replica** ด้วย (ข้อ 6 แก้แล้ว ไม่เพิ่มโหลดให้ redis-cache อีกต่อไป)
 > จุดที่ยังมีที่ว่างจริงคือ **connection headroom (48/80)** และ **RAM** — ไม่ใช่ CPU
 
 > **ข้อควรระวัง (แก้ 2026-08-26)** — ฉบับก่อนเขียนว่า "ทั้ง API และ worker แย่ง pool ตัวเดียวกัน" **ซึ่งไม่จริงกับโค้ดที่เขียนจริง**

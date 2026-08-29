@@ -148,6 +148,7 @@ flowchart TD
     P32 -->|"SET lock PX 30000"| DS3
     P32 -->|"verdict = 1 (ผ่าน)"| P33
     P32 -.->|"verdict = -1/-2/-3/-4"| P35
+    P32 -.->|"เรียกล้มเหลว/timeout ⚠️<br/>(ไม่รู้ว่า DECR ไปแล้วหรือยัง)"| P34
 
     P33 -->|"add job (jobId เดิมซ้ำได้ไม่มีผล)"| DS4
     P33 -->|"enqueue สำเร็จ"| P35
@@ -164,6 +165,7 @@ flowchart TD
 ```
 
 > ⚠️ **Process 3.4 คือจุดที่ blueprint ฉบับเก่าไม่มี** — ถ้า 3.3 ล้มหลังจาก 3.2 หัก `DECR` ไปแล้วโดยไม่คืน สต็อก 1 ชิ้นจะหายถาวร ทำให้ `remainingStock` ไม่มีวันลงถึง 0 = ตกเกณฑ์ Data Integrity Proof
+> ✅ **แก้แล้ว (2026-08-27)**: เส้นทาง 3.2 ล้มเหลว/timeout เอง (ไม่ใช่แค่ 3.3) ก็ต้องผ่าน 3.4 ด้วย — เพราะไม่รู้ว่า Lua รันถึง `DECR` ไปแล้วหรือยัง `compensateIfReserved()` ใช้ค่าใน `lock:order:*` เป็นหลักฐานแทนการเดา (ดู §6.3 แถวสุดท้าย)
 
 ---
 
@@ -245,6 +247,7 @@ flowchart TD
     C2 -.->|"-2"| R429
     C2 -.->|"-3"| R409B
     C2 -.->|"-4"| R503A
+    C2 -.->|"เรียกล้มเหลว/timeout ⚠️"| COMP
     C2 -->|"1 · DECR + SET lock"| C3
 
     C3 -.->|"ล้มเหลว"| COMP
@@ -309,7 +312,7 @@ flowchart TD
 | `affected = 1` + insert ผ่าน | — | ไม่ | **CONFIRMED** | สำเร็จ |
 | `affected = 0` (ของหมดใน DB) | ❌ | ❌ **ไม่คืน** | `sold_out` → **`return`** | permanent — retry ไม่มีทางสำเร็จ · **และการคืนตรงนี้ทำให้ระบบไม่ self-heal** (ดูหมายเหตุใต้ตาราง) |
 | PG `23505` (unique ซ้ำ) | ❌ | ❌ | `already_confirmed` → **`return`** | job นี้เคยสำเร็จแล้ว = **idempotency** ห้ามคืนสต็อก |
-| PG `23514` (check ติดลบ) | ❌ | ✅ | `failed` | แปลว่ามีบั๊ก — ต้อง alert |
+| PG `23514` (check ติดลบ) | ✅ (เหมือน transient) | เฉพาะ attempt สุดท้าย | retry ก่อน แล้วค่อย `failed` | **โค้ดจริงไม่มี case แยกสำหรับ `23514`** ตกเข้า branch เดียวกับ transient error — **ตั้งใจปล่อยไว้ เพราะ `23514` เข้าไม่ถึงตั้งแต่แรก**: `chk_positive_stock (remaining_stock >= 0)` จะถูกละเมิดได้ก็ต่อเมื่อ `remaining_stock` เป็น 0 แล้วยังถูก -1 ต่อ แต่ UPDATE มี `WHERE remaining_stock > 0` กันไว้แล้ว (`orders.processor.ts:67`) ค่าต่ำสุดที่เป็นไปได้คือ 0 พอดี · `chk_stock_ceiling` ก็ละเมิดไม่ได้เพราะ path นี้มีแต่ลด ไม่เพิ่ม · **ตรวจยืนยันแล้ว 2026-08-29 — ไม่ต้องแก้โค้ด** ถ้าวันหนึ่ง `23514` โผล่ขึ้นมาจริง แปลว่ามีคนแก้ `WHERE` clause หรือมี writer ตัวอื่นนอก worker |
 | PG `40P01` (deadlock) | ✅ | เฉพาะ attempt สุดท้าย | retry | exponential backoff **+ jitter** · คืนตอน attempt 1 แล้ว attempt 2 สำเร็จ = Redis สูงกว่า DB ถาวร |
 | เชื่อมต่อหลุด / timeout | ✅ | เฉพาะ attempt สุดท้าย | retry | transient — เหตุผลเดียวกับแถวบน |
 | **side effect หลัง COMMIT ล้ม** | ❌ | ❌ **ห้ามคืนเด็ดขาด** | **CONFIRMED** | ⚠️ ของขายไปแล้วจริง ถ้าคืนสต็อกตรงนี้ = **oversell** |
@@ -326,6 +329,7 @@ flowchart TD
 
 | เกิดที่ | คืนสต็อก | ปลด lock | guard | ทำไม |
 | :--- | :--: | :--: | :--- | :--- |
+| `gatekeeper()` เรียกล้มเหลว/timeout (§3.2) | ✅ | ✅ CAS | เทียบ `requestToken` ใน `lock:order:*` ก่อนคืน | ไม่รู้ว่า Lua รันถึง `DECR` จริงหรือเปล่า — ใช้ค่าใน lock เป็นหลักฐานแทนการเดา (`compensate-if-reserved.lua`) |
 | `queue.add()` ล้ม (§3.3) | ✅ | ✅ CAS | — | ยังไม่มี job ไม่มีใครมาทำต่อ |
 | BullMQ dedup jobId ซ้ำ (job ที่เก็บอยู่เป็นของคำขออื่น) | ✅ | ✅ CAS | — | DECR รอบนี้ไม่มีใครกิน — ตรวจด้วย `queue.getJob()` ไม่ใช่ค่าที่ `add()` คืน |
 | ตรวจ job ที่เก็บอยู่**ไม่ได้** | ❌ | ❌ | — | ยืนยันไม่ได้ ≠ เป็นของคนอื่น · คืนผิดตอนของขายแล้วแย่กว่าไม่คืน |
