@@ -37,3 +37,6 @@ desktop.ini
 # Synology Drive
 @eaDir/
 .@__thumb/
+
+# Local machine-specific compose override (e.g. bind-mount workarounds) — never commit
+docker-compose.override.yml
