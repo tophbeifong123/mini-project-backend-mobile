@@ -10,7 +10,7 @@
 
 ## 0. 🚪 30 วินาทีแรก — 5 อย่างที่ต้องรู้ก่อน
 
-1. **มี process จริงแค่ 3 ตัว** (app-1/2/3) — API กับ BullMQ worker **อยู่ใน process เดียวกัน** ไม่ได้แยก
+1. **มี process จริง 6 ตัว** (app-1 … app-6) — API กับ BullMQ worker **อยู่ใน process เดียวกัน** ไม่ได้แยก
 2. **มี Redis 2 ตัวคนละหน้าที่** — `redis-cache` เป็นแคชล้วน (หายได้), `redis-data` เก็บสต็อกกับคิว (หายไม่ได้)
 3. **สต็อกมี 2 ที่**: counter ใน Redis (เร็ว ใช้กันคนเข้าคิว) และคอลัมน์ใน PostgreSQL (ช้า เป็นความจริง)
 4. **`POST /orders` ไม่แตะ DB เลย** — มันคุยกับ Redis 3 ครั้งแล้วตอบ 202 ส่วน DB เป็นงานของ worker ทีหลัง
@@ -25,13 +25,16 @@ flowchart TB
     K["k6 / client<br/>:8080"]
 
     subgraph EDGE["Edge"]
-        NG["nginx<br/>least_conn + keepalive 64"]
+        NG["nginx<br/>least_conn + keepalive 128"]
     end
 
-    subgraph APPS["3 Node processes (เหมือนกันทุกตัว)"]
+    subgraph APPS["6 Node processes (เหมือนกันทุกตัว)"]
         A1["app-1<br/>API + Worker<br/>RUN_MIGRATIONS=true"]
         A2["app-2<br/>API + Worker"]
         A3["app-3<br/>API + Worker"]
+        A4["app-4<br/>API + Worker"]
+        A5["app-5<br/>API + Worker"]
+        A6["app-6<br/>API + Worker"]
     end
 
     subgraph RC["redis-cache :6379"]
@@ -47,11 +50,11 @@ flowchart TB
         P2[("replica :5433<br/>อ่าน catalog")]
     end
 
-    K --> NG --> A1 & A2 & A3
-    A1 & A2 & A3 -->|"metadata cache"| C1
-    A1 & A2 & A3 -->|"stock · lock · queue"| D1
-    A1 & A2 & A3 -->|"catalog SELECT"| P2
-    A1 & A2 & A3 -->|"UPDATE/INSERT ของ worker"| P1
+    K --> NG --> A1 & A2 & A3 & A4 & A5 & A6
+    A1 & A2 & A3 & A4 & A5 & A6 -->|"metadata cache"| C1
+    A1 & A2 & A3 & A4 & A5 & A6 -->|"stock · lock · queue"| D1
+    A1 & A2 & A3 & A4 & A5 & A6 -->|"catalog SELECT"| P2
+    A1 & A2 & A3 & A4 & A5 & A6 -->|"UPDATE/INSERT ของ worker"| P1
     P1 -->|"streaming replication"| P2
 ```
 
@@ -71,12 +74,12 @@ flowchart TB
 ```mermaid
 flowchart LR
     subgraph P["1 Node process = 1 event loop"]
-        HTTP["Express HTTP server<br/>รับ 1,500 concurrent"]
+        HTTP["Express HTTP server<br/>1,500 VUs ทั้งคลัสเตอร์ ÷ 6 process"]
         W["BullMQ Worker<br/>concurrency 5"]
         HTTP -.->|"แชร์ event loop เดียวกัน"| W
     end
-    P --> POOL1["pg pool → master (10)"]
-    P --> POOL2["pg pool → replica (10)"]
+    P --> POOL1["pg pool → master (8)"]
+    P --> POOL2["pg pool → replica (8)"]
     P --> R["ioredis × 7"]
 ```
 
@@ -155,7 +158,7 @@ flowchart TD
 
 > ⚠️ **`registerQueue('orders')` ถูกเรียก 3 ที่** (`bullmq.module.ts:41`, `bull-board.module.ts:9`, `orders.module.ts:14`)
 > Nest 11 แยก dynamic module ด้วย object identity → **ไม่ dedupe** → ได้ `Queue` object 3 ตัว
-> = **6 connection ไป redis-data ต่อ container** (18 ทั้งคลัสเตอร์) แทนที่จะเป็น 4
+> = **6 connection ไป redis-data ต่อ container** (36 ทั้งคลัสเตอร์) แทนที่จะเป็น 4
 
 ---
 
@@ -387,18 +390,18 @@ PostgreSQL READ COMMITTED จะ **ประเมิน `WHERE` ใหม่** 
 
 | อะไร | จำนวน | ไปไหน |
 | :--- | :--- | :--- |
-| pg pool (master) | 10 | primary |
-| pg pool (slave) | 10 | replica |
+| pg pool (master) | 8 | primary |
+| pg pool (slave) | 8 | replica |
 | ioredis `REDIS_CACHE_CLIENT` | 1 | redis-cache |
 | ioredis `REDIS_DATA_CLIENT` | 1 | redis-data |
 | BullMQ `Queue` × 3 | 3 | redis-data |
 | BullMQ `Worker` (main + blocking) | 2 | redis-data |
 
-**ทั้งคลัสเตอร์**: `3 × 10 = 30` ไป primary · `3 × 10 = 30` ไป replica · `3 × 6 = 18` ไป redis-data · `3` ไป redis-cache
+**ทั้งคลัสเตอร์**: `6 × 8 = 48` ไป primary · `6 × 8 = 48` ไป replica · `6 × 6 = 36` ไป redis-data · `6` ไป redis-cache
 
 > ⚠️ สูตรใน `architecture.md` §8 (`instances × (1+replicas) × poolSize ≤ 80% ของ max_connections`)
 > **มิติผิด** — มันบวก connection ที่ไปคนละ server แล้วเทียบกับ limit ของ server เดียว
-> ค่าที่ถูกคือ 30 บน primary และ 30 บน replica **แยกกัน** (ดู [Q&A ข้อ 6](02-design-review-qa.md#6-worker-กับ-api-แย่ง-connection-pool-กันจริงไหม))
+> ค่าที่ถูกคือ 48 บน primary และ 48 บน replica **แยกกัน** (ดู [Q&A ข้อ 6](02-design-review-qa.md#6-worker-กับ-api-แย่ง-connection-pool-กันจริงไหม))
 
 ---
 
@@ -410,7 +413,7 @@ flowchart TD
     S2["postgres-replica<br/>pg_basebackup แล้ว hot standby"]
     S3["redis-cache + redis-data"]
     S4["app-1 · RUN_MIGRATIONS=true"]
-    S5["app-2 / app-3<br/>poll จนกว่าจะพร้อม"]
+    S5["app-2 … app-6<br/>poll จนกว่าจะพร้อม"]
     S6["nginx"]
 
     S1 -->|healthy| S2
@@ -418,11 +421,11 @@ flowchart TD
     S1 & S2 & S3 -->|healthy ครบ| S5
     S4 -->|"migration → seed DB → seed Redis"| S4b["exec node dist/main.js"]
     S5 -->|"schema_ready && stock_seeded"| S5b["exec node dist/main.js"]
-    S4b & S5b -->|"/health/live ผ่านทั้ง 3"| S6
+    S4b & S5b -->|"/health/live ผ่านทั้ง 6"| S6
 ```
 
 **app-1** รัน `dist/database/migrate-and-seed.js` แบบ synchronous ก่อน start server
-**app-2/3** วน poll ทุก 2 วิ (สูงสุด 240 วิ) เช็ค 2 อย่าง: ตาราง `products` มีแถว **และ** มี key `stock:flash_sale:*`
+**app-2..6** วน poll ทุก 2 วิ (สูงสุด 240 วิ) เช็ค 2 อย่าง: ตาราง `products` มีแถว **และ** มี key `stock:flash_sale:*`
 (ใช้ `SCAN` ไม่ใช่ `KEYS`) — ข้อสองสำคัญเพราะ seed DB เสร็จก่อน seed Redis ถ้าไม่รอจะมีช่วงที่ตอบ 503
 
 > ⚠️ **ไม่มีทาง reset** — `seed.ts` ใช้ `ON CONFLICT DO UPDATE` ที่ไม่แตะ `remaining_stock`,
@@ -443,10 +446,10 @@ flowchart TD
 | debounce ล้างแคช | 1,000 ms | `redis.service.ts` | ต่ำไป = ล้างแคช 50 ครั้งรวดตอน burst |
 | `commandTimeout` | 1,000 ms | `redis.module.ts` | **ไม่มี = คำสั่งค้าง `catch` ไม่ทำงาน → 504** |
 | worker concurrency | 5 | `orders.processor.ts:38` | อ่านตอน decorate → `.env` ไม่มีผล |
-| pool size | 10 ต่อ pool | `database.config.ts:51` | เกิน ~16 จะชน `max_connections=100` |
+| pool size | 8 ต่อ pool | `database.config.ts:51` | ที่ 6 instance เกิน ~13 จะชนเพดาน 80% ของ `max_connections=100` |
 | BullMQ attempts | 3, backoff exp 200 ms | `orders.service.ts:119` | เป็นตัวกำหนดว่า `isFinalAttempt` เมื่อไหร่ |
 | `removeOnComplete` | `{count: 5000}` | `orders.service.ts:121` | ต่ำไป → job เก่าหาย → dedup พัง |
-| nginx read timeout | 5 s | `nginx.conf:81` | p99 เกิน 5 วิ กลายเป็น 504 |
+| nginx read timeout | 10 s | `nginx.conf:95` | p99 เกิน 10 วิ กลายเป็น 504 |
 
 ### Lua return code → HTTP
 

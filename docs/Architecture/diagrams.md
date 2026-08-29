@@ -55,7 +55,7 @@ flowchart LR
     style OBSERVER fill:#e0e7ff,stroke:#4338ca
 ```
 
-**ขอบเขตระบบ**: Nginx, NestJS ×3, Redis ×2, BullMQ worker, PostgreSQL primary/replica อยู่ **ใน** ระบบทั้งหมด
+**ขอบเขตระบบ**: Nginx, NestJS ×6, Redis ×2, BullMQ worker, PostgreSQL primary/replica อยู่ **ใน** ระบบทั้งหมด
 **นอกระบบ**: k6 (ตัวสร้าง load) และผู้ตรวจงานที่เปิดดู dashboard
 
 ---
@@ -404,7 +404,7 @@ stateDiagram-v2
 | **กดรัวไม่ได้ของ 2 ชิ้น** | `lock:order:{u}:{p}` PX 30s | `jobId` deterministic + `UNIQUE` | Lua: `SET` ใน script เดียว | BullMQ ปฏิเสธ jobId ซ้ำ → ยังกันได้ |
 | **ไม่อ่านสต็อกเก่า** | — | `createQueryRunner('master')` | transaction | ถ้าเผลออ่าน replica → **race condition ทันที** (ไม่มีชั้นสำรอง) |
 | **retry ไม่ตัดสต็อกซ้ำ** | `compensated:{jobId}` | `UNIQUE` + จับ `23505` | Redis: `SET NX` | คืนสต็อกซ้ำ → Redis บวกเกิน → oversell ที่ชั้น 1 |
-| **สต็อกที่ client เห็นถูกต้อง** | — | `MGET stock:*` ทุก request | — | ถ้าเอา `remainingStock` ไปแคช → 3 instance ตอบไม่ตรงกัน |
+| **สต็อกที่ client เห็นถูกต้อง** | — | `MGET stock:*` ทุก request | — | ถ้าเอา `remainingStock` ไปแคช → 6 instance ตอบไม่ตรงกัน |
 
 > **แถวที่ไม่มีชั้นสำรอง (`createQueryRunner('master')`) คือแถวที่อันตรายที่สุด** — พลาดแล้วไม่มีอะไรมาช่วย และจะ reproduce ได้เฉพาะตอน load สูงเท่านั้น
 
@@ -455,7 +455,7 @@ sequenceDiagram
         API-->>UA: ⚠️ 429 กำลังประมวลผล
     end
 
-    Note over W,PG: ประมวลผลแบบ async · concurrency 5/node
+    Note over W,PG: ประมวลผลแบบ async · concurrency 5/node (×6 = 30)
 
     Q->>W: job
     W->>PG: BEGIN (master connection)

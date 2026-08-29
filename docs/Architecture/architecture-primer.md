@@ -140,6 +140,9 @@ flowchart TD
     APP1["② app-1"]
     APP2["② app-2"]
     APP3["② app-3"]
+    APP4["② app-4"]
+    APP5["② app-5"]
+    APP6["② app-6"]
 
     JWT["③ JWT HS256<br/>ตรวจในหน่วยความจำ ไม่แตะ DB"]
 
@@ -152,10 +155,10 @@ flowchart TD
     PGR[("④ PostgreSQL Replica :5433<br/>อ่านอย่างเดียว")]
 
     K6 --> NGINX
-    NGINX -->|least_conn| APP1 & APP2 & APP3
-    APP1 & APP2 & APP3 -.->|ตรวจ token| JWT
-    APP1 & APP2 & APP3 -->|อ่าน metadata| RC
-    APP1 & APP2 & APP3 -->|"อ่านสต็อกสด / Lua gatekeeper"| RD
+    NGINX -->|least_conn| APP1 & APP2 & APP3 & APP4 & APP5 & APP6
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 -.->|ตรวจ token| JWT
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 -->|อ่าน metadata| RC
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 -->|"อ่านสต็อกสด / Lua gatekeeper"| RD
     RC -.->|cache miss| PGR
     RD --> Q
     Q -->|"createQueryRunner('master')"| PGP
@@ -172,30 +175,30 @@ flowchart TD
 | :--- | :--- |
 | **ปัญหาเดิม** | Node.js 1 process ใช้ CPU ได้แค่ 1 core ต่อให้เครื่องมี 8 core. 1,000 คนอ่าน + 500 คนซื้อพร้อมกัน → process เดียวรับไม่ไหว |
 | **มันคืออะไร** | โปรแกรมที่ยืนอยู่หน้าสุด รับ request ทุกอันแล้ว *กระจาย* ไปให้ backend หลายตัวที่ทำงานเหมือนกันเป๊ะ |
-| **ในงานเรา** | container `nginx` ฟังที่ `:8080` → กระจายไป `app-1`, `app-2`, `app-3` (แต่ละตัว `:3000`). k6 ยิงมาที่ `:8080` เท่านั้น ไม่เคยรู้จัก app-1/2/3 เลย |
+| **ในงานเรา** | container `nginx` ฟังที่ `:8080` → กระจายไป `app-1` … `app-6` (แต่ละตัว `:3000`). k6 ยิงมาที่ `:8080` เท่านั้น ไม่เคยรู้จัก app-1..6 เลย |
 | **ศัพท์** | **Reverse Proxy** (ตัวกลางที่รับแทน backend) · **Upstream** (backend ที่มันกระจายไปหา) · **`least_conn`** (ส่งให้ตัวที่มีงานค้างน้อยสุด ต่างจาก round-robin ที่ส่งวนไปเรื่อยๆ ไม่สนว่าใครยุ่ง) · **Keepalive** (ใช้ TCP connection เดิมซ้ำ ไม่ handshake ใหม่ทุกครั้ง) |
 
 **💥 ถ้าทำผิดจะพังยังไง**
-ใน `nginx.conf` ถ้าใส่ `keepalive 64` แต่ **ลืม** 2 บรรทัดนี้:
+ใน `nginx.conf` ถ้าใส่ `keepalive 128` แต่ **ลืม** 2 บรรทัดนี้:
 
 ```nginx
 proxy_http_version 1.1;
 proxy_set_header Connection "";
 ```
 
-Nginx จะคุยกับ app-1/2/3 ด้วย HTTP/1.0 ซึ่งปิด connection ทุกครั้ง → `keepalive 64` **ไม่ทำงานเลยแม้แต่นิดเดียว** → ทุก request เสีย TCP handshake ใหม่ (~1–3ms) × 1,000 VUs
+Nginx จะคุยกับ app-1..6 ด้วย HTTP/1.0 ซึ่งปิด connection ทุกครั้ง → `keepalive 128` **ไม่ทำงานเลยแม้แต่นิดเดียว** → ทุก request เสีย TCP handshake ใหม่ (~1–3ms) × 1,000 VUs
 
 [`architecture.md` §2](architecture.md) เรียกอันนี้ว่า **"ตัวฉุด p95 อันดับ 1"** — คือจะเห็นตัวเลขแย่ในรายงานโดยไม่รู้สาเหตุ
 
 ---
 
-### 2.2 ② NestJS 3 instances + Stateless
+### 2.2 ② NestJS 6 instances + Stateless
 
 | | |
 | :--- | :--- |
-| **ปัญหาเดิม** | พอมี 3 ตัว: `user-101` login ที่ app-1 (app-1 จำไว้ใน RAM ว่าใครคือใคร) แต่ request ถัดไป Nginx ส่งไป app-2 ซึ่ง **ไม่รู้จัก** user-101 → หลุด login |
+| **ปัญหาเดิม** | พอมี 6 ตัว: `user-101` login ที่ app-1 (app-1 จำไว้ใน RAM ว่าใครคือใคร) แต่ request ถัดไป Nginx ส่งไป app-2 ซึ่ง **ไม่รู้จัก** user-101 → หลุด login |
 | **มันคืออะไร** | **Stateless** = แต่ละ instance ไม่เก็บอะไรที่ต้องใช้ร่วมกันไว้ใน RAM ตัวเอง ทุกตัวเหมือนกันเป๊ะ แลกกันได้ ตายไปตัวหนึ่งไม่มีอะไรหาย |
-| **ในงานเรา** | `app-1/2/3` เป็น NestJS ตัวเดียวกันเป๊ะ (image เดียวกัน) — state ที่ต้องแชร์ถูกย้ายออกไปอยู่ Redis กับ Postgres หมด |
+| **ในงานเรา** | `app-1..6` เป็น NestJS ตัวเดียวกันเป๊ะ (image เดียวกัน) — state ที่ต้องแชร์ถูกย้ายออกไปอยู่ Redis กับ Postgres หมด |
 | **ศัพท์** | **Instance / Replica** (สำเนาของแอปที่รันพร้อมกัน) · **Horizontal Scaling** (เพิ่มจำนวนเครื่อง ไม่ใช่เพิ่มสเปกเครื่องเดียว) · **Modular by domain** (แบ่งโฟลเดอร์ตามเรื่อง `auth/`, `products/`, `orders/` ไม่ใช่ตามชั้น `controllers/`, `services/`) |
 
 **💥 ถ้าทำผิดจะพังยังไง**
@@ -219,7 +222,7 @@ Nginx จะคุยกับ app-1/2/3 ด้วย HTTP/1.0 ซึ่งป�
 | **ปัญหาเดิม** | ต่อจาก §2.2 — ถ้าไม่เก็บ session ใน RAM แล้วจะรู้ได้ไงว่าคนที่ส่ง request มาคือใคร? ถ้าไปถาม DB/Redis ทุก request = เพิ่ม I/O หลายร้อยครั้งต่อวินาที **ก่อนเริ่มทำงานจริงด้วยซ้ำ** |
 | **มันคืออะไร** | บัตรผ่านที่ **ลูกค้าถือเอง** ข้างในเขียนว่า "ฉันคือ user-101" พร้อม **ลายเซ็นดิจิทัล** ที่ปลอมไม่ได้ (ต้องรู้ `JWT_SECRET` ถึงจะเซ็นได้) server แค่ตรวจลายเซ็นด้วยคณิตศาสตร์ในหน่วยความจำ — **ไม่ต้องแตะ DB เลย** |
 | **ในงานเรา** | `POST /api/v1/auth/token` ส่ง `{"userId":"user-999"}` → ได้ token กลับมา (endpoint นี้ *จำลอง* login ไม่เช็ครหัสผ่าน และโจทย์บอกว่า **ไม่วัด performance**) จากนั้นทุกครั้งที่ `POST /api/v1/orders` ต้องแนบ `Authorization: Bearer <token>` |
-| **ศัพท์** | **Claim** (ข้อมูลใน token) · **`sub`** (subject = ชื่อ claim มาตรฐานที่เก็บ userId) · **HS256** (อัลกอริทึมเซ็นแบบใช้ secret ร่วม — ทั้ง 3 instance ใช้ secret เดียวกันจึงตรวจข้าม instance ได้) · **Zero-I/O verify** (ตรวจโดยไม่ยิงไปที่ไหนเลย) · **Bearer** (คำนำหน้าใน header แปลว่า "ผู้ถือบัตรนี้") |
+| **ศัพท์** | **Claim** (ข้อมูลใน token) · **`sub`** (subject = ชื่อ claim มาตรฐานที่เก็บ userId) · **HS256** (อัลกอริทึมเซ็นแบบใช้ secret ร่วม — ทั้ง 6 instance ใช้ secret เดียวกันจึงตรวจข้าม instance ได้) · **Zero-I/O verify** (ตรวจโดยไม่ยิงไปที่ไหนเลย) · **Bearer** (คำนำหน้าใน header แปลว่า "ผู้ถือบัตรนี้") |
 
 **💥 ถ้าทำผิดจะพังยังไง**
 นี่คือ invariant ข้อ 2 ใน [`CLAUDE.md` §4](../../CLAUDE.md) — **`userId` ต้องมาจาก JWT claim `sub` เท่านั้น ห้ามรับจาก request body**
@@ -384,7 +387,7 @@ return 1                                                   -- ผ่าน      
 | :--- | :--- |
 | **ปัญหาเดิม** | ต่อให้ Redis กรองเหลือ 50 คน การเขียน DB ก็ยังใช้เวลา ~20–50ms และโจทย์บังคับว่า controller **ห้ามเขียน DB แบบรอ** (invariant ข้อ 1) — ต้องตอบ HTTP กลับให้เร็ว |
 | **มันคืออะไร** | **Message Queue** = กล่องรับงาน คนที่รับ request แค่ **หย่อนใบสั่งงานลงกล่อง** แล้วตอบลูกค้าไปเลยว่า *"รับเรื่องแล้ว"* ส่วนงานจริงมี **Worker** มาหยิบไปทำทีหลัง |
-| **ในงานเรา** | `orders.service.ts` หย่อน job แล้ว return `202` ทันที · `orders.processor.ts` (worker) หยิบ job ไปเขียน Postgres Primary — worker รันอยู่ใน process เดียวกับ API คือ app-1/2/3 แต่ละตัวเป็นทั้ง API และ worker |
+| **ในงานเรา** | `orders.service.ts` หย่อน job แล้ว return `202` ทันที · `orders.processor.ts` (worker) หยิบ job ไปเขียน Postgres Primary — worker รันอยู่ใน process เดียวกับ API คือ app-1..6 แต่ละตัวเป็นทั้ง API และ worker |
 | **ศัพท์** | **Producer** (คนหย่อนงาน = controller) · **Consumer / Worker** (คนหยิบไปทำ) · **Job** (ใบสั่งงาน 1 ใบ) · **`jobId`** (เลขที่ใบสั่งงาน) · **Async processing** (ทำทีหลัง ไม่ให้ลูกค้ารอ) · **At-least-once** (คิวรับประกันว่างานจะถูกทำ *อย่างน้อย* 1 ครั้ง — อาจซ้ำได้) · **Idempotent** (ทำซ้ำกี่ครั้งผลก็เท่าเดิม) |
 
 #### ทำไมต้องเป็น 202 ไม่ใช่ 200/201?
@@ -569,7 +572,7 @@ flowchart TD
     Q1 -->|✅| R202
     R202 -.->|"HTTP response ออกไปแล้ว<br/>ลูกค้าไม่รออีกต่อไป"| W1
 
-    subgraph T3["Tier 3 — Worker → PostgreSQL Primary เท่านั้น · concurrency 5 ต่อ node"]
+    subgraph T3["Tier 3 — Worker → PostgreSQL Primary เท่านั้น · concurrency 5 ต่อ node (×6 = 30)"]
         W1["UPDATE products<br/>SET remaining_stock = remaining_stock - 1<br/>WHERE id = $1 AND remaining_stock &gt; 0"]
         W2{"affected === 0 ?"}
         W3["INSERT INTO orders"]
@@ -814,7 +817,7 @@ stateDiagram-v2
 
 | ตัดอะไร | ทำไม | อ่านเมื่อไหร่ |
 | :--- | :--- | :--- |
-| Connection Pool sizing (`3 × (1+1) × 10 = 60`) | เป็นการจูนตัวเลข ไม่ใช่ความเข้าใจโครงสร้าง | ตอนเขียน `database.config.ts` → [§8](architecture.md) |
+| Connection Pool sizing (`6 × 8 = 48` ต่อเซิร์ฟเวอร์ — primary และ replica แยกกัน) | เป็นการจูนตัวเลข ไม่ใช่ความเข้าใจโครงสร้าง | ตอนเขียน `database.config.ts` → [§8](architecture.md) |
 | `nginx.conf` ทั้งไฟล์ | ก็อปจากเอกสารได้เลย | ตอนเขียน `docker-compose.yml` → [§2](architecture.md) |
 | k6 scenarios / thresholds | เขียนทีหลัง หลังระบบขึ้นแล้ว | ตอนทำ `loadtest.js` → [§9.2](architecture.md) |
 | Bull-Board, health checks, structured logging | เป็น deliverable แต่ไม่ใช่แก่นของ concurrency | ตอนใกล้ส่งงาน → [§9](architecture.md) |
@@ -833,7 +836,7 @@ stateDiagram-v2
 | **Oversell / Undersell** | ขายเกินของที่มี / ขายไม่หมดทั้งที่มีคนแย่ง |
 | **Idempotent** | ทำซ้ำกี่ครั้งผลลัพธ์ก็เท่าเดิม |
 | **Stateless** | ไม่เก็บข้อมูลที่ต้องแชร์ไว้ใน RAM ของ process ตัวเอง |
-| **Instance** | สำเนาของแอปที่รันพร้อมกัน (เรามี 3 ตัว: app-1/2/3) |
+| **Instance** | สำเนาของแอปที่รันพร้อมกัน (เรามี 6 ตัว: app-1 … app-6) |
 | **Load Balancer / Reverse Proxy** | ตัวหน้าที่รับ request แล้วกระจายไปยัง instance |
 | **`least_conn`** | กระจายให้ instance ที่มีงานค้างน้อยที่สุด |
 | **Keepalive** | ใช้ TCP connection เดิมซ้ำ ไม่ handshake ใหม่ทุก request |

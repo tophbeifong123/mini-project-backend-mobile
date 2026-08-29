@@ -7,6 +7,7 @@
 
 ---
 
+- 2026-08-29 — [Production VM ต้อง login PSU passport ก่อนออกเน็ต](handoff_29_08_2026_vm-psu-passport-login.md) — `172.30.58.5` ping ได้แต่ port 80 refused (ไม่ใช่ web server) ต้อง SSH เข้าไป login captive portal จากฝั่ง VM เอง ไม่ใช่เปิดเบราว์เซอร์จาก local — **⚠️ ยังไม่ยืนยันว่า login สำเร็จ**, งานนอก repo ไม่กระทบ src/
 - 2026-08-28 — [ปรับแต่งประสิทธิภาพ 5 จุดตาม Code Review & ผล Load Test บน 6 Instances](handoff_28_08_2026_performance-tuning-and-review-fixes.md) — ปรับปรุง 5 ข้อ (Log rotation 10m/3 · ตัด duplicate pino logging · ใส่ mem_limit/cpus/NODE_OPTIONS · replica shared_buffers 256MB · distributed debounce cache invalidation) — **Throughput +37% (2,548 rps), checks 99.96%, Hit Ratio 97.63%, Data Integrity 100% (50/50)** · 35 tests ผ่าน
 - 2026-08-27 — [ยิง k6 จริงครั้งแรก: เจอสต็อกรั่ว 8 ชิ้น](handoff_27_08_2026_load-test-first-run.md) — รัน container + ยิง k6 ครั้งแรกของโปรเจกต์ เจอข้อบกพร่อง 3 ชั้นที่บังหน้ากัน (`Dockerfile` EACCES · nginx retry amplification · `commandTimeout` ทำสต็อกรั่ว) — **แก้ครบทั้ง 3 · §9.3 ผ่านครบ 4 ข้อครั้งแรก (50/50)** · 35 tests ผ่าน
 - 2026-08-26 — [Primer Template + เก็บกวาดลิงก์ old_architecture](handoff_26_08_2026_primer-template.md) — กู้ git ที่ตามหลัง 23 commits + สร้างแม่แบบ prompt เขียนเอกสารปูพื้นฐาน (`docs/Meta/`) — **scrutinize ด้วย 3 agent แล้วเขียนใหม่ทั้งฉบับ** · งานเอกสารล้วน ไม่แตะ src/

@@ -33,7 +33,7 @@ repo นี้มีทั้ง **เอกสารออกแบบ** แล
 | **ไม่มี e2e test** | `pnpm run test:e2e` exit non-zero ("no tests found") — มีแต่ unit test 35 ข้อ |
 | **ยังไม่ได้ทำรายงาน PDF** | diagram มีวัตถุดิบอยู่แล้วใน [`diagrams.md`](docs/Architecture/diagrams.md) แต่ยังไม่มีตัวรายงาน |
 | **ยังไม่ได้เก็บ dashboard** | Cache Hit/Miss (ใช้ `./scripts/cache-stats.sh`) และภาพ Bull-Board ตอน Completed = 50 |
-| **ยังไม่เคยยิงที่โหลดต่ำกว่าเพดาน** | ตัวเลข latency ที่มีตอนนี้มาจากการยิงเกินเพดานราว 2 เท่า ใช้เทียบกับกลุ่มเพื่อนตรงๆ ไม่ได้ — เพดานที่วัดได้คือ ~1,500 rps (ที่ 400 VUs: p95 237ms, error 0) |
+| **ยังไม่เคยยิงที่โหลดต่ำกว่าเพดาน** | ตัวเลข latency ที่มีตอนนี้มาจากการยิงเกินเพดานราว 2 เท่า ใช้เทียบกับกลุ่มเพื่อนตรงๆ ไม่ได้ — เพดานที่วัดได้คือ ~1,500 rps (ที่ 400 VUs: p95 237ms, error 0) — ⚠️ **วัดตอน 3 instance ยังไม่ได้วัดซ้ำหลังขยายเป็น 6** |
 
 ### ⚠️ ถ้าจะรันด้วย podman ต้องเช็คก่อน (บน `docker compose` ผ่านมาแล้ว)
 
@@ -51,7 +51,7 @@ podman compose version                                  # podman-compose (python
 | `23505` ไม่คืนสต็อกใน Redis | ถูกต้องสำหรับเคสที่ตั้งใจ (retry ของ job ที่ commit แล้ว) แต่ถ้า `bought:` key หายและ job record เดิมถูก evict → Redis ต่ำกว่า DB ถาวร · **reviewer ทั้ง 3 เห็นตรงกันว่าปล่อยไว้ถูกแล้ว** — การคืนตรงนี้จะทำให้ retry ปกติคืนซ้ำ |
 | ไม่มี reconciliation Redis ↔ DB | ตัวจับ drift ตัวเดียวที่มีคือการรัน §9.3 ข้อ 4 ด้วยมือ |
 | `WORKER_CONCURRENCY` อ่านตอน decorate class | เห็นเฉพาะ env จริงของ container ปรับจาก `.env` แล้วไม่มีผล |
-| `proxy_read_timeout 5s` ใน nginx | **ยืนยันแล้วว่าเกิดจริง** — ที่ 1,000 VUs มี 504 ระดับหมื่นครั้ง · ปล่อยไว้เพราะค่านี้มาจาก `architecture.md` §2 และการดันขึ้นแค่ซ่อนอาการ |
+| `proxy_read_timeout` ใน nginx | **ดันขึ้นเป็น 10s แล้ว (2026-08-27)** พร้อม 6 instance · แต่อาการต้นเดิมยังอยู่: ถ้า upstream ช้าเกิน 10 วิก็ยังเป็น 504 เหมือนเดิม — การดันค่าขึ้นซ่อนอาการ ไม่ได้แก้เหตุ |
 | `reset` ไม่ล้าง BullMQ job | `jobId` เป็น deterministic (`order:{userId}:{productId}`) job เก่าจึงชนกับรอบใหม่ได้ · ต้องล้างเองด้วย `redis-cli --scan --pattern 'bull:orders:*' \| xargs redis-cli DEL` |
 | job stall เกิน `maxStalledCount` | BullMQ ทิ้ง job ไป `failed` **โดยไม่เรียก handler** → `compensateOnce` ไม่ทำงาน → สต็อกหาย 1 ชิ้น · เกิดได้เมื่อ event loop ตันเกิน 30 วิ |
 | ไม่มี e2e test | ทางเดียวที่จะพิสูจน์ทั้ง 4 เส้นทางคือยิงจริง |
@@ -64,7 +64,7 @@ podman compose version                                  # podman-compose (python
 | เดิม | แก้เป็นอะไร |
 | :--- | :--- |
 | ไฟล์ seed มีโหมด `-rwx------` บนโฮสต์ (SynologyDrive) · `COPY` คงโหมดไว้ → ในอิมเมจเป็น `root:root 0700` แต่รันด้วย `USER node` → `EACCES` → app-1 restart วน → **ทั้งสแตกไม่ขึ้น** | `Dockerfile` เพิ่ม `RUN chmod 0644` หลัง `COPY` |
-| `proxy_next_upstream` ใช้ default (`error timeout`) + `max_fails=3` → 1 คำขอที่ timeout กิน backend ครบ 3 ตัว แล้ว nginx ตัด backend ออกหมด → **502 จำนวน 115,005 ครั้ง และ write path ไม่ถูกทดสอบเลย** | `nginx.conf`: `proxy_next_upstream error;` + `max_fails=0` ทั้ง 3 upstream |
+| `proxy_next_upstream` ใช้ default (`error timeout`) + `max_fails=3` → 1 คำขอที่ timeout กิน backend ครบ 3 ตัว แล้ว nginx ตัด backend ออกหมด → **502 จำนวน 115,005 ครั้ง และ write path ไม่ถูกทดสอบเลย** | `nginx.conf`: `proxy_next_upstream error;` + `max_fails=0` ทั้ง 6 upstream |
 | `gatekeeper()` ไม่มี `try/catch` · `commandTimeout` ยกเลิกแค่ฝั่ง client → Lua `DECR` ไปแล้วแต่แอปไม่รู้ → ไม่ชดเชย → **สต็อกหาย 8 ชิ้นจาก 50** | `compensate-if-reserved.lua` (ใหม่) ใช้ค่าใน `lock:order:*` เป็นหลักฐานแทนการเดา · ตอบ 503 แทน 500 · unit test เพิ่ม 3 ข้อ |
 
 **ผลหลังแก้ (k6 run 003):** §9.3 ผ่านครบ 4 ข้อ — `remaining_stock = 0` · `orders = 50/50` · Redis counter `"0"` · ไม่มีใครได้เกิน 1 ชิ้น · `202 accepted = 50` พอดี · `500 unhandled = 0`
@@ -92,7 +92,7 @@ podman compose version                                  # podman-compose (python
 | Runtime | Node.js `>= 20.x` (แนะนำ `v22.x`) | |
 | Package Manager | **`pnpm` เท่านั้น** | ห้าม `npm` / `yarn` เด็ดขาด |
 | Framework | NestJS `^11` (Express platform) | โครงสร้างแบบ **modular by domain** |
-| Load Balancer | Nginx alpine | `least_conn` + keepalive → ≥ 3 instances |
+| Load Balancer | Nginx alpine | `least_conn` + keepalive 128 → ≥ 3 instances (รันจริง **6**) |
 | Database | PostgreSQL 16 (Primary `:5432` / Replica `:5433`) | TypeORM replication (read-write split) |
 | Cache | Redis 7 — **`redis-cache`** `allkeys-lru` | metadata cache เท่านั้น |
 | Stock + Queue | Redis 7 — **`redis-data`** `noeviction` + AOF | stock counter, lock, BullMQ |
@@ -111,7 +111,7 @@ podman compose version                                  # podman-compose (python
 
 ```bash
 # --- Infrastructure ---
-podman compose up -d              # Nginx + 3 app + PG primary/replica + redis x2
+podman compose up -d              # Nginx + 6 app + PG primary/replica + redis x2
 podman compose ps                 # ดูสถานะ + healthcheck
 podman compose logs -f app-1
 podman compose down -v            # ⚠️ -v ลบ volume (ข้อมูล DB หายหมด) — ถามก่อนใช้
@@ -252,7 +252,7 @@ k6 run loadtest.js
 
 ### ❌ DON'T
 - ❌ ใช้ `npm` / `yarn` — **`pnpm` เท่านั้น**
-- ❌ เก็บ state ที่ต้องแชร์ไว้ใน memory ของ Node.js (รวมถึง **L1 LRU cache ที่มี `remainingStock`** — 3 instance จะตอบไม่ตรงกัน)
+- ❌ เก็บ state ที่ต้องแชร์ไว้ใน memory ของ Node.js (รวมถึง **L1 LRU cache ที่มี `remainingStock`** — 6 instance จะตอบไม่ตรงกัน)
 - ❌ เปิด `synchronize: true` (DROP column ได้ = ข้อมูลหายถาวร)
 - ❌ อ่านข้อมูลที่ต้อง lock จาก Replica
 - ❌ `redis.keys(pattern)` — O(N) และบล็อก Redis ทั้งตัว ใช้ `SCAN` หรือ key ที่คำนวณตรงได้

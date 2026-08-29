@@ -32,7 +32,7 @@
 
 | องค์ประกอบ | สถานะ | หมายเหตุ |
 | :--- | :--- | :--- |
-| Nginx + backend ≥ 3 instances | 🔒 **โจทย์บังคับ** | ข้อ 1.1 |
+| Nginx + backend ≥ 3 instances (รันจริง **6**) | 🔒 **โจทย์บังคับ** | ข้อ 1.1 |
 | NestJS modular structure | 🔒 **โจทย์บังคับ** | ข้อ 1.2 |
 | PostgreSQL + TypeORM + Connection Pooling | 🔒 **โจทย์บังคับ** | ข้อ 1.3 |
 | Redis caching + invalidation | 🔒 **โจทย์บังคับ** | ข้อ 1.4 |
@@ -122,7 +122,7 @@
 | :--- | :--- |
 | แคชทั้ง object รวม `remainingStock` แล้ว invalidate ทุกครั้งที่ขาย | ช่วง flash sale = ช่วงที่ขายรัวที่สุด = ช่วงที่ cache ถูกล้างรัวที่สุด → **cache ใช้ไม่ได้พอดีตอนที่ต้องการมันที่สุด** และยังมี race ระหว่าง invalidate กับ read |
 | ไม่แคชเลย | ผิดโจทย์ข้อ 1.4 และ read path 1,000 VUs จะถล่ม DB |
-| แคชสั้นๆ 1–2 วินาที (L1 in-memory) | 3 instance จะตอบสต็อกไม่ตรงกัน ผิด "เงื่อนไขสำคัญ" และผิดกฎ stateless |
+| แคชสั้นๆ 1–2 วินาที (L1 in-memory) | 6 instance จะตอบสต็อกไม่ตรงกัน ผิด "เงื่อนไขสำคัญ" และผิดกฎ stateless |
 
 **ทำไมถึงเลือก** — เพราะข้อมูลใน response มี **2 ชนิดที่มีอัตราการเปลี่ยนแปลงต่างกันเป็นพันเท่า** จับมันแยกกันซะ: metadata (`name`, `price`, `availableStock`) แคชได้เป็นนาที · `remainingStock` อ่านสดจาก counter ด้วย **1 `MGET`** แล้ว merge ตอน serialize
 
@@ -157,9 +157,11 @@
 
 ### ADR-6 · worker concurrency = 5 (ไม่ใช่ 50)
 
-**ทำไมถึงเลือก** — ถ้ารัน worker ใน process เดียวกับ API มันคือ **DataSource เดียวกัน = pool เดียวกัน** จะแบ่ง "10 ให้ API + 5 ให้ worker" ไม่ได้ ทั้งคู่แย่ง pool 10 ตัวเดียวกัน ตั้ง concurrency เกิน pool เมื่อไหร่ = job ค้างรอ connection แล้ว timeout
+**ทำไมถึงเลือก** — ถ้ารัน worker ใน process เดียวกับ API มันคือ **DataSource เดียวกัน = pool เดียวกัน** จะแบ่ง "10 ให้ API + 5 ให้ worker" ไม่ได้ ทั้งคู่แย่ง pool ตัวเดียวกัน ตั้ง concurrency เกิน pool เมื่อไหร่ = job ค้างรอ connection แล้ว timeout
 
-**✅ ข้อดี** — 3 instance × 5 = 15 concurrent writes ซึ่งเกินพอสำหรับของ 50 ชิ้น และ total connection = 3 × (1+1) × 10 = **60 จาก 100** (60%) ปลอดภัย
+**✅ ข้อดี** — **6 instance × 5 = 30 concurrent writes** ซึ่งเกินพอสำหรับของ 50 ชิ้น
+ส่วน connection ต้องนับ **แยกต่อเซิร์ฟเวอร์** (ดู `architecture.md` §8): **6 × 8 = 48 บน primary** และ **48 บน replica** = 48% ของ 100 ต่อตัว ปลอดภัย
+> ⚠️ อย่าใช้สูตร `instances × (1+replicas) × poolSize` อีก — มันมิติผิด และที่ 6 instance จะได้ 96/100 ซึ่งอ่านดูเหมือนระบบใกล้พังทั้งที่จริงๆ ไม่ใช่
 **❌ ข้อเสีย** — **นี่คือเพดาน throughput ที่แท้จริงของ write path** ถ้าโจทย์เปลี่ยนเป็นของ 50,000 ชิ้น ตัวเลขนี้จะกลายเป็นคอขวดทันที
 
 ---
@@ -246,13 +248,13 @@ flowchart TB
 
 | ข้อ | รายละเอียด | บรรเทายังไง |
 | :--- | :--- | :--- |
-| **ซับซ้อนเกินตัวโจทย์** | 8 container สำหรับของ 50 ชิ้น | ยอมรับ — เพราะโจทย์บังคับองค์ประกอบไว้เกือบหมด (§2) |
+| **ซับซ้อนเกินตัวโจทย์** | 11 container สำหรับของ 50 ชิ้น | ยอมรับ — เพราะโจทย์บังคับองค์ประกอบไว้เกือบหมด (§2) |
 | **source of truth 2 ที่** | Redis counter อาจ drift จาก DB | Data Integrity Proof ข้อ 4 + compensation ทุก path |
 | **ไม่มี reconciliation อัตโนมัติ** | ถ้า drift แล้ว ไม่มีอะไรมาซ่อมให้เอง | ⚠️ **ข้อจำกัดที่ยอมรับ** ดู §6 Q5 |
 | **client ไม่รู้ผลจริง** | 202 แปลว่า "รับเรื่อง" ไม่ใช่ "ได้ของ" | ต้องมีวิธีให้ grader ตรวจ ดู §6 Q6 |
 | **`redis-data` เป็น SPOF** | ล่ม = สั่งซื้อไม่ได้ทั้งระบบ | AOF + `noeviction` + verdict `-4` → 503 (ไม่ใช่ตอบผิดเงียบๆ) |
 | **replica ได้ไม่คุ้มเสีย** | ประโยชน์ต่ำ แต่ debug แพง | ตัดทิ้งได้ถ้าเวลาไม่พอ (ADR-5) |
-| **เพดาน write = 15 concurrent** | ผูกกับ pool size | พอสำหรับโจทย์นี้ แต่ไม่ scale ถ้าของเยอะขึ้นมาก |
+| **เพดาน write = 30 concurrent** | ผูกกับ pool size | พอสำหรับโจทย์นี้ แต่ไม่ scale ถ้าของเยอะขึ้นมาก |
 
 ---
 
@@ -285,7 +287,7 @@ flowchart TB
     P ==>|"ยอมรับ"| AG2["✅ blocker (b) เป็นของจริง<br/>duplicate jobId เงียบ = catch ไม่ทำงาน"]
     S ==>|"ยอมรับ"| AG3["✅ undersell คือความเสี่ยงตัวจริง<br/>ไม่ใช่ oversell"]
 
-    P -.->|"ไม่ยอม"| D1["❌ คิวยังไม่คุ้มในแง่ throughput<br/>50 writes / 15 slots"]
+    P -.->|"ไม่ยอม"| D1["❌ คิวยังไม่คุ้มในแง่ throughput<br/>50 writes / 30 slots"]
     C -.->|"ไม่ยอม"| D2["❌ counter ต้องมี reconciliation<br/>deadlock retry ครั้งเดียวก็ desync ถาวร"]
     S -.->|"ไม่ยอม"| D3["❌ replica ได้ 0 คะแนน<br/>แถมสร้างกับดัก read-write split เอง"]
 
@@ -303,7 +305,7 @@ flowchart TB
 
 > **C ถาม P**: *"ถ้าตัด Lua ทิ้ง แล้วให้ 450 คนที่แพ้เปิด transaction ที่ master กันหมด p95 จะเป็นเท่าไร"*
 
-**P**: 3 instance × pool 10 = **30 slot** สำหรับ ~1,500 request; `UPDATE` ที่ affect 0 แถวใช้ ~2–5 ms → เคลียร์หมดใน ~200–300 ms, **p95 ตกราว 300 ms – 1 s และ Postgres ไม่ล้ม** สรุปคือ gatekeeper ได้ p95 มาจริง แต่ **ไม่ได้กู้ชีวิต DB** ที่สเกลนี้
+**P**: 6 instance × pool 8 = **48 slot** สำหรับ ~1,500 request; `UPDATE` ที่ affect 0 แถวใช้ ~2–5 ms → เคลียร์หมดใน ~60–160 ms, **p95 ตกราว 200–600 ms และ Postgres ไม่ล้ม** สรุปคือ gatekeeper ได้ p95 มาจริง แต่ **ไม่ได้กู้ชีวิต DB** ที่สเกลนี้
 
 **S**: ไม่ว่าจะยังไงก็ตัดคิวไม่ได้ — โจทย์บังคับทั้ง message queue และ **202** ผมไม่เคยเสนอให้ตัดคิว รายการที่ผมเสนอให้ตัดมีชิ้นเดียวคือ replica
 
@@ -336,7 +338,7 @@ flowchart TB
 > ส่วน `MGET` ของ read path คือ 99% ที่เหลือ และรวมกันแล้ว Redis ยังอยู่ที่ประมาณ **5–10% ของ 1 core**
 >
 > คอขวดจริงคือ **event loop ของ Node** เพราะ k6 เป็น closed loop ไม่มี `sleep()` →
-> 1,500 VUs ที่ p95 200 ms บังคับให้ต้องได้ ~10,000 rps = **~3,300 rps ต่อ process**
+> 1,500 VUs ที่ p95 200 ms บังคับให้ต้องได้ ~10,000 rps = **~1,670 rps ต่อ process** (ที่ 6 instance)
 > สำหรับ handler ที่มี 2 Redis hop + JSON parse/stringify + log 2 บรรทัด
 >
 > ✅ **ข้อสรุปใหม่**: ในรายงานให้ระบุคอขวดเป็น **Node event loop** โดยมี `redis-data` เป็นที่สอง (ห่างมาก)
@@ -345,6 +347,10 @@ flowchart TB
 > podman stats --no-stream --format 'table {{.Name}} {{.CPUPerc}}'
 > ```
 > คาดหวัง: app แต่ละตัว ≥ 85% ของ core · redis ทั้งสองตัว ≤ 25% — ถ้า `redis-data` กินมากกว่า app แปลว่าข้อสรุปนี้ผิด
+>
+> ⚠️ **การทำนายนี้ตั้งสมมติว่า 3 process บนโฮสต์ที่มี core เหลือเฟือ** (ยังไม่ได้วัดจริง — ดู `CLAUDE.md` §0.1)
+> production VM จริงมี **4 core** แต่รัน **6 app process** (+ nginx worker ×4 + postgres ×2 + redis ×2)
+> → "app แต่ละตัว ≥ 85% ของ core" **เป็นไปไม่ได้ทางคณิตศาสตร์บน VM นั้น** — ต้องวัดใหม่ก่อนอ้าง
 
 ---
 
@@ -352,7 +358,7 @@ flowchart TB
 
 > **S ถาม P**: *"read path แทบไม่แตะ Postgres หลัง warm-up แล้ว replica ช่วย p95 ตรงไหน"*
 
-**P**: **สนับสนุนให้ตัด** — หลัง warm-up replica รับแค่ single-flight miss ตอน TTL หมด คือไม่กี่ query ต่อนาที การตัดทิ้งยังคืน connection 30 ตัว และ **ลบกับดัก `createQueryRunner('master')` ทิ้งไปด้วย** ซึ่ง `diagrams.md` §8 ระบุเองว่าเป็น invariant ข้อเดียวที่ **ไม่มีชั้นสำรอง**
+**P**: **สนับสนุนให้ตัด** — หลัง warm-up replica รับแค่ single-flight miss ตอน TTL หมด คือไม่กี่ query ต่อนาที การตัดทิ้งยังคืน connection 48 ตัว และ **ลบกับดัก `createQueryRunner('master')` ทิ้งไปด้วย** ซึ่ง `diagrams.md` §8 ระบุเองว่าเป็น invariant ข้อเดียวที่ **ไม่มีชั้นสำรอง**
 
 **S**: replica ไม่มีอยู่ในตาราง traceability ข้อไหนเลย (ข้อ 1.3 เขียนว่า *"PostgreSQL + TypeORM + Connection Pooling"* ไม่มีคำว่า replication) แต่มันสร้าง failure class ขึ้นมาเองทั้งคลาส
 

@@ -4,7 +4,7 @@
 > ไฟล์นี้เป็น pointer สำหรับ AI tool ที่อ่านเฉพาะ `AGENTS.md` (Codex, Cursor, ฯลฯ)
 > เก็บไว้เฉพาะกฎที่ "พลาดแล้วพัง" เพื่อไม่ให้เนื้อหาสองไฟล์แตกกันเอง
 
-**โปรเจกต์**: Flash Sale System — NestJS + Nginx (3 instances) + PostgreSQL replication + Redis ×2 + BullMQ + JWT
+**โปรเจกต์**: Flash Sale System — NestJS + Nginx (6 instances) + PostgreSQL replication + Redis ×2 + BullMQ + JWT
 **สถานะ**: 🛠️ implemented — `src/` ครบ · `docker-compose.yml` 1-click start · `loadtest.js` พร้อม · build/lint/test ผ่าน (32 tests)
 **แต่ยังไม่เคยรันบน container และยังไม่เคยยิง k6** — ตัวเลข performance ในเอกสารทุกตัวยังเป็นค่าประมาณ
 

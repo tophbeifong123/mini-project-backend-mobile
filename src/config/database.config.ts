@@ -10,7 +10,8 @@ import { Product } from '../products/entities/product.entity';
  * TypeORM options สำหรับ runtime ของ app (§8 Connection Pooling)
  *
  * - `replication` สร้าง pool **แยกต่อ master และต่อ slave แต่ละตัว**
- *   → total = instances × (1 master + 1 replica) × poolSize = 3 × 2 × 10 = 60
+ *   → นับแยกต่อเซิร์ฟเวอร์: 6 instances × poolSize 8 = 48 บน primary และ 48 บน replica
+ *   (อย่าบวกรวมกัน — มันคนละเซิร์ฟเวอร์ ดู architecture.md §8)
  * - `defaultMode: 'slave'` → read ทั่วไปวิ่งไป replica
  *   ⚠️ write path ของ worker ต้องเรียก `dataSource.createQueryRunner('master')` เองเสมอ
  *   (invariant CLAUDE.md §4 ข้อ 3) เพราะ replica มี lag

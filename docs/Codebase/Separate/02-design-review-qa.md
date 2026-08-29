@@ -51,7 +51,7 @@ round trip เท่าเดิม (`EVALSHA` → `HGETALL`) ปิดได้
 
 **🏎️ PERF:** เอกสารเขียนว่าคอขวดคือ `redis-data` — **ผิดลำดับแบบห่างมาก** write burst ทั้งชุดสร้างภาระให้ `redis-data` แค่ ~2,050 ops ส่วน read path `MGET` คือ 99% ที่เหลือ และรวมกันแล้ว Redis ยังอยู่ที่ **5–10% ของ 1 core**
 
-คอขวดจริงคือ **event loop ของ Node** เพราะ k6 เป็น closed loop ไม่มี `sleep()` → Little's Law บังคับว่า 1,500 VUs ที่ p95 200ms = ต้องได้ ~10,000 rps = **3,300 rps ต่อ process** สำหรับ handler ที่มี 2 Redis hop + JSON parse/stringify + log 2 บรรทัด
+คอขวดจริงคือ **event loop ของ Node** เพราะ k6 เป็น closed loop ไม่มี `sleep()` → Little's Law บังคับว่า 1,500 VUs ที่ p95 200ms = ต้องได้ ~10,000 rps = **~1,670 rps ต่อ process** (ที่ 6 instance) สำหรับ handler ที่มี 2 Redis hop + JSON parse/stringify + log 2 บรรทัด
 
 **🔒 CORRECT:** ตัวเลขนั้นทำให้ความเสี่ยงของผม **มีโอกาสมากขึ้น ไม่ใช่น้อยลง** — BullMQ ต่ออายุ lock ด้วย `setTimeout` ทุก 15 วิ **บน event loop เดียวกับ API** ถ้า event loop ตัน job จะ stall และ `maxStalledCount: 1` แปลว่า stall ครั้งที่สอง job จะ fail **โดยไม่เรียก handler** → `compensateOnce` ไม่ทำงาน → สต็อกหาย 1 ชิ้น
 
@@ -63,13 +63,13 @@ round trip เท่าเดิม (`EVALSHA` → `HGETALL`) ปิดได้
 ```bash
 podman stats --no-stream --format 'table {{.Name}} {{.CPUPerc}}'
 ```
-PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis ทั้งสอง ≤25% — **ถ้า `redis-data` กินมากกว่า app แปลว่า PERF ผิด**
+PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis ทั้งสอง ≤25% — ⚠️ ตั้งสมมติว่า 3 process บนโฮสต์ core เหลือเฟือ บน VM 4 core / 6 process เป็นไปไม่ได้ — **ถ้า `redis-data` กินมากกว่า app แปลว่า PERF ผิด**
 
 ---
 
 ## 3. Read path ควร 503 หรือ ตอบเลขเก่า
 
-**🏎️ PERF:** `products.service.ts:114-123` โยน 503 เมื่อ `MGET` ล้ม ทั้งที่ `fallbackRemainingStock` นั่งอยู่ในแคชแล้ว — พอ `redis-data` สะดุด reader 1,000 คนจะค้างจนชน `proxy_read_timeout 5s` แล้วได้ **504** ซึ่งไม่อยู่ใน `expectedStatuses` ด้วยซ้ำ เลขเก่านิดหน่อยแย่กว่าอ่านไม่ได้ทั้งระบบจริงเหรอ
+**🏎️ PERF:** `products.service.ts:114-123` โยน 503 เมื่อ `MGET` ล้ม ทั้งที่ `fallbackRemainingStock` นั่งอยู่ในแคชแล้ว — พอ `redis-data` สะดุด reader 1,000 คนจะค้างจนชน `proxy_read_timeout 10s` แล้วได้ **504** ซึ่งไม่อยู่ใน `expectedStatuses` ด้วยซ้ำ เลขเก่านิดหน่อยแย่กว่าอ่านไม่ได้ทั้งระบบจริงเหรอ
 
 **🔒 CORRECT:** *(ยอมรับ)* **PERF ถูก ผมยอม** ผมปกป้อง invariant ที่ไม่มีอยู่จริง — ไม่มีใครซื้อของจาก response ของ `GET` ตัวตัดสินคือ `gatekeeper.lua` การอ่านเลขเก่าไม่ทำให้ oversell, ไม่ทำให้ซื้อซ้ำ, ไม่ทำให้ Redis กับ DB เพี้ยน **read path ไม่ใช่พื้นผิวของความถูกต้อง**
 
@@ -114,9 +114,9 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 
 ## 6. Worker กับ API แย่ง connection pool กันจริงไหม
 
-**🏎️ PERF:** `architecture.md` §8 กับ ADR-6 บอกว่า "API กับ worker แย่ง pool 10 ตัวเดียวกัน นั่นคือเหตุผลที่ concurrency ต้องเป็น 5" — **โค้ดไม่ได้ทำแบบนั้น** `replication` + `defaultMode:'slave'` สร้าง pool **แยกต่อ master และต่อ slave** (`PostgresDriver.js:1380`) API อ่าน catalog ไปที่ slave pool ส่วน worker ขอ `createQueryRunner('master')` **ไม่เคยชนกัน** concurrency จะเป็น 10 ก็ยังปลอดภัย
+**🏎️ PERF:** `architecture.md` §8 กับ ADR-6 บอกว่า "API กับ worker แย่ง pool 10 ตัวเดียวกัน นั่นคือเหตุผลที่ concurrency ต้องเป็น 5" — **โค้ดไม่ได้ทำแบบนั้น** `replication` + `defaultMode:'slave'` สร้าง pool **แยกต่อ master และต่อ slave** (`PostgresDriver.js:1380`) API อ่าน catalog ไปที่ slave pool ส่วน worker ขอ `createQueryRunner('master')` **ไม่เคยชนกัน** concurrency จะเป็น 8 (เท่า poolSize ปัจจุบัน) ก็ยังปลอดภัย
 
-และสูตร `instances × (1+replicas) × poolSize ≤ 80% ของ max_connections` **มิติผิด** — บวก connection ที่ไปคนละ server แล้วเทียบกับ limit ของ server เดียว ค่าที่ถูกคือ 30 บน primary และ 30 บน replica แยกกัน
+และสูตร `instances × (1+replicas) × poolSize ≤ 80% ของ max_connections` **มิติผิด** — บวก connection ที่ไปคนละ server แล้วเทียบกับ limit ของ server เดียว ค่าที่ถูกคือ 48 บน primary และ 48 บน replica แยกกัน
 
 เพดานจริงของ write ไม่ใช่ pool ด้วยซ้ำ — 50 update ยิงแถวเดียวกัน มัน serialize ที่ row lock ไม่ว่า concurrency จะเป็น 5 หรือ 50
 
@@ -134,7 +134,7 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 
 **แต่มีกับดัก**: ตัดแล้ว master กับ slave ยุบเป็น pool เดียว → **สร้าง** การแย่ง pool ที่เอกสารอ้าง (ผิด) ว่ามีอยู่แล้ว ต้อง re-derive `WORKER_CONCURRENCY` ก่อน อย่าตัดแล้วปล่อยตัวเลขเดิม
 
-**✂️ SIMPLE:** กับดักจริง และแก้ด้วยบรรทัดเดียว — `DB_POOL_SIZE=20` แล้ว `3 × 20 = 60` เท่าเดิม headroom เท่าเดิม `WORKER_CONCURRENCY=5` ยังอยู่ในของตัวเองจริงๆ **การตัดจึงทำให้เหตุผลของ ADR-6 กลายเป็นเรื่องจริงแทนที่จะเป็นความหวัง — เป็นของแถม ไม่ใช่ต้นทุน**
+**✂️ SIMPLE:** กับดักจริง และแก้ด้วยบรรทัดเดียว — `DB_POOL_SIZE=13` แล้ว `6 × 13 = 78 ≤ 80` headroom เท่าเดิม (⚠️ เลข 20 ที่เคยเขียนตอน 3 instance ตอนนี้จะเป็น 6 × 20 = 120 > 100 คือ start ไม่ขึ้น) `WORKER_CONCURRENCY=5` ยังอยู่ในของตัวเองจริงๆ **การตัดจึงทำให้เหตุผลของ ADR-6 กลายเป็นเรื่องจริงแทนที่จะเป็นความหวัง — เป็นของแถม ไม่ใช่ต้นทุน**
 
 **🔒 CORRECT:** จากมุมความถูกต้องผม**ไม่คัดค้าน** ขอแค่ `orders.processor.ts:56` ยังเป็น `createQueryRunner('master')` เพื่อให้ invariant รอดจากการ refactor ไม่ใช่กลายเป็นจริงโดยบังเอิญ
 
@@ -216,7 +216,7 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 | 7 | ใส่ `commandTimeout` ให้ ioredis | PERF | ✅ 1000 ms |
 | 8 | `compensated:` TTL 86400 → 300 วิ | PERF | ✅ แก้แล้ว |
 | 9 | ย้าย `requestToken` ไปเป็นค่าของ lock (ให้ CAS ทำงานจริง) | CORRECT | ✅ + `compensate*.lua` เป็น compare-and-delete |
-| 10 | ตัด PG replica + `DB_POOL_SIZE=20` | SIMPLE, PERF | ❌ **ไม่ทำ** — กระทบ requirement (read-write split เป็นหัวข้อในรายงาน) |
+| 10 | ตัด PG replica + `DB_POOL_SIZE=13` | SIMPLE, PERF | ❌ **ไม่ทำ** — กระทบ requirement (read-write split เป็นหัวข้อในรายงาน) |
 | 11 | แก้เอกสาร 4 จุดที่ไม่ตรงโค้ด | ทั้ง 3 | ✅ §8, ADR-4, Q3, §6 |
 
 > ทั้งหมดแตะ `CLAUDE.md` §8 จึงขออนุมัติก่อน — ได้รับอนุมัติ 2026-08-26

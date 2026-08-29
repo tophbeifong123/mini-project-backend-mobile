@@ -10,7 +10,7 @@
 
 | # | ข้อกำหนดจากโจทย์ | ที่อยู่ในเอกสารนี้ |
 | :-- | :--- | :--- |
-| 1.1 | Load Balancer: Nginx → **≥ 3 instances** | §2 |
+| 1.1 | Load Balancer: Nginx → **≥ 3 instances** (รันจริง **6 instances**) | §2 |
 | 1.2 | Backend: NestJS **Modular structure** | §3 |
 | 1.3 | Database: PostgreSQL + TypeORM + **Connection Pooling** | §8 |
 | 1.3.1 | Schema / Entity / Migration | **§3.1** |
@@ -39,13 +39,16 @@ flowchart TD
     end
 
     subgraph Edge["⚖️ Edge Layer"]
-        NGINX["Nginx Reverse Proxy :8080<br/>least_conn · keepalive 64<br/>proxy_http_version 1.1"]
+        NGINX["Nginx Reverse Proxy :8080<br/>least_conn · keepalive 128<br/>proxy_http_version 1.1<br/>max_fails=0 · proxy_next_upstream error"]
     end
 
-    subgraph BackendCluster["🚀 NestJS Cluster (3 Instances)"]
-        APP1["app-1 :3000<br/>API + Worker"]
+    subgraph BackendCluster["🚀 NestJS Cluster (6 Instances)"]
+        APP1["app-1 :3000<br/>API + Worker<br/>RUN_MIGRATIONS=true"]
         APP2["app-2 :3000<br/>API + Worker"]
         APP3["app-3 :3000<br/>API + Worker"]
+        APP4["app-4 :3000<br/>API + Worker"]
+        APP5["app-5 :3000<br/>API + Worker"]
+        APP6["app-6 :3000<br/>API + Worker"]
     end
 
     subgraph AuthMod["🔐 Auth (Stateless)"]
@@ -64,7 +67,7 @@ flowchart TD
     end
 
     subgraph WorkerTier["⚙️ BullMQ Consumer"]
-        WORKER["Worker concurrency 5 / node<br/>= DB pool size"]
+        WORKER["Worker concurrency 5 / node<br/>6 nodes = 30 concurrent writes<br/>(≤ master pool 8 / instance)"]
     end
 
     subgraph DatabaseTier["🗄️ PostgreSQL 16"]
@@ -73,14 +76,14 @@ flowchart TD
     end
 
     C1 & C2 --> NGINX
-    NGINX -->|least_conn| APP1 & APP2 & APP3
+    NGINX -->|least_conn| APP1 & APP2 & APP3 & APP4 & APP5 & APP6
 
-    APP1 & APP2 & APP3 --> JWT
-    APP1 & APP2 & APP3 -->|read| CACHE
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 --> JWT
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 -->|read| CACHE
     CACHE -.->|miss| PG_REPLICA
-    APP1 & APP2 & APP3 -->|"MGET stock overlay"| LUA
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 -->|"MGET stock overlay"| LUA
 
-    APP1 & APP2 & APP3 -->|write| LUA
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 -->|write| LUA
     LUA -->|allowed| QUEUE
     LUA -->|rejected| NGINX
 
@@ -103,10 +106,18 @@ flowchart TD
 ```nginx
 upstream backend {
     least_conn;                 # กระจายตาม in-flight connection จริง เหมาะกับ burst
-    server app-1:3000 max_fails=3 fail_timeout=10s;
-    server app-2:3000 max_fails=3 fail_timeout=10s;
-    server app-3:3000 max_fails=3 fail_timeout=10s;
-    keepalive 64;
+
+    # ⚠️ max_fails=0 = ปิด passive health check โดยเจตนา
+    # backend ทั้ง 6 ตัวเหมือนกันทุกอย่าง เวลาโหลดพีคมันช้าพร้อมกัน
+    # ถ้าเปิด max_fails ไว้ nginx จะตัดออกครบทุกตัว → `no live upstreams` → 502 รวด
+    # (วัดจริง 2026-08-27: 502 จำนวน 115,005 ครั้ง และ write path ไม่ถูกทดสอบเลย)
+    server app-1:3000 max_fails=0;
+    server app-2:3000 max_fails=0;
+    server app-3:3000 max_fails=0;
+    server app-4:3000 max_fails=0;
+    server app-5:3000 max_fails=0;
+    server app-6:3000 max_fails=0;
+    keepalive 128;
 }
 
 server {
@@ -115,7 +126,7 @@ server {
     location / {
         proxy_pass http://backend;
 
-        # ⚠️ บังคับ 2 บรรทัดนี้ ไม่งั้น `keepalive 64` ข้างบนไม่ทำงานเลย
+        # ⚠️ บังคับ 2 บรรทัดนี้ ไม่งั้น `keepalive 128` ข้างบนไม่ทำงานเลย
         # Nginx จะคุย upstream ด้วย HTTP/1.0 + Connection: close
         # → TCP handshake ใหม่ทุก request (ตัวฉุด p95 อันดับ 1)
         proxy_http_version 1.1;
@@ -126,15 +137,23 @@ server {
         proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
 
+        # ⚠️ default ของ proxy_next_upstream คือ `error timeout` แปลว่า request ที่
+        # timeout จะถูกยิงซ้ำไป upstream ตัวถัดไปเอง → ตอนระบบเริ่มช้า = คูณโหลดเข้าไปอีก
+        proxy_next_upstream error;
+
         # กัน upstream ค้างแล้วกิน worker_connections จนหมด
-        proxy_connect_timeout 2s;
-        proxy_send_timeout    5s;
-        proxy_read_timeout    5s;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout    10s;
+        proxy_read_timeout    10s;
     }
 }
 ```
 
 > Nginx เวอร์ชันฟรีมีแค่ **passive health check** (`max_fails` / `fail_timeout`) — มันอ่านสถานะ `HEALTHCHECK` ของ Docker/Podman **ไม่ได้** อย่าออกแบบโดยคิดว่ามี active failover *(B06 slide-errata #1, #2)*
+>
+> ด้วยเหตุนี้ คอนฟิกจริงจึง **ปิด passive health check ทิ้ง (`max_fails=0`, ไม่มี `fail_timeout`)**
+> เพราะ backend ทั้ง 6 ตัวเหมือนกันหมด เวลาโหลดพีคมันช้าพร้อมกัน → nginx ตัดออกครบทุกตัวพร้อมกัน
+> → `no live upstreams` → 502 รวด หน้าที่จับ instance ตายจึงเป็นของ `healthcheck` ใน compose ไม่ใช่ของ nginx
 
 ---
 
@@ -348,7 +367,7 @@ export class Order {
 
 #### 3.1.6 จุดที่ write ทั้งหมดไปรวมกัน
 
-worker ทุกตัวใน 3 instance (รวม 15 concurrent — §8) `UPDATE` **แถวเดียวกัน** คือ `products` ของ `p-1001`
+worker ทุกตัวใน 6 instance (รวม 30 concurrent — §8) `UPDATE` **แถวเดียวกัน** คือ `products` ของ `p-1001`
 → PostgreSQL จะ **serialize พวกมันที่ row lock ของแถวนั้น** ซึ่ง **ถูกต้องและตั้งใจ**: ของมี 50 ชิ้น = `UPDATE` สำเร็จ 50 ครั้ง ไม่ใช่ปริมาณที่ต้องกังวล
 ส่วน `INSERT INTO orders` ขอแค่ `KEY SHARE` บนแถว products (จาก FK) ซึ่ง **ไม่ชนกับ `FOR NO KEY UPDATE`** ที่ `UPDATE` ถือไว้ จึงไม่เกิด lock escalation
 
@@ -358,10 +377,10 @@ worker ทุกตัวใน 3 instance (รวม 15 concurrent — §8) `UP
 
 ## 4. 🔐 Stateless Authentication (JWT)
 
-โจทย์บังคับ **JWT + ห้ามใช้ in-memory session** เพราะทั้ง 3 instance ต้อง verify token ได้เองโดยไม่ต้องแชร์ state
+โจทย์บังคับ **JWT + ห้ามใช้ in-memory session** เพราะทั้ง 6 instance ต้อง verify token ได้เองโดยไม่ต้องแชร์ state
 
 ### 4.1 หลักการ
-- **HS256 + shared secret** จาก `JWT_SECRET` (env) — ทั้ง 3 instance ใช้ secret เดียวกัน จึง verify ข้าม instance ได้
+- **HS256 + shared secret** จาก `JWT_SECRET` (env) — ทั้ง 6 instance ใช้ secret เดียวกัน จึง verify ข้าม instance ได้
 - **Verify แบบ zero-I/O**: ห้าม query DB/Redis ตอน validate token เด็ดขาด ที่ 500 concurrent มันจะกลายเป็นคอขวดทันที
 - `userId` ที่ใช้เป็น key ใน Redis (§6.1) และเป็น `orders.user_id` **ต้องมาจาก JWT claim `sub` เท่านั้น** ห้ามรับจาก request body — ไม่งั้นสวมสิทธิ์กันได้และ dedup พังทั้งระบบ
 - ข้อจำกัดที่ยอมรับ: JWT **เพิกถอนไม่ได้** จึงตั้ง TTL สั้น (`15m`) พอสำหรับ load test *(B06)*
@@ -416,7 +435,7 @@ GET /api/v1/products?page=1&limit=10
 - **TTL jitter** (ใช้จริง): `ttl = 30 + random(0..30)` วินาที — key ที่ถูกเซ็ตพร้อมกันตอน warm-up จะไม่หมดอายุพร้อมกัน (avalanche) *(B04)*
 - **Probabilistic early expiration / XFetch** — *ทางเลือก, ไม่ใช้ในการส่งงาน*: สูตร `−β · δ · ln(rand()) > TTL_remaining` ใช้ refresh ล่วงหน้าใน background. ที่ TTL 60s กับ k6 run ~60s มันแทบไม่ทำงานเลยและพิสูจน์ในรายงานไม่ได้ — เขียนอธิบายไว้ได้แต่ไม่ต้อง implement
 
-> ❌ **ไม่ใช้ L1 in-memory LRU cache** — ถ้าเก็บผลลัพธ์ที่มี `remainingStock` ไว้ใน RAM ของแต่ละ instance นาน 1–2 วินาที ทั้ง 3 instance จะตอบสต็อกไม่ตรงกัน ขัดกับ "เงื่อนไขสำคัญ" ของโจทย์โดยตรง และขัดกฎ stateless *(B06)*
+> ❌ **ไม่ใช้ L1 in-memory LRU cache** — ถ้าเก็บผลลัพธ์ที่มี `remainingStock` ไว้ใน RAM ของแต่ละ instance นาน 1–2 วินาที ทั้ง 6 instance จะตอบสต็อกไม่ตรงกัน ขัดกับ "เงื่อนไขสำคัญ" ของโจทย์โดยตรง และขัดกฎ stateless *(B06)*
 
 ### 5.4 Cache Invalidation
 - **Metadata cache**: invalidate เฉพาะตอนแก้ข้อมูลสินค้าจริง (ชื่อ/ราคา) — ไม่ต้องแตะตอนมีคนซื้อ
@@ -510,7 +529,7 @@ return 1                 -- ALLOWED
 > **ทำไม `-4` ถึงสำคัญ**: โค้ดแบบ `tonumber(redis.call('GET', k) or '0')` จะแปลง "ไม่มี key" เป็น "สต็อก 0" → ถ้า Redis restart หรือ key ถูก evict ระบบจะตอบ *ของหมด* ตลอดกาลโดยไม่มีใครรู้ว่าผิดปกติ. แยก error code ออกมาแล้วตอบ 503 ทำให้ปัญหานี้ปรากฏใน dashboard ทันที
 
 **การ seed stock counter** (ขาดไม่ได้):
-- ตอน bootstrap ให้ตั้ง `SET stock:flash_sale:{id} <remaining_stock จาก DB> NX` สำหรับสินค้า flash sale ทุกตัว — `NX` กันไม่ให้ instance ที่ 2 และ 3 เขียนทับค่าที่ถูกหักไปแล้ว
+- ตอน bootstrap ให้ตั้ง `SET stock:flash_sale:{id} <remaining_stock จาก DB> NX` สำหรับสินค้า flash sale ทุกตัว — `NX` กันไม่ให้ instance ที่ 2 ถึง 6 เขียนทับค่าที่ถูกหักไปแล้ว
 - `redis-data` ต้อง `maxmemory-policy noeviction` + เปิด AOF (§1)
 
 ### 6.2 Tier 2: Enqueue + Compensation
@@ -589,7 +608,7 @@ async createOrder(userId: string, productId: string) {
 
 ```typescript
 // orders.processor.ts
-@Processor('orders', { concurrency: 5 })   // = ขนาด pool ของ master (§8) ห้ามเกิน
+@Processor('orders', { concurrency: 5 })   // ≤ ขนาด pool ของ master (= 8, §8) ห้ามเกิน
 export class OrdersProcessor extends WorkerHost {
   async process(job: Job<OrderJobData>) {
     const { userId, productId } = job.data;
@@ -705,13 +724,16 @@ Error mapping: `23505` → 409 · `23514` (check) → 400 · `40P01` (deadlock) 
 | Worker ตายหลัง commit ก่อน `markBought` | คืนสต็อกทั้งที่ขายไปแล้ว → oversell | side effect อยู่นอก try เดิม + `committed` flag (§6.3) |
 | BullMQ retry job ที่สำเร็จแล้ว | insert ซ้ำ / คืนสต็อกซ้ำ | `UNIQUE` → จับ `23505` แล้ว return + `compensateOnce` (§6.3) |
 | Worker อ่านสต็อกจาก Replica | race condition จาก replication lag | บังคับ `createQueryRunner('master')` (§6.3) |
-| Worker concurrency > DB pool | job timeout รอ connection | concurrency 5 = pool 5 (§8) |
+| Worker concurrency > DB pool | job timeout รอ connection | concurrency 5 ≤ master pool 8 (§8) |
 | ผู้ใช้กดรัว 2–3 ครั้ง | ได้ของเกิน 1 ชิ้น | in-flight lock + `bought` flag + `UNIQUE` (§6.1, §6.4) |
 | Cache หมดอายุพร้อมกันตอน 1,000 VUs | DB โดนถล่ม (stampede/avalanche) | single-flight + TTL jitter (§5.3) |
 
 ---
 
 ## 8. 🎛️ Connection Pooling & Resource Sizing
+
+> อัปเดต **2026-08-27** — ขยายจาก 3 → **6 instances** และลด `DB_POOL_SIZE` จาก 10 → **8**
+> ตัวเลขทุกตัวใน §นี้มาจาก `docker-compose.yml` / `nginx.conf` จริง ไม่ใช่ค่าที่ตั้งใจไว้ตอนออกแบบ
 
 **สูตรที่ต้องใช้** *(B06 — เป็นจุดที่สไลด์คำนวณผิด)*:
 ```
@@ -723,27 +745,66 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 
 > ⚠️ **แก้จากฉบับก่อน (2026-08-26)** — เดิมเขียนว่า `instances × (1 + replicas) × poolSize ≤ 80% ของ max_connections`
 > ซึ่ง **มิติผิด**: มันบวก connection ที่ไปลงคนละเซิร์ฟเวอร์เข้าด้วยกัน แล้วเอาไปเทียบกับ limit ของเซิร์ฟเวอร์เดียว
-> ค่าที่ถูกคือ **30 บน primary และ 30 บน replica แยกกัน** ไม่ใช่ 60 ที่ต้องเทียบกับ 100
+> ค่าที่ถูกที่ 6 instances คือ **48 บน primary และ 48 บน replica แยกกัน** ไม่ใช่ 96 ที่ต้องเทียบกับ 100
 
-| องค์ประกอบ | ค่า | เหตุผล |
+| องค์ประกอบ | ค่า | เหตุผล / ที่มา |
 | :--- | :--- | :--- |
-| `poolSize` ต่อ DataSource | **10** | 3 instances × (1 master + 1 replica) × 10 = **60 connections** |
-| Primary `max_connections` | 100 | ใช้จริง 30 (master pool) → 30% ปลอดภัย |
-| Replica `max_connections` | ≥ 100 | ใช้จริง 30 (slave pool) — hot standby ต้อง ≥ ของ primary |
-| **Worker concurrency** | **5 / instance** | ⚠️ **ห้ามเกิน poolSize** ของ master. รวม 15 concurrent writes ทั้งคลัสเตอร์ ซึ่งเกินพอสำหรับของ 50 ชิ้น |
-| Redis: `redis-cache` | 1 client (multiplexed) | แคชล้วน `allkeys-lru` |
-| Redis: `redis-data` | 3 clients | ① คำสั่งทั่วไป/Lua ② BullMQ producer ③ BullMQ worker (blocking `BZPOPMIN` ใช้ connection แยกเสมอ) |
-| Nginx | `worker_connections 10240`, `keepalive 64` | ต้องมาคู่กับ `proxy_http_version 1.1` (§2) |
+| จำนวน instance | **6** (`app-1` … `app-6`) | `docker-compose.yml` — โจทย์บังคับ ≥ 3 |
+| `poolSize` ต่อ DataSource | **8** (`DB_POOL_SIZE`) | ตั้งที่ compose ทุก service · default ใน `env.validation.ts` คือ 10 แต่ไม่ถูกใช้ใน container |
+| Connections บน **primary** | **6 × 8 = 48** / 100 (48%) | master pool — เฉพาะ worker (`createQueryRunner('master')`) |
+| Connections บน **replica** | **6 × 8 = 48** / 100 (48%) | slave pool — catalog read (`defaultMode: 'slave'`) |
+| headroom ต่อเซิร์ฟเวอร์ | ✅ ยังใต้กฎ 80% | 48 ≤ 80 · เพดานที่พังคือ **10 instances** (10 × 8 = 80) |
+| **Worker concurrency** | **5 / instance** → รวม **30** | ≤ master pool 8 · อ่านจาก `process.env` ตอน decorate class แก้ใน `.env` ไม่มีผล |
+| Redis: `redis-cache` | 1 client / instance → **6** | แคชล้วน `allkeys-lru` · `maxmemory 256mb` |
+| Redis: `redis-data` | ≈ **36** (6 × 6) | ต่อ instance: ① client ทั่วไป/Lua ② BullMQ `Queue` (มี 3 ออบเจกต์ — Nest 11 ไม่ dedupe) ③ Worker 2 ตัว (client + blocking) · `maxmemory 512mb` `noeviction` + AOF |
+| Nginx | `worker_connections 10240`, `keepalive 128` | ต้องมาคู่กับ `proxy_http_version 1.1` (§2) |
 
-> **ข้อควรระวัง (แก้ 2026-08-26)** — ฉบับก่อนเขียนว่า "ทั้ง API และ worker แย่ง pool 10 ตัวเดียวกัน" **ซึ่งไม่จริงกับโค้ดที่เขียนจริง**
+### 8.1 🖥️ Deployment Target — Production VM
+
+| ทรัพยากร | มีเท่าไหร่ | ใครกิน |
+| :--- | :--- | :--- |
+| vCPU | **4 core** | 6 Node process (app) + nginx `worker_processes auto` (→ 4) + postgres ×2 + redis ×2 = **11 container** |
+| RAM | **6 GB** | redis จองไว้แล้ว 768 MB (256 + 512) · PG primary `shared_buffers=256MB` · PG replica default 128MB · ที่เหลือหาร 6 Node process |
+| Storage | **30 GB** | ดู §8.2 ข้อ 3 |
+
+> ⚠️ **ไม่มี resource limit เลย** — `docker-compose.yml` ไม่มี `mem_limit` / `cpus` / `deploy.resources`
+> และ `Dockerfile` ไม่ได้ตั้ง `NODE_OPTIONS` / `--max-old-space-size`
+> → V8 ของทั้ง 6 process คำนวณ heap จาก RAM ของ **โฮสต์ (6 GB)** แต่ละตัว — ไม่มีอะไรคุมผลรวม
+
+### 8.2 🧭 เพดานจริงอยู่ตรงไหน (จุดที่จะตันก่อน)
+
+เรียงตามลำดับที่จะเจอ — **การเพิ่ม instance ไม่ได้ขยับข้อไหนเลยหลังจากนี้**
+
+1. **CPU ของ VM (4 core)** — แต่ละ instance คือ **1 Node process = 1 JS thread** (`src/main.ts` ไม่มี cluster / PM2 / worker_threads)
+   6 process บน 4 core คือ **oversubscribe อยู่แล้ว** — เพิ่มเป็น 8–10 จะได้ context switch มากขึ้น ไม่ใช่ throughput
+2. **`redis-data` เป็น single thread ตัวเดียว** ที่รับงานทั้ง 4 อย่างพร้อมกัน:
+   `gatekeeper.lua` (write) · BullMQ queue · `MGET stock:*` **ทุก read request ไม่เคยแคช** · AOF fsync
+   → เพิ่ม app instance = เพิ่มโหลดให้ redis ตัวเดียวนี้ตรงๆ
+3. **Disk 30 GB — log ไม่มี rotation** `docker-compose.yml` ไม่มี `logging:` สัก service → json-file driver โตไม่จำกัด
+   และ **1 API request = ≈ 3 บรรทัด JSON log** (pino-http + `LoggingInterceptor` + nginx access log) ≈ 600–800 bytes
+   → ทดสอบระดับล้าน request กิน disk ระดับ GB
+4. **Row lock แถวเดียว** — 30 concurrent worker ทั้งคลัสเตอร์ `UPDATE products` ของ `p-1001` แถวเดียวกัน
+   จำนวน worker ที่เพิ่มจึง **ไม่ช่วยให้ขายเร็วขึ้น** — มีแต่ค้างรอโดยกิน pool connection ไว้
+5. **single-flight เป็น per-process** (`products.service.ts` ใช้ `Map` ใน RAM)
+   แคชหลุดทีไร → มี **6 query วิ่งเข้า replica พร้อมกัน** (ไม่ใช่ 1) — เพิ่ม instance = เพิ่มจำนวนนี้
+6. **`invalidateCatalogCache()` debounce เป็น per-process** — ≤ 1 ครั้ง/วินาที **ต่อ process**
+   6 instance → flush ได้ถึง 6 ครั้ง/วินาที → ตี read path แรงขึ้นตามจำนวน instance
+
+> **สรุป**: ข้อ 1–2 ทำให้การเพิ่ม instance จาก 6 เป็น 8–10 บน VM ตัวนี้ **ได้ผลลดลงหรือติดลบ**
+> ข้อ 5–6 ทำให้การเพิ่ม instance **ไปเพิ่มโหลดให้ replica และ redis-cache** ด้วย
+> จุดที่ยังมีที่ว่างจริงคือ **connection headroom (48/80)** และ **RAM** — ไม่ใช่ CPU
+
+> **ข้อควรระวัง (แก้ 2026-08-26)** — ฉบับก่อนเขียนว่า "ทั้ง API และ worker แย่ง pool ตัวเดียวกัน" **ซึ่งไม่จริงกับโค้ดที่เขียนจริง**
 > เพราะเปิด `replication` + `defaultMode: 'slave'` ไว้ TypeORM จึงสร้าง **pool แยกต่อ master และต่อ slave**
 > → API อ่าน catalog ลง **slave pool** ส่วน worker ขอ `createQueryRunner('master')` ลง **master pool** — **ไม่เคยชนกัน**
 >
-> `WORKER_CONCURRENCY = 5` จึงไม่ได้มีที่มาจากการแย่ง pool (จะเป็น 10 ก็ยังปลอดภัย)
+> `WORKER_CONCURRENCY = 5` จึงไม่ได้มีที่มาจากการแย่ง pool (จะเป็น 8 เท่า poolSize ก็ยังปลอดภัย)
 > เพดานจริงของ write path คือ **row lock ของสินค้าแถวเดียว** ที่ทุก worker ยิงใส่ ซึ่ง serialize อยู่แล้วไม่ว่า concurrency จะเป็นเท่าไหร่
 >
 > ⚠️ **แต่ถ้าวันไหนตัด replica ทิ้ง** master กับ slave จะยุบเป็น pool เดียว แล้วคำเตือนเดิมจะ *กลายเป็นจริงขึ้นมา*
-> ต้อง re-derive `DB_POOL_SIZE` (เช่นเป็น 20) **ก่อน** แก้ compose ไม่ใช่หลัง
+> ต้อง re-derive `DB_POOL_SIZE` **ก่อน** แก้ compose ไม่ใช่หลัง
+> ⚠️ ที่ 6 instances ค่าที่ถูกคือ **13** (6 × 13 = 78 ≤ 80) — เลข **20** ที่เคยเขียนไว้ในฉบับ 3 instances
+> จะกลายเป็น 6 × 20 = **120 > max_connections 100** คือ start ไม่ขึ้นทันที
 
 ---
 
@@ -756,7 +817,7 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 | **Cache** | Hit / Miss Ratio | ≥ 90% | `redis-cli INFO stats` → `keyspace_hits` / `keyspace_misses` |
 | **Queue** | Waiting / Active / Completed / **Failed** | Completed = 50, Failed = job ของคนที่ของหมด | Bull-Board `/admin/queues` |
 | **Throughput** | Req/s, **p95 latency**, Error rate | p95 read < 200ms, error < 0.1% | k6 summary |
-| **DB Primary** | Active connections, lock wait | active < 30 | `pg_stat_activity` |
+| **DB Primary** | Active connections, lock wait | active < 48 (= 6 x pool 8) | `pg_stat_activity` |
 | **DB Replica** | Replication lag | < 1s | `pg_stat_replication` |
 
 > วัด **percentile ไม่ใช่ average** — p95/p99 คือคนที่โกรธที่สุดและมักเป็นคนที่ข้อมูลเยอะที่สุด *(B06)*
