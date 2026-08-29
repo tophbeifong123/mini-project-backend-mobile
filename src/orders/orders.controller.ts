@@ -7,7 +7,6 @@ import {
   Req,
   UnauthorizedException,
   UseGuards,
-  ValidationPipe,
 } from '@nestjs/common';
 import type { Request } from 'express';
 
@@ -37,14 +36,13 @@ export class OrdersController {
   @HttpCode(HttpStatus.ACCEPTED)
   async createOrder(
     @Req() request: AuthenticatedRequest,
-    @Body(
-      new ValidationPipe({
-        transform: true,
-        whitelist: true,
-        forbidNonWhitelisted: true, // ปฏิเสธ field แปลกปลอม เช่น quantity / userId
-      }),
-    )
-    dto: CreateOrderDto,
+    // ⚠️ ห้ามใส่ ValidationPipe ตัวเองตรงนี้ — global pipe ใน `main.ts` คุมอยู่แล้ว
+    //    (`whitelist: true` ตัด field แปลกปลอมทิ้งเงียบๆ ไม่ตอบ 400)
+    //    เคยมี `forbidNonWhitelisted: true` อยู่ตรงนี้ ซึ่ง (ก) เป็น dead code เพราะ
+    //    global pipe รันก่อนเสมอ จึงตัด field ทิ้งไปก่อนที่ pipe นี้จะเห็น และ
+    //    (ข) ขัดกับเจตนาที่เขียนไว้ชัดใน `main.ts` ตรงๆ — ถ้าวันไหน global
+    //    whitelist ถูกแก้ ตัวนี้จะตื่นขึ้นมาตอบ 400 ให้ทุกกลุ่มที่ส่ง `quantity` มา
+    @Body() dto: CreateOrderDto,
   ): Promise<CreateOrderResponse> {
     // ⚠️ invariant §4 ข้อ 2 — userId มาจาก JWT claim เท่านั้น ห้ามอ่านจาก body
     const userId = request.user?.sub ?? request.user?.userId;

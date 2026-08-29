@@ -191,6 +191,11 @@ k6 run loadtest.js
   "message": "Your order is in the queue." }
 ```
 
+> **field เกินถูกตัดทิ้งเงียบๆ ไม่ตอบ 400** — `{"productId":"p-1001","quantity":1}` ได้ **202** ปกติ
+> เป็นเจตนา (`whitelist: true` ที่ `main.ts`) เพื่อให้ k6 ของกลุ่มอื่นที่ส่ง `quantity` มายิงระบบเราได้
+> `userId` ใน body ก็ถูกตัดทิ้งเช่นกัน — สวมสิทธิ์ไม่ได้ (invariant §4 ข้อ 2)
+> ⚠️ **ห้ามใส่ `forbidNonWhitelisted: true` ที่ไหนก็ตาม** (เคยมีที่ `orders.controller.ts` — ถอดออกแล้ว 2026-08-29)
+
 | สถานการณ์ | Status | หมายเหตุ |
 | :--- | :--- | :--- |
 | รับเข้าคิวสำเร็จ | **202** | ห้ามเป็น 200/201 |
@@ -199,6 +204,9 @@ k6 run loadtest.js
 | ของหมด | 409 | |
 | กดรัวขณะมี order in-flight | 429 | **นับเป็นพฤติกรรมถูกต้อง ไม่ใช่ error** |
 | stock counter ยังไม่ถูก seed | 503 | ต้องแยกจาก "ของหมด" ให้ชัด |
+| `productId` หาย / ว่าง / ยาวเกิน 32 | 400 | body ผิดรูปจริงๆ เท่านั้น — **ไม่ใช่**เพราะส่ง field เกินมา |
+
+> `{"productId": 123}` (ตัวเลข) ได้ **503 ไม่ใช่ 400** — `enableImplicitConversion` แปลงเป็น `"123"` ผ่าน `@IsString()` แล้วไปตกที่ "ไม่มี stock counter ของ `123`"
 
 ---
 
