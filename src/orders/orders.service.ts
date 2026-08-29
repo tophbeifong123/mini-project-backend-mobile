@@ -192,6 +192,7 @@ export class OrdersService {
       orderJobId: jobId,
       message: 'Your order is in the queue.',
     };
+    
   }
 
   /**
