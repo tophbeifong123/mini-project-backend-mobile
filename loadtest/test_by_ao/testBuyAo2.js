@@ -1,8 +1,11 @@
+/* eslint-disable */
 // =============================================================================
 // ทำไมต่างจาก loadtest.js เดิม:
 //   - เดิมใช้ per-vu-iterations (VU ยิง -> รอ response -> ยิงใหม่) = เรียงคิว
+//     ไม่ใช่ "พร้อมกันจริง" ระบบที่ lock แบบขี้เกียจก็รอดได้
 //   - สคริปต์นี้ใช้ http.batch() ยิงหลาย request จาก "เธรดเดียวกัน" ออกไปพร้อมกัน
 //     แบบ millisecond เดียวกันจริง ๆ → เป็นการจำลอง "ดับเบิลคลิก" / "เปิดหลายแท็บ
+//     กดพร้อมกัน" ตามที่โจทย์ต้องการ (ข้อ 2.3.2)
 //   - เดิมสมมติ response ต้องเป็น 202/409/429/503 ตามสเปค (ใช้ได้กับระบบตัวเอง
 //     ที่ควบคุมได้) — สคริปต์นี้ไม่ล็อกสมมติฐานนั้น เพราะต้องเอาไปยิงระบบ
 //     "กลุ่มเพื่อน" ที่อาจตอบ 200/201/400/500 ก็ได้ ใช้การนับ "ใครสำเร็จบ้าง"
@@ -22,9 +25,17 @@ const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '30s';
 // เทียบผล ถ้าไม่รู้ (เช่นยิงข้ามทีม) ปล่อย 0 แล้วสคริปต์จะอ่านจาก GET ก่อนเริ่มเอง
 const KNOWN_STOCK = Number(__ENV.KNOWN_STOCK || 0);
 
-// จำนวน "ตัวปาร์ตี้" ที่ยิงชิงสินค้าพร้อมกันในสถานการณ์ overselling stampede
-// ควรมากกว่า stock จริงหลายเท่า เพื่อบีบให้ระบบต้อง "ปฏิเสธ" คนส่วนใหญ่จริง ๆ
-const STAMPEDE_USERS = Number(__ENV.STAMPEDE_USERS || 200);
+// จำนวน "คนดูสินค้า" (read load) ที่ยิง GET /products พร้อมกันระหว่างทดสอบ
+// ปรับได้ผ่าน -e VIEW_USERS=1000 (ตั้งเป็น 0 เพื่อปิด scenario นี้)
+const VIEW_USERS = Number(__ENV.VIEW_USERS || 1000);
+
+// ระยะเวลาที่ให้ "คนดูสินค้า" ยิงต่อเนื่อง
+const VIEW_DURATION = __ENV.VIEW_DURATION || '40s';
+
+// จำนวน "คนสั่งซื้อ" ที่แย่งสินค้าพร้อมกันในสถานการณ์ overselling stampede
+// (ชื่อเดิม STAMPEDE_USERS) ควรมากกว่า stock จริงหลายเท่า เพื่อบีบให้ระบบ
+// ต้อง "ปฏิเสธ" คนส่วนใหญ่จริง ๆ — ปรับได้ผ่าน -e ORDER_USERS=500
+const ORDER_USERS = Number(__ENV.ORDER_USERS || 500);
 
 // จำนวนครั้งที่ user แต่ละคนดับเบิลคลิกพร้อมกัน (BUG-1 test)
 const DOUBLE_CLICK_N = Number(__ENV.DOUBLE_CLICK_N || 5);
@@ -33,7 +44,7 @@ const DOUBLE_CLICK_N = Number(__ENV.DOUBLE_CLICK_N || 5);
 // ปรับได้ผ่าน ENV เช่น -e SAME_USER_RACE_USERS=1000
 // ใช้ตัวแปรนี้ตัวเดียวทั้งไฟล์ (options.scenarios, setup, stampede offset)
 // เพื่อไม่ต้อง hardcode เลข 30 ซ้ำหลายที่แบบเดิม
-const SAME_USER_RACE_USERS = Number(__ENV.SAME_USER_RACE_USERS || 1000);
+const SAME_USER_RACE_USERS = Number(__ENV.SAME_USER_RACE_USERS || 30);
 
 // treat เป็น "รับออเดอร์สำเร็จ" ถ้า status อยู่ในช่วงนี้ (ยืดหยุ่นข้ามทีม)
 const SUCCESS_STATUSES = new Set([200, 201, 202]);
@@ -49,6 +60,24 @@ const stampedeUnexpectedErrors = new Counter('bug3_stampede_5xx_or_unknown');
 
 export const options = {
   scenarios: {
+    // -------------------------------------------------------------------
+    // "คนดูสินค้า" — read load ล้วน ๆ ไม่เกี่ยวกับ bug hunter โดยตรง
+    // แต่ยิงคู่ขนานไปด้วย เพื่อจำลองสภาพจริงตอน flash sale ว่ามีทั้งคนดู
+    // และคนแย่งซื้อพร้อมกัน (เผื่อระบบ cache invalidation พังตอนโหลดหนัก)
+    // ปรับจำนวนคนดูได้ผ่าน -e VIEW_USERS=1000, ปิดได้ด้วย -e VIEW_USERS=0
+    // -------------------------------------------------------------------
+    ...(VIEW_USERS > 0
+      ? {
+          view_products: {
+            executor: 'constant-vus',
+            vus: VIEW_USERS,
+            duration: VIEW_DURATION,
+            exec: 'viewProducts',
+            startTime: '0s',
+            tags: { scenario_kind: 'read_view_products' },
+          },
+        }
+      : {}),
     // -------------------------------------------------------------------
     // BUG-1: same-user double-click — ยิง DOUBLE_CLICK_N ครั้งพร้อมกันจริง
     // ต่อ user โดยใช้ VU = SAME_USER_RACE_USERS ตัว (คนละ user) แต่ทุก
@@ -92,8 +121,8 @@ export const options = {
 // =============================================================================
 export function setup() {
   // scenario1 (same_user_race) ใช้ user-1..SAME_USER_RACE_USERS
-  // scenario2 (stampede) ใช้ user ต่อจากนั้นไปอีก STAMPEDE_USERS คน
-  const totalUsersNeeded = SAME_USER_RACE_USERS + STAMPEDE_USERS;
+  // scenario2 (stampede) ใช้ user ต่อจากนั้นไปอีก ORDER_USERS คน (คนสั่งซื้อ)
+  const totalUsersNeeded = SAME_USER_RACE_USERS + ORDER_USERS;
   const tokens = {};
 
   for (let i = 1; i <= totalUsersNeeded; i++) {
@@ -154,6 +183,27 @@ function readRemainingStock() {
 }
 
 // =============================================================================
+// SCENARIO 0 — "คนดูสินค้า" (read load)
+// วนอ่าน GET /products หน้าสุ่ม ๆ ต่อเนื่องตลอด VIEW_DURATION
+// ไม่ต้องใช้ token (สมมติว่าดูสินค้าได้โดยไม่ต้อง login) — ถ้า API ของทีมไหน
+// บังคับ auth ตอน GET ด้วย ให้ปรับเพิ่ม header เองตรงนี้
+// =============================================================================
+export function viewProducts() {
+  const limits = [5, 10, 20];
+  const limit = limits[Math.floor(Math.random() * limits.length)];
+  const page = 1 + Math.floor(Math.random() * 3);
+
+  const res = http.get(`${BASE_URL}/api/v1/products?page=${page}&limit=${limit}`, {
+    timeout: REQ_TIMEOUT,
+    tags: { name: 'GET /api/v1/products (view)' },
+  });
+
+  check(res, {
+    'view: status is 200': (r) => r.status === 200,
+  });
+}
+
+// =============================================================================
 // SCENARIO 1 — BUG-1: same_user_race
 // 1 user ยิง DOUBLE_CLICK_N requests "พร้อมกันจริง" ผ่าน http.batch
 // คำตอบที่ถูกต้อง: สำเร็จได้แค่ 1 ครั้ง ที่เหลือต้องถูกปฏิเสธทั้งหมด
@@ -201,7 +251,7 @@ export function doubleClickAttack(data) {
 
 // =============================================================================
 // SCENARIO 2 — BUG-2/3: stampede
-// STAMPEDE_USERS คน (คนละ user จริง) ยิงแย่ง TARGET_PRODUCT_ID "พร้อมกัน"
+// ORDER_USERS คน (คนละ user จริง = "คนสั่งซื้อ") ยิงแย่ง TARGET_PRODUCT_ID "พร้อมกัน"
 // แบ่งเป็นชุด ๆ ละ 50 requests ต่อ http.batch เรียกเดียว เพื่อบีบให้ระบบ
 // เจอ concurrent write จริงในระดับ database/redis ไม่ใช่แค่ระดับ user เดียว
 //
@@ -215,7 +265,7 @@ export function doubleClickAttack(data) {
 export function stampedeAttack(data) {
   const batchSize = 50;
   const stampedeUserIds = Array.from(
-    { length: STAMPEDE_USERS },
+    { length: ORDER_USERS },
     (_, i) => `race-user-${SAME_USER_RACE_USERS + 1 + i}`,
   ).filter((uid) => !!data.tokens[uid]);
 
