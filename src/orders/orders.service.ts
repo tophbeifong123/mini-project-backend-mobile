@@ -12,6 +12,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { Job, Queue } from 'bullmq';
 
+import { Metric } from '../observability/metrics.constants';
+import { MetricsService } from '../observability/metrics.service';
 import { GatekeeperVerdict, RedisService } from '../redis/redis.service';
 
 /** payload ของ job (BUILD_SPEC — cross-module contract) */
@@ -52,6 +54,7 @@ export class OrdersService {
     @InjectQueue(ORDER_QUEUE_NAME) private readonly ordersQueue: Queue,
     private readonly redis: RedisService,
     private readonly config: ConfigService,
+    private readonly metrics: MetricsService,
   ) {
     this.lockTtlMs = Number(
       this.config.get<string | number>('ORDER_LOCK_TTL_MS', 30_000),
@@ -68,6 +71,7 @@ export class OrdersService {
     correlationId?: string,
   ): Promise<CreateOrderResponse> {
     const jobId = buildOrderJobId(userId, productId);
+    this.metrics.inc(Metric.ORDERS_REQUESTS);
 
     // token สุ่มใหม่ "ทุกคำขอ" — ไม่ใช่ jobId ซึ่งซ้ำทุกครั้งที่คนเดิมขอของเดิม
     // ใช้ 2 อย่าง: (1) ค่าใน lock เพื่อให้ compare-and-delete แยกการถือครองได้จริง
@@ -93,6 +97,7 @@ export class OrdersService {
         this.lockTtlMs,
       );
     } catch (err) {
+      this.metrics.inc(Metric.ORDERS_GATEKEEPER_ERRORS);
       await this.compensateIfReserved(userId, productId, jobId, requestToken);
       this.logger.error(
         `gatekeeper failed for ${jobId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -102,8 +107,10 @@ export class OrdersService {
 
     switch (verdict) {
       case GatekeeperVerdict.ALREADY_PURCHASED:
+        this.metrics.inc(Metric.ORDERS_REJECTED_DUPLICATE);
         throw new ConflictException('You already purchased this product');
       case GatekeeperVerdict.REQUEST_IN_FLIGHT:
+        this.metrics.inc(Metric.ORDERS_REJECTED_IN_FLIGHT);
         // 429 = พฤติกรรมที่ถูกต้อง ไม่ใช่ error (CLAUDE.md §3)
         // body ต้องเป็น object ทรงเดียวกับ error ตัวอื่น ไม่งั้น k6 ที่ทำ r.json('message') จะได้ undefined
         throw new HttpException(
@@ -115,8 +122,10 @@ export class OrdersService {
           HttpStatus.TOO_MANY_REQUESTS,
         );
       case GatekeeperVerdict.SOLD_OUT:
+        this.metrics.inc(Metric.ORDERS_REJECTED_SOLD_OUT);
         throw new ConflictException('Sold out');
       case GatekeeperVerdict.STOCK_NOT_INITIALIZED:
+        this.metrics.inc(Metric.ORDERS_REJECTED_NO_COUNTER);
         // ต้องแยกจาก "ของหมด" ให้ชัด ไม่งั้นระบบพังเงียบๆ
         throw new ServiceUnavailableException('Stock not initialized');
       default:
@@ -147,6 +156,7 @@ export class OrdersService {
         },
       );
     } catch (err) {
+      this.metrics.inc(Metric.ORDERS_ENQUEUE_FAILURES);
       await this.compensate(userId, productId, jobId, requestToken);
       this.logger.error(
         `enqueue failed for ${jobId}: ${err instanceof Error ? err.message : String(err)}`,
@@ -158,6 +168,7 @@ export class OrdersService {
     // BullMQ เจอ jobId ซ้ำแล้ว **คืน job เดิมเงียบๆ ไม่ throw** -> catch ข้างบนไม่เคยทำงาน
     // ถ้าไม่ตรวจ จะได้ 202 ทั้งที่ไม่มี job ใหม่วิ่ง = สต็อกหายถาวร 1 ชิ้น
     if (!job) {
+      this.metrics.inc(Metric.ORDERS_ENQUEUE_FAILURES);
       await this.compensate(userId, productId, jobId, requestToken);
       throw new ServiceUnavailableException('Queue unavailable');
     }
@@ -178,15 +189,18 @@ export class OrdersService {
     if (stored === null) {
       // อ่านไม่ได้ / job ถูก trim ไปแล้ว — **ห้ามคืนสต็อก**
       // คืนผิดตอนที่ของขายไปแล้วแย่กว่าไม่คืน (Redis สูงกว่า DB = ปล่อยคนที่ 51 เข้ามา)
+      this.metrics.inc(Metric.ORDERS_JOB_UNVERIFIED);
       this.logger.error(
         `cannot verify queued job ${jobId} — assuming ours and NOT compensating`,
       );
     } else if (stored.data?.requestToken !== requestToken) {
       // token ที่เก็บอยู่เป็นของคำขออื่น = เราโดน dedup, DECR รอบนี้ไม่มีใครกิน
+      this.metrics.inc(Metric.ORDERS_DEDUPED);
       await this.compensate(userId, productId, jobId, requestToken);
       throw new ConflictException('Order already processed');
     }
 
+    this.metrics.inc(Metric.ORDERS_ACCEPTED);
     return {
       status: 'processing',
       orderJobId: jobId,
@@ -229,6 +243,7 @@ export class OrdersService {
     jobId: string,
     requestToken: string,
   ): Promise<void> {
+    this.metrics.inc(Metric.STOCK_COMPENSATED);
     try {
       const restored = await this.redis.compensateIfReserved(
         userId,
@@ -236,12 +251,14 @@ export class OrdersService {
         requestToken,
       );
       if (restored === 1) {
+        this.metrics.inc(Metric.STOCK_COMPENSATION_RESTORED);
         this.logger.warn(
           `gatekeeper timed out but the reservation was real — stock restored for ${jobId}`,
         );
       }
     } catch (err) {
       // ชดเชยไม่สำเร็จ = สต็อกหาย 1 ชิ้น ต้องดังที่สุดเพื่อให้ตามเก็บได้
+      this.metrics.inc(Metric.STOCK_COMPENSATION_FAILURES);
       this.logger.error(
         `COMPENSATION FAILED for ${jobId} — stock may have leaked by 1: ${err instanceof Error ? err.message : String(err)}`,
       );
@@ -255,9 +272,12 @@ export class OrdersService {
     jobId: string,
     requestToken: string,
   ): Promise<void> {
+    this.metrics.inc(Metric.STOCK_COMPENSATED);
     try {
       await this.redis.compensate(userId, productId, requestToken);
+      this.metrics.inc(Metric.STOCK_COMPENSATION_RESTORED);
     } catch (err) {
+      this.metrics.inc(Metric.STOCK_COMPENSATION_FAILURES);
       this.logger.error(
         `COMPENSATION FAILED for ${jobId} — stock leaked by 1: ${err instanceof Error ? err.message : String(err)}`,
       );

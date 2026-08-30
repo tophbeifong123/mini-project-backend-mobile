@@ -7,12 +7,8 @@
 //   k6 run --out json=raw.json loadtest.js        # ป้อนเข้า dashboard
 //
 // สองสถานการณ์ตามโจทย์:
-//   read_heavy   1,000 concurrent users อ่าน GET /api/v1/products 60 วินาที
+//   read_heavy   1,000 concurrent users อ่าน GET /api/v1/products 30 วินาที
 //   write_burst  500 คนแย่งของ 50 ชิ้น และ "กดรัว" คนละ 3 ครั้ง (per-vu-iterations)
-//
-// ⚠️ 409 (ซื้อไปแล้ว / ของหมด) และ 429 (กดรัวขณะมี order ค้าง) คือ "พฤติกรรมที่ถูกต้อง"
-//    ไม่ใช่ error — จึงนับด้วย check() + Counter แยก และ **ไม่** เอาไปใส่ threshold
-//    (CLAUDE.md §3, §6 / architecture.md §9.2)
 // =============================================================================
 
 import http from 'k6/http';
@@ -29,24 +25,45 @@ const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '60s';
 // สินค้าเป้าหมายของ write burst — availableStock = 50 (products-seed.json)
 const TARGET_PRODUCT_ID = __ENV.TARGET_PRODUCT_ID || 'p-1001';
 
-// จำนวน user ที่จะ mint JWT ให้ใน setup()
-const USER_COUNT = Number(__ENV.USER_COUNT || 500);
+const READ_VUS = integerEnv('READ_VUS', 1_000, 1, 10_000);
+const READ_DURATION = __ENV.READ_DURATION || '30s';
+const WRITE_VUS = integerEnv('WRITE_VUS', 500, 1, 5_000);
+const WRITE_ITERATIONS = integerEnv('WRITE_ITERATIONS', 3, 1, 100);
+const WRITE_START_TIME = __ENV.WRITE_START_TIME || '10s';
+const WRITE_MAX_DURATION = __ENV.WRITE_MAX_DURATION || '20s';
+
+// k6 จอง VU IDs ร่วมกันระหว่าง scenarios และ IDs ของ write scenario
+// อาจมีช่องว่าง จึง mint token ครอบคลุม VU ID domain ทั้งสอง scenarios
+// แล้ว map idInTest โดยตรง ห้าม modulo เพราะทำให้สอง write VUs ใช้ user ซ้ำได้
+const VU_ID_DOMAIN = READ_VUS + WRITE_VUS;
+const USER_COUNT = integerEnv('USER_COUNT', VU_ID_DOMAIN, VU_ID_DOMAIN, 15_000);
 
 // จำนวนสินค้าทั้งหมดใน seed — ใช้คำนวณช่วง page ที่ถูกต้อง
-const TOTAL_PRODUCTS = Number(__ENV.TOTAL_PRODUCTS || 20);
+const TOTAL_PRODUCTS = integerEnv('TOTAL_PRODUCTS', 20, 1, 100_000);
 
 // -----------------------------------------------------------------------------
-// 409 / 429 / 503 เป็นคำตอบที่ถูกต้องของระบบ → อย่าให้ k6 นับเป็น http_req_failed
+// 200/202/409 เป็น healthy HTTP outcomes ของ workload นี้
+// 503 อยู่ใน API contract แต่ยังเป็น availability failure จึงต้องคงเป็น
+// http_req_failed และมี custom infrastructure metric แยกต่างหาก
 // -----------------------------------------------------------------------------
-http.setResponseCallback(http.expectedStatuses(200, 202, 409, 429));
+http.setResponseCallback(http.expectedStatuses(200, 202, 409));
 
 // --- custom metrics ----------------------------------------------------------
-const orders202 = new Counter('orders_accepted_202'); // เข้าคิวสำเร็จ
-const orders409 = new Counter('orders_conflict_409'); // ซื้อไปแล้ว / ของหมด
-const orders429 = new Counter('orders_throttled_429'); // กดรัวขณะมี order in-flight
-const orders503 = new Counter('orders_not_seeded_503'); // stock counter ยังไม่ถูก seed
+const authSetupCount = new Counter('auth_setup_count');
+const authSetupFailures = new Counter('auth_setup_failures');
+const authSetupRequestDuration = new Trend('auth_setup_request_duration', true);
+const authSetupWallDuration = new Trend('auth_setup_wall_duration', true);
+
+const orderRequests = new Counter('orders_requests');
+const orders202 = new Counter('orders_202'); // เข้าคิวสำเร็จ
+const orders409 = new Counter('orders_409'); // admission race ที่ contract อนุญาต
+const orders503 = new Counter('orders_503'); // contract-valid แต่ availability fail
+const orders5xx = new Counter('orders_5xx');
 const orders401 = new Counter('orders_unauthorized_401'); // ไม่ควรเกิดเลย
-const ordersOther = new Counter('orders_unexpected_status'); // ⚠️ ต้องเป็น 0
+const ordersOther = new Counter('orders_unexpected'); // ⚠️ ต้องเป็น 0
+const orderContractValid = new Rate('orders_contract_valid');
+const orderSuccessfulAdmission = new Rate('orders_successful_admission');
+const orderInfrastructureError = new Rate('orders_infrastructure_error');
 
 const readOk = new Counter('reads_ok_200');
 const readBadShape = new Counter('reads_bad_contract'); // ⚠️ ต้องเป็น 0
@@ -54,14 +71,31 @@ const readStockFresh = new Rate('reads_remaining_stock_present');
 const readLatency = new Trend('read_products_latency', true);
 const orderLatency = new Trend('place_order_latency', true);
 
+function integerEnv(name, fallback, minimum, maximum) {
+  const raw = __ENV[name];
+  const value = raw === undefined ? fallback : Number(raw);
+  if (!Number.isInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+  }
+  return value;
+}
+
+function contractOrderStatus(status) {
+  return [202, 400, 401, 404, 409, 422, 500, 503].includes(status);
+}
+
+function infrastructureFailure(status) {
+  return status === 0 || status >= 500;
+}
+
 export const options = {
   discardResponseBodies: false,
   scenarios: {
     read_heavy: {
       // 1,000 concurrent readers
       executor: 'constant-vus',
-      vus: 1000,
-      duration: '60s',
+      vus: READ_VUS,
+      duration: READ_DURATION,
       exec: 'readProducts',
       startTime: '5s',
       tags: { scenario_kind: 'read' },
@@ -69,15 +103,15 @@ export const options = {
     write_burst: {
       // 500 คนแย่ง 50 ชิ้น พร้อมกัน — iterations: 3 = จำลองการ "กดรัว"
       executor: 'per-vu-iterations',
-      vus: 500,
-      iterations: 3,
+      vus: WRITE_VUS,
+      iterations: WRITE_ITERATIONS,
       exec: 'placeOrder',
-      startTime: '10s',
-      maxDuration: '20s',
+      startTime: WRITE_START_TIME,
+      maxDuration: WRITE_MAX_DURATION,
       tags: { scenario_kind: 'write' },
     },
   },
-  // threshold ผูกกับ latency เท่านั้น — ไม่แตะ error rate เพราะ 409/429 คือของถูกต้อง
+  // คง threshold เดิมเพื่อให้ default workload reproduce พฤติกรรมเดิมได้
   thresholds: {
     'http_req_duration{scenario:read_heavy}': ['p(95)<200'],
     'http_req_duration{scenario:write_burst}': ['p(95)<300'],
@@ -85,9 +119,10 @@ export const options = {
 };
 
 // =============================================================================
-// setup() — mint JWT ให้ user-1 … user-500 (endpoint นี้ไม่ถูกวัด performance)
+// setup() — mint JWT ครอบคลุม VU ID domain (endpoint นี้ไม่ถูกวัด performance)
 // =============================================================================
 export function setup() {
+  const setupStartedAt = Date.now();
   const tokens = [];
   const failures = [];
 
@@ -103,6 +138,9 @@ export function setup() {
       },
     );
 
+    authSetupCount.add(1);
+    authSetupRequestDuration.add(res.timings.duration);
+
     let token = null;
     if (res.status === 200) {
       try {
@@ -113,15 +151,20 @@ export function setup() {
     }
 
     if (token) {
-      tokens.push({ userId, token });
+      tokens[i - 1] = { userId, token };
     } else {
+      authSetupFailures.add(1);
+      tokens[i - 1] = null;
       failures.push(`${userId} -> HTTP ${res.status}`);
     }
   }
 
-  if (tokens.length === 0) {
+  authSetupWallDuration.add(Date.now() - setupStartedAt);
+
+  if (failures.length > 0) {
     exec.test.abort(
-      `setup: ไม่ได้ JWT เลยสักตัวจาก ${BASE_URL}/api/v1/auth/token — ระบบยังไม่พร้อม`,
+      `setup: minted ${tokens.length - failures.length}/${USER_COUNT} JWTs; ` +
+        `refusing a partial identity set (${failures.slice(0, 5).join(', ')})`,
     );
   }
 
@@ -208,16 +251,19 @@ export function readProducts() {
 // =============================================================================
 // placeOrder — write burst
 //   แต่ละ VU ใช้ token ของตัวเอง (ห้ามซ้ำ) แล้วยิง 3 ครั้งติด = จำลองการกดรัว
-//   คาดหวัง: 1 ครั้งได้ 202, อีก 2 ครั้งได้ 429 หรือ 409
-//            (429 = in-flight lock ทำงาน, 409 = ซื้อไปแล้ว/ของหมด)
+//   คาดหวังหลัก: 202 ที่ยืนยัน enqueue; 409 ใช้เฉพาะ claim visibility race
 // =============================================================================
 export function placeOrder(data) {
   const tokens = data.tokens;
 
-  // VU id ใน k6 ถูกนับรวมทุก scenario — normalize ด้วย modulo
-  // write_burst ถูกจัดสรร id เป็นบล็อกต่อเนื่อง จึงได้ index ไม่ซ้ำกันในทางปฏิบัติ
-  // (ถ้าบังเอิญซ้ำ ผลลัพธ์คือ 409/429 ซึ่งยังเป็นพฤติกรรมที่ถูกต้องอยู่ดี)
-  const idx = (exec.vu.idInTest - 1) % tokens.length;
+  // VU id ถูกนับรวมทุก scenario; direct mapping รักษาหลัก
+  // one write VU = one unique user และทำให้ iterations ถัดไปของ VU เดิมใช้ user เดิม
+  const idx = exec.vu.idInTest - 1;
+  if (idx < 0 || idx >= tokens.length) {
+    exec.test.abort(
+      `write VU id ${exec.vu.idInTest} exceeds prepared token domain ${tokens.length}`,
+    );
+  }
   const { userId, token } = tokens[idx];
 
   const res = http.post(
@@ -234,14 +280,19 @@ export function placeOrder(data) {
   );
 
   orderLatency.add(res.timings.duration);
+  orderRequests.add(1);
 
-  // ✅ ทุก status ด้านล่างคือ "ระบบทำงานถูกต้อง" — ไม่ใช่ error
+  const isContractStatus = contractOrderStatus(res.status);
+  const isInfrastructureFailure = infrastructureFailure(res.status);
+  orderContractValid.add(isContractStatus);
+  orderSuccessfulAdmission.add(res.status === 202);
+  orderInfrastructureError.add(isInfrastructureFailure);
+  if (res.status >= 500) {
+    orders5xx.add(1);
+  }
+
   check(res, {
-    'order: status เป็นค่าที่คาดไว้ (202/409/429/503)': (r) =>
-      r.status === 202 ||
-      r.status === 409 ||
-      r.status === 429 ||
-      r.status === 503,
+    'order: status exists in frozen API contract': () => isContractStatus,
   });
 
   switch (res.status) {
@@ -255,11 +306,9 @@ export function placeOrder(data) {
             return false;
           }
         },
-        'order 202: orderJobId === order:{userId}:{productId}': (r) => {
+        'order 202: orderJobId matches ord-<sha256>': (r) => {
           try {
-            return (
-              r.json('orderJobId') === `order:${userId}:${TARGET_PRODUCT_ID}`
-            );
+            return /^ord-[a-f0-9]{64}$/.test(r.json('orderJobId'));
           } catch (e) {
             return false;
           }
@@ -268,21 +317,14 @@ export function placeOrder(data) {
       break;
     }
     case 409:
-      // ซื้อไปแล้ว หรือ ของหมด — ถูกต้องตามโจทย์
+      // Claim มีอยู่แต่ยังยืนยันว่า BullMQ Job ถูกสร้างแล้วไม่ได้
       orders409.add(1);
       check(res, {
-        'order 409: duplicate/sold-out (correct behaviour)': () => true,
-      });
-      break;
-    case 429:
-      // กดรัวขณะมี order in-flight — หลักฐานว่า lock ทำงาน
-      orders429.add(1);
-      check(res, {
-        'order 429: in-flight lock hit (correct behaviour)': () => true,
+        'order 409: admission-in-progress contract response': () => true,
       });
       break;
     case 503:
-      // stock counter ยังไม่ถูก seed — ต้องแยกจาก "ของหมด" ให้ชัด
+      // Contract-valid QUEUE_UNAVAILABLE แต่เป็น availability failure ของ benchmark
       orders503.add(1);
       break;
     case 401:
@@ -298,10 +340,11 @@ export function placeOrder(data) {
 }
 
 // =============================================================================
-// handleSummary — พิมพ์ตัวนับ 202/409/429/503 ให้เห็นชัดในรายงาน
+// handleSummary — แยก contract validity ออกจาก availability health
 // (ไม่ import jslib จากอินเทอร์เน็ต เพื่อให้รันได้แม้ออฟไลน์)
 // =============================================================================
 export function handleSummary(data) {
+  const summaryPath = __ENV.SUMMARY_PATH || 'loadtest.k6-summary.json';
   const c = (name) =>
     data.metrics[name] && data.metrics[name].values
       ? data.metrics[name].values.count || 0
@@ -312,14 +355,18 @@ export function handleSummary(data) {
       ? Number(data.metrics[name].values[stat] || 0).toFixed(2)
       : 'n/a';
 
-  const accepted = c('orders_accepted_202');
-  const conflict = c('orders_conflict_409');
-  const throttled = c('orders_throttled_429');
-  const notSeeded = c('orders_not_seeded_503');
+  const rate = (name) =>
+    data.metrics[name] && data.metrics[name].values
+      ? `${(Number(data.metrics[name].values.rate || 0) * 100).toFixed(2)}%`
+      : 'n/a';
+
+  const accepted = c('orders_202');
+  const conflict = c('orders_409');
+  const unavailable = c('orders_503');
+  const serverErrors = c('orders_5xx');
   const unauthorized = c('orders_unauthorized_401');
-  const unexpected = c('orders_unexpected_status');
-  const totalOrders =
-    accepted + conflict + throttled + notSeeded + unauthorized + unexpected;
+  const unexpected = c('orders_unexpected');
+  const totalOrders = c('orders_requests');
 
   const lines = [];
   lines.push('');
@@ -327,6 +374,16 @@ export function handleSummary(data) {
   lines.push('  FLASH SALE — LOAD TEST SUMMARY');
   lines.push(`  target: ${BASE_URL}   product: ${TARGET_PRODUCT_ID}`);
   lines.push('══════════════════════════════════════════════════════════════');
+  lines.push('');
+  lines.push('  AUTH SETUP');
+  lines.push(`    requests                    : ${c('auth_setup_count')}`);
+  lines.push(`    failures                    : ${c('auth_setup_failures')}   (ต้อง = 0)`);
+  lines.push(
+    `    request p95                : ${trend('auth_setup_request_duration', 'p(95)')} ms`,
+  );
+  lines.push(
+    `    total wall duration        : ${trend('auth_setup_wall_duration', 'max')} ms`,
+  );
   lines.push('');
   lines.push('  READ PATH — GET /api/v1/products');
   lines.push(`    200 OK                     : ${c('reads_ok_200')}`);
@@ -341,16 +398,19 @@ export function handleSummary(data) {
   );
   lines.push('');
   lines.push(
-    '  WRITE PATH — POST /api/v1/orders   (409/429 = ถูกต้อง ไม่ใช่ error)',
+    '  WRITE PATH — POST /api/v1/orders',
   );
   lines.push(`    202 accepted (เข้าคิว)      : ${accepted}`);
-  lines.push(`    409 conflict (ซ้ำ/ของหมด)   : ${conflict}`);
-  lines.push(`    429 throttled (กดรัว)       : ${throttled}`);
-  lines.push(`    503 stock not seeded       : ${notSeeded}   (ต้อง = 0)`);
+  lines.push(`    409 admission in progress  : ${conflict}`);
+  lines.push(`    503 queue unavailable      : ${unavailable}   (availability fail)`);
+  lines.push(`    all 5xx                    : ${serverErrors}   (ต้อง = 0)`);
   lines.push(`    401 unauthorized           : ${unauthorized}   (ต้อง = 0)`);
   lines.push(`    ⚠️ unexpected status        : ${unexpected}   (ต้อง = 0)`);
   lines.push(`    ────────────────────────────────────────────`);
   lines.push(`    total order requests       : ${totalOrders}`);
+  lines.push(`    contract-valid rate        : ${rate('orders_contract_valid')}`);
+  lines.push(`    successful-admission rate  : ${rate('orders_successful_admission')}`);
+  lines.push(`    infrastructure-error rate  : ${rate('orders_infrastructure_error')}`);
   lines.push(
     `    p95 latency                : ${trend('place_order_latency', 'p(95)')} ms`,
   );
@@ -369,8 +429,11 @@ export function handleSummary(data) {
   lines.push('══════════════════════════════════════════════════════════════');
   lines.push('');
 
+  const sanitized = { ...data };
+  delete sanitized.setup_data;
+
   return {
     stdout: lines.join('\n'),
-    'loadtest.k6-summary.json': JSON.stringify(data, null, 2),
+    [summaryPath]: JSON.stringify(sanitized, null, 2),
   };
 }

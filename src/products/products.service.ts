@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 
+import { Metric } from '../observability/metrics.constants';
+import { MetricsService } from '../observability/metrics.service';
 import { RedisService } from '../redis/redis.service';
 import { Product } from './entities/product.entity';
 
@@ -67,11 +69,15 @@ export class ProductsService {
     @InjectRepository(Product)
     private readonly productsRepository: Repository<Product>,
     private readonly redis: RedisService,
+    private readonly metrics: MetricsService,
   ) {}
 
   async listProducts(page: number, limit: number): Promise<ProductListResult> {
     // 1) metadata: cache-aside (+ single-flight ตอน miss)
     const cached = await this.redis.getCatalogPage<CatalogPage>(page, limit);
+    this.metrics.inc(
+      cached ? Metric.CATALOG_CACHE_HITS : Metric.CATALOG_CACHE_MISSES,
+    );
     const catalog = cached ?? (await this.loadCatalogPage(page, limit));
 
     // 2) stock overlay: MGET สดทุก request — ห้ามแคช (CLAUDE.md §3 / §5)
@@ -126,6 +132,7 @@ export class ProductsService {
       return await this.redis.getStocks(productIds);
     } catch (err) {
       this.degradedReads += 1;
+      this.metrics.inc(Metric.CATALOG_DEGRADED_READS);
       this.logger.error(
         `stock counter read failed — serving cached fallback ` +
           `(degraded responses so far: ${this.degradedReads}): ` +

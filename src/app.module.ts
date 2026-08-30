@@ -11,6 +11,7 @@ import { validateEnv } from './config/env.validation';
 import { DatabaseModule } from './database_config/database.module';
 import { HealthModule } from './health/health.module';
 import { LoggerModule } from './logger/logger.module';
+import { ObservabilityModule } from './observability/observability.module';
 import { OrdersModule } from './orders/orders.module';
 import { ProductsModule } from './products/products.module';
 import { RedisModule } from './redis/redis.module';
@@ -31,6 +32,7 @@ import { RedisModule } from './redis/redis.module';
     DatabaseModule,
     BullMqModule,
     BullBoardModule,
+    ObservabilityModule,
 
     AuthModule,
     ProductsModule,
