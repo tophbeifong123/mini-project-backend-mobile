@@ -1,3 +1,4 @@
+import type { MetricsService } from '../observability/metrics.service';
 import {
   ConflictException,
   HttpException,
@@ -60,10 +61,13 @@ describe('OrdersService', () => {
       get: jest.fn((_key: string, defaultValue: unknown) => defaultValue),
     } as unknown as jest.Mocked<ConfigService>;
 
+    // การวัดผลต้องไม่มีผลต่อ logic — stub ไว้เฉยๆ พอ
+    const metrics = { inc: jest.fn() };
     service = new OrdersService(
       queue as unknown as Queue,
       redis as unknown as RedisService,
       config,
+      metrics as unknown as MetricsService,
     );
   });
 

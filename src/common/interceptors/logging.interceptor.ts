@@ -29,9 +29,9 @@ export class LoggingInterceptor implements NestInterceptor {
     const req = http.getRequest<RequestWithCorrelationId>();
     const res = http.getResponse<Response>();
 
-    // Bull-Board asset และ health check probes ไม่ต้อง log
+    // หน้า admin (Bull-Board + insights ที่ poll ทุก 3 วิ) และ health probe ไม่ต้อง log
     const path = req.originalUrl ?? req.url ?? '';
-    if (path.startsWith('/admin/queues') || path.startsWith('/health/')) {
+    if (path.startsWith('/admin') || path.startsWith('/health/')) {
       return next.handle();
     }
 

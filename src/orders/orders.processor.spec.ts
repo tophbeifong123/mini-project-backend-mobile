@@ -1,3 +1,4 @@
+import type { MetricsService } from '../observability/metrics.service';
 import { Job } from 'bullmq';
 import { DataSource } from 'typeorm';
 
@@ -107,9 +108,12 @@ describe('OrdersProcessor', () => {
     redis.releaseInFlightLock.mockResolvedValue(undefined);
     redis.invalidateCatalogCache.mockResolvedValue(undefined);
 
+    // การวัดผลต้องไม่มีผลต่อ logic — stub ไว้เฉยๆ พอ
+    const metrics = { inc: jest.fn() };
     processor = new OrdersProcessor(
       dataSource as unknown as DataSource,
       redis as unknown as RedisService,
+      metrics as unknown as MetricsService,
     );
   });
 

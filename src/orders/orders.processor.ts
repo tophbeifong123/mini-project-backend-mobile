@@ -1,9 +1,11 @@
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { InjectDataSource } from '@nestjs/typeorm';
-import { Job } from 'bullmq';
+import { Job, MetricsTime } from 'bullmq';
 import { DataSource, QueryRunner } from 'typeorm';
 
+import { Metric } from '../observability/metrics.constants';
+import { MetricsService } from '../observability/metrics.service';
 import { Product } from '../products/entities/product.entity';
 import { RedisService } from '../redis/redis.service';
 import { Order, OrderStatus } from './entities/order.entity';
@@ -36,6 +38,9 @@ function describe(err: unknown): string {
  */
 @Processor(ORDER_QUEUE_NAME, {
   concurrency: Number(process.env.WORKER_CONCURRENCY) || 5,
+  // เก็บ counter completed/failed รายนาที ให้แท็บ Metrics ของ Bull-Board มีกราฟจริง
+  // (ไม่ใช่กราฟเปล่า) — สองลิสต์ยาว 1 สัปดาห์ ≈ หลักสิบ KB บน redis-data
+  metrics: { maxDataPoints: MetricsTime.ONE_WEEK },
 })
 export class OrdersProcessor extends WorkerHost {
   private readonly logger = new Logger(OrdersProcessor.name);
@@ -43,6 +48,7 @@ export class OrdersProcessor extends WorkerHost {
   constructor(
     @InjectDataSource() private readonly dataSource: DataSource,
     private readonly redis: RedisService,
+    private readonly metrics: MetricsService,
   ) {
     super();
   }
@@ -86,6 +92,7 @@ export class OrdersProcessor extends WorkerHost {
 
       // idempotency: เคย INSERT สำเร็จไปแล้ว = ถือว่าสำเร็จ ห้ามคืนสต็อก ห้าม retry
       if (isUniqueViolation(err)) {
+        this.metrics.inc(Metric.WORKER_ALREADY_CONFIRMED);
         this.logger.warn(
           `job ${jobId} hit unique violation — already confirmed`,
         );
@@ -106,6 +113,7 @@ export class OrdersProcessor extends WorkerHost {
         //    (ตกเกณฑ์ Data Integrity §9.3 ข้อ 4)
         //    การไม่คืน ทำให้ Redis ลู่ลงเข้าหา DB แล้วหยุดเอง
         //    ปล่อย lock ทิ้งไว้ให้ TTL เก็บ — ไม่ใช่ path ที่ต้องรีบคืนสิทธิ์
+        this.metrics.inc(Metric.WORKER_SOLD_OUT);
         this.logger.warn(
           `job ${jobId} sold out — Redis was ahead of DB, NOT compensating (lets the counter converge)`,
         );
@@ -113,7 +121,9 @@ export class OrdersProcessor extends WorkerHost {
         return { status: 'sold_out' };
       }
 
+      this.metrics.inc(Metric.WORKER_TRANSIENT_FAILURES);
       if (isFinalAttempt) {
+        this.metrics.inc(Metric.STOCK_COMPENSATED);
         await this.redis.compensateOnce(
           jobId,
           userId,
@@ -149,12 +159,14 @@ export class OrdersProcessor extends WorkerHost {
       );
       await this.redis.invalidateCatalogCache();
     } catch (err) {
+      this.metrics.inc(Metric.WORKER_POST_COMMIT_FAILURES);
       this.logger.error(
         `post-commit side effect failed for job ${jobId} (order IS confirmed): ${describe(err)}`,
       );
       // กลืน error ทิ้ง — order สำเร็จไปแล้ว TTL ของ lock จะเก็บกวาดให้เอง
     }
 
+    this.metrics.inc(Metric.WORKER_CONFIRMED);
     return { status: 'confirmed' };
   }
 
@@ -175,6 +187,14 @@ export class OrdersProcessor extends WorkerHost {
   // ⚠️ ใช้ @OnWorkerEvent (BullMQ) เท่านั้น — `queue.on('completed')` เป็นของ Bull v4
   @OnWorkerEvent('completed')
   onCompleted(job: Job<OrderJobData>): void {
+    // วัดจาก processedOn ที่ BullMQ ประทับให้ — ไม่ต้องจับเวลาเองในเส้นทางร้อน
+    if (typeof job.processedOn === 'number') {
+      this.metrics.inc(
+        Metric.WORKER_DURATION_MS_SUM,
+        Date.now() - job.processedOn,
+      );
+      this.metrics.inc(Metric.WORKER_DURATION_COUNT);
+    }
     this.logger.log(
       `job ${String(job.id)} completed for user=${job.data.userId} product=${job.data.productId}`,
     );

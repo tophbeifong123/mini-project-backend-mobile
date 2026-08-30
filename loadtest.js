@@ -60,7 +60,7 @@ export const options = {
     read_heavy: {
       // 1,000 concurrent readers
       executor: 'constant-vus',
-      vus: 1500,
+      vus: 1000,
       duration: '60s',
       exec: 'readProducts',
       startTime: '5s',

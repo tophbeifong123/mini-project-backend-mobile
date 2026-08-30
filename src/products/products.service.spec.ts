@@ -1,3 +1,4 @@
+import type { MetricsService } from '../observability/metrics.service';
 import { Repository } from 'typeorm';
 
 import { RedisService } from '../redis/redis.service';
@@ -60,9 +61,12 @@ describe('ProductsService', () => {
     redis.setCatalogPage.mockResolvedValue(undefined);
     redis.getStocks.mockResolvedValue(['50']);
 
+    // การวัดผลต้องไม่มีผลต่อ logic — stub ไว้เฉยๆ พอ
+    const metrics = { inc: jest.fn() };
     service = new ProductsService(
       repository as unknown as Repository<Product>,
       redis as unknown as RedisService,
+      metrics as unknown as MetricsService,
     );
   });
 

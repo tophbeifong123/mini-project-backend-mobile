@@ -75,8 +75,14 @@ export async function resetAll(): Promise<void> {
     const bought = await deleteByPattern(client, RedisKeys.bought('*', '*'));
     const locks = await deleteByPattern(client, RedisKeys.orderLock('*', '*'));
     const guards = await deleteByPattern(client, RedisKeys.compensated('*'));
+    // ตัวนับ observability ต้องล้างด้วย ไม่งั้นตัวเลขในรายงานจะเป็นผลรวมของหลายรอบ
+    const metrics = await client.del(
+      RedisKeys.metricsCounters(),
+      RedisKeys.metricsInstances(),
+    );
     console.log(
-      `[reset] redis-data ลบ stock=${stock} bought=${bought} lock=${locks} compensated=${guards}`,
+      `[reset] redis-data ลบ stock=${stock} bought=${bought} lock=${locks} ` +
+        `compensated=${guards} metrics=${metrics}`,
     );
 
     // ── 3) seed ใหม่ ลำดับนี้สลับไม่ได้ (Redis คัดลอกค่ามาจาก DB) ──

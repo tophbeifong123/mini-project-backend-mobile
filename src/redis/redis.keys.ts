@@ -27,4 +27,16 @@ export const RedisKeys = {
 
   /** redis-cache · distributed throttle key สำหรับ invalidation ข้าม instance */
   catalogFlushThrottle: (): string => `catalog:flush_throttle`,
+
+  /**
+   * redis-data · hash ของตัวนับ observability (field = ชื่อ metric, value = จำนวนสะสม)
+   *
+   * อยู่บน redis-data เพราะ 6 instance ต้องบวกลงถังใบเดียวกัน ถ้าเก็บใน RAM ของ process
+   * หน้าแดชบอร์ดจะเห็นแค่ 1 ใน 6 ของทราฟฟิก (ผิดกฎ stateless — CLAUDE.md §6 DON'T)
+   * และถ้าไปไว้บน redis-cache ที่เป็น allkeys-lru ตัวนับจะโดน evict หายเงียบๆ
+   */
+  metricsCounters: (): string => `metrics:counters`,
+
+  /** redis-data · hash ของสถานะราย instance (field = INSTANCE_ID, value = JSON snapshot) */
+  metricsInstances: (): string => `metrics:instances`,
 } as const;

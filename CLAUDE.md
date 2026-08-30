@@ -49,7 +49,7 @@ podman compose version                                  # podman-compose (python
 | รู | สภาพตอนนี้ |
 | :--- | :--- |
 | `23505` ไม่คืนสต็อกใน Redis | ถูกต้องสำหรับเคสที่ตั้งใจ (retry ของ job ที่ commit แล้ว) แต่ถ้า `bought:` key หายและ job record เดิมถูก evict → Redis ต่ำกว่า DB ถาวร · **reviewer ทั้ง 3 เห็นตรงกันว่าปล่อยไว้ถูกแล้ว** — การคืนตรงนี้จะทำให้ retry ปกติคืนซ้ำ |
-| ไม่มี reconciliation Redis ↔ DB | ตัวจับ drift ตัวเดียวที่มีคือการรัน §9.3 ข้อ 4 ด้วยมือ |
+| ไม่มี reconciliation Redis ↔ DB | **มีตัวตรวจแล้ว (2026-08-30)** — `/admin/insights` เทียบ Redis counter กับ DB สดๆ ทุก 3 วิ และ `/admin/metrics` เปิด gauge `flash_sale_stock_drift` · แต่ยัง **ไม่มีตัวซ่อมอัตโนมัติ** โดยเจตนา (INCR ลอยๆ = ปล่อยคนที่ 51 เข้ามา) และยังไม่มีใครคอยดูให้ = ต้องเปิดหน้าเอง |
 | `WORKER_CONCURRENCY` อ่านตอน decorate class | เห็นเฉพาะ env จริงของ container ปรับจาก `.env` แล้วไม่มีผล |
 | `proxy_read_timeout` ใน nginx | **ดันขึ้นเป็น 10s แล้ว (2026-08-27)** พร้อม 6 instance · แต่อาการต้นเดิมยังอยู่: ถ้า upstream ช้าเกิน 10 วิก็ยังเป็น 504 เหมือนเดิม — การดันค่าขึ้นซ่อนอาการ ไม่ได้แก้เหตุ |
 | `reset` ไม่ล้าง BullMQ job | `jobId` เป็น deterministic (`order:{userId}:{productId}`) job เก่าจึงชนกับรอบใหม่ได้ · ต้องล้างเองด้วย `redis-cli --scan --pattern 'bull:orders:*' \| xargs redis-cli DEL` |
@@ -150,6 +150,12 @@ RESET_CONFIRM=yes pnpm run reset   # ⚠️ ลบ orders ทั้งตาร�
 
 # --- Load Test ---
 k6 run loadtest.js
+
+# --- Observability (อยู่ใต้ Basic Auth เดียวกับ Bull-Board) ---
+# http://localhost:8080/admin/queues    -> Bull-Board (Waiting/Active/Completed/Failed + กราฟ metrics)
+# http://localhost:8080/admin/insights  -> integrity + ตัวนับ + event loop lag + replication lag (refresh 3 วิ)
+# http://localhost:8080/admin/metrics   -> Prometheus exposition format (ยังไม่มี Prometheus ในสแตก)
+curl -u admin:admin -X POST http://localhost:8080/admin/metrics/reset   # ล้างตัวนับก่อนยิงรอบใหม่
 ```
 
 ---
@@ -236,6 +242,8 @@ k6 run loadtest.js
 4. **Health Checks แยก 2 ตัว** — `/health/live` ห้ามเช็ค DB (DB สะดุดแล้วจะ restart ทุก container พร้อมกัน), `/health/ready` เช็ค DB + Redis แล้วตอบ 503
 5. **Structured JSON Logging** — single-line JSON + `X-Correlation-ID` ส่งต่อเข้า job payload ให้ trace ข้ามไปถึง worker ได้ + redact password/token/secret
 6. **Key Builder รวมศูนย์** — Redis key ทุกตัวสร้างจาก `src/redis/redis.keys.ts` ห้ามต่อ string เอง
+7. **Metrics เป็น write-behind** — `MetricsService.inc()` เป็น synchronous ล้วน (บวกใน Map) แล้ว flush ลง hash `metrics:counters` บน **redis-data** ทุก 1 วินาที
+   เก็บบน Redis เพราะ 6 instance ต้องบวกลงถังใบเดียวกัน · **ห้ามเปลี่ยนไป `HINCRBY` ตรงๆ ในเส้นทางร้อน** — ที่ 1,500 rps จะเพิ่มภาระ redis-data อีก 1,500 ops/s บน connection เดียวกับ gatekeeper
 
 ---
 
