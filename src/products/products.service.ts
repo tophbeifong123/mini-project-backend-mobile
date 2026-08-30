@@ -51,6 +51,12 @@ export interface ProductListResult {
   meta: ProductListMeta;
 }
 
+/**
+ * เพดานความถี่ของ log "ไม่มี stock counter" — 1 ครั้ง/10 วิ/instance
+ * (ตัวนับยังขึ้นทุกช่อง ที่ถูกจำกัดคือจำนวนบรรทัด log เท่านั้น)
+ */
+const MISSING_STOCK_LOG_INTERVAL_MS = 10_000;
+
 @Injectable()
 export class ProductsService {
   private readonly logger = new Logger(ProductsService.name);
@@ -64,6 +70,11 @@ export class ProductsService {
 
   /** นับ response ที่ remainingStock มาจากแคชแทน Redis (redis-data อ่านไม่ได้) */
   private degradedReads = 0;
+
+  /** สถานะของ throttle สำหรับ log "ไม่มี stock counter" (ดู reportMissingStockKeys) */
+  private missingStockSinceLastLog = 0;
+  private missingStockLastLoggedAt = 0;
+  private readonly missingStockProductIds = new Set<string>();
 
   constructor(
     @InjectRepository(Product)
@@ -82,23 +93,30 @@ export class ProductsService {
 
     // 2) stock overlay: MGET สดทุก request — ห้ามแคช (CLAUDE.md §3 / §5)
     const productIds = catalog.items.map((item) => item.productId);
-    const stocks = await this.readStocks(productIds);
+    const { stocks, degraded } = await this.readStocks(productIds);
 
-    // 3) merge
+    // 3) merge — ช่องที่เป็น null ทั้งที่ MGET สำเร็จ = key นั้นยังไม่เคยถูก seed
+    const missingStockProductIds: string[] = [];
     const data: ProductResponseItem[] = catalog.items.map((item, index) => {
       const raw = stocks[index];
+      const missing = raw === null || raw === undefined;
+      // ตอน degraded ทุกช่องเป็น null อยู่แล้ว นับซ้ำจะกลายเป็นคนละเหตุการณ์กัน
+      if (missing && !degraded) {
+        missingStockProductIds.push(item.productId);
+      }
       return {
         productId: item.productId,
         name: item.name,
         price: Number(item.price),
         availableStock: item.availableStock,
-        remainingStock:
-          raw === null || raw === undefined
-            ? item.fallbackRemainingStock
-            : Number(raw),
+        remainingStock: missing ? item.fallbackRemainingStock : Number(raw),
         isFlashSaleActive: item.isFlashSaleActive,
       };
     });
+
+    if (missingStockProductIds.length > 0) {
+      this.reportMissingStockKeys(missingStockProductIds);
+    }
 
     const safeLimit = limit > 0 ? limit : 1;
     return {
@@ -127,9 +145,14 @@ export class ProductsService {
    * ⚠️ `fallbackRemainingStock` คือค่า DB ตอนเติมแคช ระหว่าง burst มันอาจบอก 47 ทั้งที่จริงเป็น 0
    *    เพราะฉะนั้นต้อง **นับและ log ให้เห็น** ไม่ใช่เงียบ — รายงานต้องบอกได้ว่าเสิร์ฟ degraded ไปกี่ใบ
    */
-  private async readStocks(productIds: string[]): Promise<(string | null)[]> {
+  private async readStocks(
+    productIds: string[],
+  ): Promise<{ stocks: (string | null)[]; degraded: boolean }> {
     try {
-      return await this.redis.getStocks(productIds);
+      return {
+        stocks: await this.redis.getStocks(productIds),
+        degraded: false,
+      };
     } catch (err) {
       this.degradedReads += 1;
       this.metrics.inc(Metric.CATALOG_DEGRADED_READS);
@@ -139,8 +162,40 @@ export class ProductsService {
           (err instanceof Error ? err.message : String(err)),
       );
       // คืน null ทุกช่อง → ตัว merge จะใช้ fallbackRemainingStock ให้เอง
-      return productIds.map(() => null);
+      return { stocks: productIds.map(() => null), degraded: true };
     }
+  }
+
+  /**
+   * `redis-data` เป็น `noeviction` — MGET คืน null จึงแปลว่า key **ไม่เคยถูก seed**
+   * ซึ่งเป็นเงื่อนไขเดียวกับที่ write path ตอบ 503 — read path จึงห้ามเงียบ
+   * แต่ก็ห้ามล้มเช่นกัน (CLAUDE.md §6) ตัวตัดสินความถูกต้องคือ `gatekeeper.lua`
+   * กับ atomic UPDATE ของ worker ไม่ใช่ที่นี่ — เสิร์ฟ fallback ต่อไปแล้วบันทึกไว้
+   *
+   * นับทุกช่อง (`metrics.inc` เป็น buffer ใน RAM flush วินาทีละครั้ง — ฟรีบน hot path)
+   * แต่ **log ได้อย่างมาก 1 ครั้ง/10 วินาที/instance** เพราะ endpoint นี้ถูกยิงที่ 1,000 VUs
+   * pino เขียนลง stdout ตรงๆ ตัวหมุน log คือ `json-file` ของ docker (10m x 3)
+   * ถ้า log ทุก request จาก 6 instance ring จะหมุนทิ้งหลักฐานที่กำลังเก็บภายในไม่กี่วินาที
+   */
+  private reportMissingStockKeys(productIds: string[]): void {
+    this.metrics.inc(Metric.CATALOG_MISSING_STOCK_KEY, productIds.length);
+    this.missingStockSinceLastLog += productIds.length;
+    for (const productId of productIds) {
+      this.missingStockProductIds.add(productId);
+    }
+
+    const now = Date.now();
+    if (now - this.missingStockLastLoggedAt < MISSING_STOCK_LOG_INTERVAL_MS) {
+      return;
+    }
+    this.missingStockLastLoggedAt = now;
+    this.logger.error(
+      `stock counter key missing (never seeded) — serving cached fallback ` +
+        `(missing slots since last log: ${this.missingStockSinceLastLog}): ` +
+        [...this.missingStockProductIds].join(', '),
+    );
+    this.missingStockSinceLastLog = 0;
+    this.missingStockProductIds.clear();
   }
 
   /** จำนวน response ที่เสิร์ฟด้วยสต็อกจากแคชเพราะอ่าน redis-data ไม่ได้ (สำหรับรายงาน) */

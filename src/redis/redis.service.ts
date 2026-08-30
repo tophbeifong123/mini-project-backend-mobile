@@ -225,7 +225,7 @@ export class RedisService implements OnModuleInit {
     requestToken: string,
   ): Promise<number> {
     return this.dataClient.compensateStockOnce(
-      RedisKeys.compensated(jobId),
+      RedisKeys.compensated(jobId, requestToken),
       RedisKeys.stock(productId),
       RedisKeys.orderLock(userId, productId),
       String(COMPENSATION_GUARD_TTL_SECONDS),

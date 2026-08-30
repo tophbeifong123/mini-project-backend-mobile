@@ -1,8 +1,8 @@
 -- compensate-once.lua — compensation ที่ idempotent (CLAUDE.md §4 ข้อ 8)
 -- BullMQ retry ได้หลายครั้ง ถ้าคืนสต็อกทุกครั้ง = คืนเกินจริง -> oversell
--- guard ด้วย compensated:{jobId} (SET NX + TTL) ให้คืนได้ครั้งเดียวต่อ job
+-- guard ด้วย compensated:{jobId}:{requestToken} (SET NX + TTL) ให้คืนได้ครั้งเดียวต่อหนึ่งคำขอ
 --
--- KEYS[1] compensated:{jobId}                 guard key
+-- KEYS[1] compensated:{jobId}:{requestToken}  guard key (ขอบเขต = retry chain ของคำขอเดียว)
 -- KEYS[2] stock:flash_sale:{productId}
 -- KEYS[3] lock:order:{userId}:{productId}
 -- ARGV[1] guard_ttl_seconds

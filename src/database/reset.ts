@@ -74,7 +74,10 @@ export async function resetAll(): Promise<void> {
     const stock = await deleteByPattern(client, RedisKeys.stock('*'));
     const bought = await deleteByPattern(client, RedisKeys.bought('*', '*'));
     const locks = await deleteByPattern(client, RedisKeys.orderLock('*', '*'));
-    const guards = await deleteByPattern(client, RedisKeys.compensated('*'));
+    const guards = await deleteByPattern(
+      client,
+      RedisKeys.compensated('*', '*'),
+    );
     // ตัวนับ observability ต้องล้างด้วย ไม่งั้นตัวเลขในรายงานจะเป็นผลรวมของหลายรอบ
     const metrics = await client.del(
       RedisKeys.metricsCounters(),

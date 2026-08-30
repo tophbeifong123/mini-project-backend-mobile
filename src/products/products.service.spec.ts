@@ -1,5 +1,8 @@
-import type { MetricsService } from '../observability/metrics.service';
+import { Logger } from '@nestjs/common';
 import { Repository } from 'typeorm';
+
+import { Metric } from '../observability/metrics.constants';
+import type { MetricsService } from '../observability/metrics.service';
 
 import { RedisService } from '../redis/redis.service';
 import { Product } from './entities/product.entity';
@@ -31,11 +34,13 @@ describe('ProductsService', () => {
   type RepositoryMock = jest.Mocked<
     Pick<Repository<Product>, 'createQueryBuilder'>
   >;
+  type MetricsMock = jest.Mocked<Pick<MetricsService, 'inc'>>;
 
   let service: ProductsService;
   let redis: RedisMock;
   let repository: RepositoryMock;
   let qb: QueryBuilderMock;
+  let metrics: MetricsMock;
 
   beforeEach(() => {
     qb = {
@@ -62,12 +67,16 @@ describe('ProductsService', () => {
     redis.getStocks.mockResolvedValue(['50']);
 
     // การวัดผลต้องไม่มีผลต่อ logic — stub ไว้เฉยๆ พอ
-    const metrics = { inc: jest.fn() };
+    metrics = { inc: jest.fn() };
     service = new ProductsService(
       repository as unknown as Repository<Product>,
       redis as unknown as RedisService,
       metrics as unknown as MetricsService,
     );
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   describe('stock overlay (the "เงื่อนไขสำคัญ" of the assignment)', () => {
@@ -106,6 +115,38 @@ describe('ProductsService', () => {
       expect(result.data[0].remainingStock).toBe(50);
     });
 
+    it('counts a missing counter key while still serving the fallback', async () => {
+      // redis-data เป็น noeviction → null = key ไม่เคยถูก seed (เงื่อนไขเดียวกับที่ write path ตอบ 503)
+      // read path ยัง degrade เหมือนเดิม แต่ห้ามเงียบ
+      redis.getStocks.mockResolvedValue([null]);
+
+      const result = await service.listProducts(1, 10);
+
+      expect(result.data[0].remainingStock).toBe(50);
+      expect(metrics.inc).toHaveBeenCalledWith(
+        Metric.CATALOG_MISSING_STOCK_KEY,
+        1,
+      );
+    });
+
+    it('throttles the missing-key log to one line per burst but counts every slot', async () => {
+      // endpoint นี้ถูกยิงที่ 1,000 VUs — log ทุก request จะหมุน json-file ring ทิ้งหลักฐาน
+      const loggerError = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      redis.getStocks.mockResolvedValue([null]);
+
+      for (let i = 0; i < 5; i += 1) {
+        await service.listProducts(1, 10);
+      }
+
+      expect(loggerError).toHaveBeenCalledTimes(1);
+      const missingIncs = metrics.inc.mock.calls.filter(
+        ([name]) => name === Metric.CATALOG_MISSING_STOCK_KEY,
+      );
+      expect(missingIncs).toHaveLength(5);
+    });
+
     it('degrades to the cached fallback instead of failing the whole read', async () => {
       // read path ไม่ใช่พื้นผิวของความถูกต้อง — ไม่มีใครซื้อของจาก response ของ GET
       // ตัวตัดสินคือ gatekeeper.lua ฝั่ง write เท่านั้น
@@ -118,6 +159,11 @@ describe('ProductsService', () => {
       // ใช้ fallbackRemainingStock ที่ติดมากับ metadata cache
       expect(result.data[0].remainingStock).toBe(50);
       expect(service.getDegradedReadCount()).toBe(1);
+      // "redis-data ล่ม" กับ "key ไม่เคยถูก seed" เป็นคนละเหตุการณ์ ห้ามรวมเป็นตัวเลขเดียว
+      expect(metrics.inc).not.toHaveBeenCalledWith(
+        Metric.CATALOG_MISSING_STOCK_KEY,
+        expect.anything(),
+      );
     });
   });
 

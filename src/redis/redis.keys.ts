@@ -15,8 +15,16 @@ export const RedisKeys = {
   bought: (productId: string, userId: string): string =>
     `bought:${productId}:${userId}`,
 
-  /** redis-data · guard ให้ compensation เป็น idempotent ข้าม retry (CLAUDE.md §4 ข้อ 8) */
-  compensated: (jobId: string): string => `compensated:${jobId}`,
+  /**
+   * redis-data · guard ให้ compensation เป็น idempotent ข้าม retry (CLAUDE.md §4 ข้อ 8)
+   *
+   * ขอบเขตคือ "retry chain ของคำขอเดียว" — ไม่ใช่ทั้งคู่ (user, product)
+   * เพราะ `jobId` เป็น deterministic (`order:{userId}:{productId}`) ถ้า key มีแค่ jobId
+   * คำขอ *รอบถัดไป* ของคนเดิมจะชน guard ของรอบก่อนแล้วไม่คืนสต็อก = สต็อกหายถาวร
+   * (BullMQ retry อ่าน `job.data` เดิม → `requestToken` เดิม guard จึงยังคุม retry ได้เหมือนเดิม)
+   */
+  compensated: (jobId: string, requestToken: string): string =>
+    `compensated:${jobId}:${requestToken}`,
 
   /** redis-cache · metadata ของ catalog หนึ่งหน้า (TTL + jitter เสมอ) */
   catalogPage: (page: number, limit: number): string =>

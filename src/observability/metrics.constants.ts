@@ -36,6 +36,7 @@ export const Metric = {
   CATALOG_CACHE_HITS: 'catalog_cache_hits_total',
   CATALOG_CACHE_MISSES: 'catalog_cache_misses_total',
   CATALOG_DEGRADED_READS: 'catalog_degraded_reads_total',
+  CATALOG_MISSING_STOCK_KEY: 'catalog_missing_stock_key_total',
 } as const;
 
 export type MetricName = (typeof Metric)[keyof typeof Metric];
@@ -63,4 +64,5 @@ export const METRIC_LABELS: Record<string, string> = {
   [Metric.CATALOG_CACHE_HITS]: 'cache hit',
   [Metric.CATALOG_CACHE_MISSES]: 'cache miss',
   [Metric.CATALOG_DEGRADED_READS]: 'อ่าน stock ไม่ได้ ใช้ค่าจากแคช',
+  [Metric.CATALOG_MISSING_STOCK_KEY]: '⚠️ ไม่มี stock counter (ยังไม่ได้ seed)',
 };
