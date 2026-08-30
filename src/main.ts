@@ -40,13 +40,12 @@ async function bootstrap(): Promise<void> {
   );
   app.useGlobalFilters(app.get(AllExceptionsFilter));
 
-  // Bull-Board — ต้องมี Basic Auth คลุมเสมอ (CLAUDE.md §6)
+  // Bull-Board + หน้า observability — ต้องมี Basic Auth คลุมเสมอ (CLAUDE.md §6)
+  // ครอบที่ '/admin' ทีเดียว จึงครอบ /admin/queues, /admin/insights และ /admin/metrics พร้อมกัน
+  // (เผลอเพิ่ม route ใหม่ใต้ /admin ทีหลังก็ยังถูกคลุมอัตโนมัติ)
   const bullBoard = app.get(BullBoardService);
-  app.use(
-    BULL_BOARD_BASE_PATH,
-    bullBoard.getAuthMiddleware(),
-    bullBoard.getRouter(),
-  );
+  app.use('/admin', bullBoard.getAuthMiddleware());
+  app.use(BULL_BOARD_BASE_PATH, bullBoard.getRouter());
 
   // ปิด worker/connection ให้เรียบร้อยตอน SIGTERM ไม่งั้น deploy ทีไรเกิด stalled job
   app.enableShutdownHooks();
