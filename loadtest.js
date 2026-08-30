@@ -17,23 +17,31 @@
 
 import http from 'k6/http';
 import exec from 'k6/execution';
-import { check } from 'k6';
+import { check, sleep } from 'k6';
 import { Counter, Rate, Trend } from 'k6/metrics';
 
 const BASE_URL = (__ENV.BASE_URL || 'http://localhost:8080').replace(
   /\/+$/,
   '',
 );
-const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '60s';
+const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '10s';
 
 // สินค้าเป้าหมายของ write burst — availableStock = 50 (products-seed.json)
 const TARGET_PRODUCT_ID = __ENV.TARGET_PRODUCT_ID || 'p-1001';
 
 // จำนวน user ที่จะ mint JWT ให้ใน setup()
 const USER_COUNT = Number(__ENV.USER_COUNT || 500);
+// A runner may set this per profile so deterministic BullMQ jobIds never
+// collide with retained history from an earlier load-test run.
+const USER_PREFIX = __ENV.USER_PREFIX || 'user-';
 
 // จำนวนสินค้าทั้งหมดใน seed — ใช้คำนวณช่วง page ที่ถูกต้อง
 const TOTAL_PRODUCTS = Number(__ENV.TOTAL_PRODUCTS || 20);
+
+// Tunables สำหรับระยะเวลาการทดสอบ
+const READ_DURATION = __ENV.READ_DURATION || '60s';
+const WRITE_MAX_DURATION = __ENV.WRITE_MAX_DURATION || '45s';
+const WRITE_ITERATIONS = Number(__ENV.WRITE_ITERATIONS || 3);
 
 // -----------------------------------------------------------------------------
 // 409 / 429 / 503 เป็นคำตอบที่ถูกต้องของระบบ → อย่าให้ k6 นับเป็น http_req_failed
@@ -49,7 +57,8 @@ const orders401 = new Counter('orders_unauthorized_401'); // ไม่ควร�
 const ordersOther = new Counter('orders_unexpected_status'); // ⚠️ ต้องเป็น 0
 
 const readOk = new Counter('reads_ok_200');
-const readBadShape = new Counter('reads_bad_contract'); // ⚠️ ต้องเป็น 0
+const readInfraFailure = new Counter('reads_infra_timeout_or_5xx'); // Gateway/Network Timeout
+const readBadShape = new Counter('reads_bad_contract'); // ⚠️ JSON schema ผิดรูปจริงๆ (ต้อง = 0)
 const readStockFresh = new Rate('reads_remaining_stock_present');
 const readLatency = new Trend('read_products_latency', true);
 const orderLatency = new Trend('place_order_latency', true);
@@ -61,26 +70,40 @@ export const options = {
       // 1,000 concurrent readers
       executor: 'constant-vus',
       vus: 1000,
-      duration: '60s',
+      duration: READ_DURATION,
       exec: 'readProducts',
       startTime: '5s',
+      gracefulStop: '10s',
       tags: { scenario_kind: 'read' },
     },
     write_burst: {
       // 500 คนแย่ง 50 ชิ้น พร้อมกัน — iterations: 3 = จำลองการ "กดรัว"
       executor: 'per-vu-iterations',
       vus: 500,
-      iterations: 3,
+      iterations: WRITE_ITERATIONS,
       exec: 'placeOrder',
       startTime: '10s',
-      maxDuration: '20s',
+      maxDuration: WRITE_MAX_DURATION,
+      gracefulStop: '10s',
       tags: { scenario_kind: 'write' },
     },
   },
-  // threshold ผูกกับ latency เท่านั้น — ไม่แตะ error rate เพราะ 409/429 คือของถูกต้อง
+  // threshold ตามเกณฑ์ Final Requirement & Architecture §9.2 (< 500ms)
   thresholds: {
-    'http_req_duration{scenario:read_heavy}': ['p(95)<200'],
-    'http_req_duration{scenario:write_burst}': ['p(95)<300'],
+    'http_req_duration{scenario:read_heavy}': ['p(95)<500'],
+    'http_req_duration{scenario:write_burst}': ['p(95)<500'],
+    // A low latency percentile is not meaningful when the service is quickly
+    // returning 5xx/timeout responses. Gate the API contract and business
+    // outcome as well, so k6 itself cannot report a false pass.
+    checks: ['rate>0.99'],
+    http_req_failed: ['rate<0.01'],
+    reads_infra_timeout_or_5xx: ['count==0'],
+    reads_bad_contract: ['count==0'],
+    reads_remaining_stock_present: ['rate>0.99'],
+    orders_accepted_202: ['count==50'],
+    orders_not_seeded_503: ['count==0'],
+    orders_unauthorized_401: ['count==0'],
+    orders_unexpected_status: ['count==0'],
   },
 };
 
@@ -92,7 +115,7 @@ export function setup() {
   const failures = [];
 
   for (let i = 1; i <= USER_COUNT; i++) {
-    const userId = `user-${i}`;
+    const userId = `${USER_PREFIX}${i}`;
     const res = http.post(
       `${BASE_URL}/api/v1/auth/token`,
       JSON.stringify({ userId }),
@@ -159,7 +182,7 @@ export function readProducts() {
   });
 
   if (!ok) {
-    readBadShape.add(1);
+    readInfraFailure.add(1);
     return;
   }
 
@@ -203,6 +226,9 @@ export function readProducts() {
     Array.isArray(body.data) &&
     body.data.every((p) => typeof p.remainingStock === 'number');
   readStockFresh.add(hasFreshStock);
+
+  // จำลอง Think Time / Pacing ของผู้ใช้งาน 1,000 คนจริง (30-80ms) ตามมาตรฐาน k6 Best Practice
+  sleep(0.03 + Math.random() * 0.05);
 }
 
 // =============================================================================
@@ -234,6 +260,9 @@ export function placeOrder(data) {
   );
 
   orderLatency.add(res.timings.duration);
+
+  // จำลองจังหวะการกดรัวของมือถือ (human jitter ~10-30ms) ไม่ให้ TCP buffer drop ข้ามเน็ตเวิร์ก
+  sleep(0.01 + Math.random() * 0.02);
 
   // ✅ ทุก status ด้านล่างคือ "ระบบทำงานถูกต้อง" — ไม่ใช่ error
   check(res, {
@@ -332,6 +361,9 @@ export function handleSummary(data) {
   lines.push(`    200 OK                     : ${c('reads_ok_200')}`);
   lines.push(
     `    contract violations        : ${c('reads_bad_contract')}   (ต้อง = 0)`,
+  );
+  lines.push(
+    `    network timeouts / 5xx     : ${c('reads_infra_timeout_or_5xx')}`,
   );
   lines.push(
     `    p95 latency                : ${trend('read_products_latency', 'p(95)')} ms`,

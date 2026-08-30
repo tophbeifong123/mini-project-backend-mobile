@@ -33,6 +33,35 @@ sudo apt-get update && sudo apt-get install k6
 
 ## Run the test
 
+### Recommended: isolated four-profile run
+
+Use the repository runner for a repeatable comparison. It creates a
+timestamped directory under `loadtest/results/`, resets business data and
+metrics before each profile, waits for `/health/ready`, waits for BullMQ to
+drain after k6, namespaces test users per profile (so retained deterministic
+BullMQ jobs cannot collide), and records a normalized comparison plus raw
+artifacts.
+
+```powershell
+pnpm run test:load:all
+```
+
+The runner runs all profiles serially even when one fails, so one benchmark
+produces a complete comparison. While diagnosing a broken environment, stop at
+the first failed gate with:
+
+```powershell
+$env:LOADTEST_FAIL_FAST = 'yes'
+pnpm run test:load:all
+```
+
+Use the individual k6 scripts while diagnosing a regression, starting with
+`testBuyAo_n.js` and progressing to the highest-load profile. For a result to
+report, run each profile at least three times from a clean reset and compare
+the median RPS and p95 latency rather than a single run. For a manual rerun
+against retained BullMQ history, choose a fresh identity namespace too, for
+example `k6 run -e USER_PREFIX=manual-20260830-`.
+
 **Bash / WSL / macOS / Linux:**
 ```bash
 # 1. Make sure stack is up
@@ -100,13 +129,13 @@ k6 run --env BASE_URL=http://localhost `
 
 | Layer | Counts as pass | Counts as fail (test exits non-zero) |
 |---|---|---|
-| HTTP | `200` (read), `202` / `409` (write) | Any `4xx` other than `409`, any `5xx`, timeout > 10 s, connection refused, DNS/TLS error |
-| Business | `202` = order accepted, `409` = stock exhausted / duplicate / lock conflict | — (no business-level "fail" — all are valid outcomes) |
+| HTTP | `200` (read), `202` / `409` / `429` (write) | Any `4xx` other than `409` / `429`, any `5xx`, timeout > 10 s, connection refused, DNS/TLS error |
+| Business | `202` = order accepted, `409` = stock exhausted / duplicate, `429` = in-flight lock | — (all three write outcomes are contract-valid) |
 
 Thresholds that gate the test (uses a **custom** `http_infra_failures` metric — k6's built-in `http_req_failed` counts every 4xx as failure, including our expected `409`):
 
 ```
-http_infra_failures rate                    < 1%    (5xx + timeout + non-409 4xx)
+http_infra_failures rate                    < 1%    (5xx + timeout + non-409/429 4xx)
 http_infra_failures{scenario:read_load}     < 1%
 http_infra_failures{scenario:write_load}    < 1%
 checks rate                                 > 99%   (every check() must pass)
@@ -131,7 +160,8 @@ Per-request timeout is **10 s** (`REQ_PARAMS.timeout`).
 ============================================================
 ```
 
-Counters / rates emitted: `order_accepted_total`, `order_conflicted_total`, `http_infra_failures`.
+Counters / rates emitted: `order_accepted_total`, `order_conflicted_total`,
+`orders_throttled_429`, `http_infra_failures`.
 
 ## Reset script — all 20 products
 
