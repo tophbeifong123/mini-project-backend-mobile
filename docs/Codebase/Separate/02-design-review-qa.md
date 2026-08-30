@@ -8,6 +8,10 @@
 > ✅ **อัปเดต 2026-08-26** — เจ้าของโปรเจกต์อนุมัติแล้ว และ **10 จาก 11 ข้อถูกแก้ลงโค้ดเรียบร้อย**
 > (ข้อ 10 "ตัด PG replica" ไม่ทำ เพราะกระทบ requirement — read-write split เป็นหัวข้อในรายงาน)
 > ดูสถานะรายข้อที่ตารางท้ายเอกสาร
+>
+> 📌 **เรื่อง `file:line` ในเอกสารนี้**: บทสนทนาเป็นของ **2026-08-26** บรรทัดที่อ้างถึง
+> *โค้ดที่ถูกลบ/เขียนใหม่ไปแล้ว* จะทำเครื่องหมาย **(ณ 2026-08-26)** ไว้ ส่วนบรรทัดที่ชี้ไป
+> **โค้ดที่ยังอยู่** ถูกตรวจซ้ำและอัปเดตเป็นเลขปัจจุบัน **ณ 2026-08-30** แล้ว
 
 | ผู้ร่วมวง | มุมที่ถือ |
 | :--- | :--- |
@@ -19,7 +23,7 @@
 
 ## 1. Blocker b ที่คิดว่าปิดแล้ว ยังเปิดอยู่
 
-**🔒 CORRECT:** `orders.service.ts:144-146` ถามว่า "BullMQ คืน job เดิมมาหรือเปล่า" โดยเทียบ `job.data.requestToken` — แต่ **BullMQ ไม่เคยอ่าน `data` กลับจาก Redis** `Job.create()` เขียนกลับแค่ `job.id` (`bullmq/classes/job.js:124-135`) และฝั่ง Lua ตอนเจอ jobId ซ้ำก็แค่ `return jobId` ทิ้ง payload ใหม่ (`addStandardJob-9.js:445`) → `isPreexistingJob` **เป็น false เสมอ** เป็น dead code
+**🔒 CORRECT:** `orders.service.ts:144-146` *(ณ 2026-08-26 — โค้ดก้อนนี้ถูกลบไปแล้ว)* ถามว่า "BullMQ คืน job เดิมมาหรือเปล่า" โดยเทียบ `job.data.requestToken` — แต่ **BullMQ ไม่เคยอ่าน `data` กลับจาก Redis** `Job.create()` เขียนกลับแค่ `job.id` (`bullmq/classes/job.js:124-135`) และฝั่ง Lua ตอนเจอ jobId ซ้ำก็แค่ `return jobId` ทิ้ง payload ใหม่ (`addStandardJob-9.js:445`) → `isPreexistingJob` **เป็น false เสมอ** เป็น dead code
 
 **🏎️ PERF:** ผมได้ข้อสรุปเดียวกันโดยไม่ได้คุยกัน
 
@@ -42,7 +46,7 @@
 round trip เท่าเดิม (`EVALSHA` → `HGETALL`) ปิดได้ 2 รูด้วยการเช็คเดียว
 ถ้า `getJob` คืน `null` → **ห้ามคืนสต็อก** ให้ log ดังๆ แล้วตอบ 202 (คืนผิดแย่กว่าไม่คืน)
 
-> ⚠️ `orders.service.spec.ts:222-238` ต้องเขียนใหม่ด้วย — มันปลอม return ของ `add()` เป็นรูปที่ BullMQ ทำไม่ได้
+> ⚠️ `orders.service.spec.ts:222-238` *(ณ 2026-08-26 — เขียนใหม่ไปแล้ว)* ต้องเขียนใหม่ด้วย — มันปลอม return ของ `add()` เป็นรูปที่ BullMQ ทำไม่ได้
 > **CORRECT เรียกมันว่า "artifact ที่อันตรายที่สุดใน repo" เพราะเทสต์เขียวจะทำให้คนถัดไปไม่มาดูตรงนี้อีก**
 
 ---
@@ -65,27 +69,41 @@ podman stats --no-stream --format 'table {{.Name}} {{.CPUPerc}}'
 ```
 PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis ทั้งสอง ≤25% — ⚠️ ตั้งสมมติว่า 3 process บนโฮสต์ core เหลือเฟือ บน VM 4 core / 6 process เป็นไปไม่ได้ — **ถ้า `redis-data` กินมากกว่า app แปลว่า PERF ผิด**
 
+> ✅ **อัปเดต 2026-08-30** — ข้อนี้วัดได้จากในระบบเองแล้ว ไม่ต้องพึ่ง `podman stats` อย่างเดียว
+> `MetricsService` ใช้ `monitorEventLoopDelay()` เก็บ **event loop p99 รายวินาทีของแต่ละ instance**
+> (`metrics.service.ts:63` `:134-136`) และ `IntegrityService` ดึง `instantaneous_ops_per_sec` ของ Redis
+> ทั้งสองตัวจาก `INFO` (`integrity.service.ts:352`) — เปิดคู่กันที่ `/admin/insights`
+> **ยังไม่มีใครยิงแล้วอ่านตัวเลขนี้จริง** ข้อถกเถียงจึงยังไม่ถูกตัดสิน แค่มีเครื่องมือวัดแล้ว
+
 ---
 
 ## 3. Read path ควร 503 หรือ ตอบเลขเก่า
 
-**🏎️ PERF:** `products.service.ts:114-123` โยน 503 เมื่อ `MGET` ล้ม ทั้งที่ `fallbackRemainingStock` นั่งอยู่ในแคชแล้ว — พอ `redis-data` สะดุด reader 1,000 คนจะค้างจนชน `proxy_read_timeout 10s` แล้วได้ **504** ซึ่งไม่อยู่ใน `expectedStatuses` ด้วยซ้ำ เลขเก่านิดหน่อยแย่กว่าอ่านไม่ได้ทั้งระบบจริงเหรอ
+**🏎️ PERF:** `products.service.ts:114-123` *(ณ 2026-08-26 — ตอนนี้คือ `:130-143` และ degrade แล้ว)* โยน 503 เมื่อ `MGET` ล้ม ทั้งที่ `fallbackRemainingStock` นั่งอยู่ในแคชแล้ว — พอ `redis-data` สะดุด reader 1,000 คนจะค้างจนชน `proxy_read_timeout 10s` แล้วได้ **504** ซึ่งไม่อยู่ใน `expectedStatuses` ด้วยซ้ำ เลขเก่านิดหน่อยแย่กว่าอ่านไม่ได้ทั้งระบบจริงเหรอ
 
 **🔒 CORRECT:** *(ยอมรับ)* **PERF ถูก ผมยอม** ผมปกป้อง invariant ที่ไม่มีอยู่จริง — ไม่มีใครซื้อของจาก response ของ `GET` ตัวตัดสินคือ `gatekeeper.lua` การอ่านเลขเก่าไม่ทำให้ oversell, ไม่ทำให้ซื้อซ้ำ, ไม่ทำให้ Redis กับ DB เพี้ยน **read path ไม่ใช่พื้นผิวของความถูกต้อง**
 
 แต่ fallback ก็ไม่ได้สะอาด — `fallbackRemainingStock` คือค่า DB ตอนเติมแคช ระหว่าง burst มันอาจบอก 47 ทั้งที่จริงเป็น 0 **ให้ fallback แต่ทำให้เห็นได้** นับ metric + log ระดับ error เพื่อให้รายงานบอกได้ว่าเสิร์ฟแบบ degraded ไปกี่ใบ
 
-**สิ่งที่ห้ามยุบ**: `gatekeeper.lua:13` ที่แยก "ไม่มี key" ออกจาก "เป็น 0" — อันนั้น load-bearing
+**สิ่งที่ห้ามยุบ**: `gatekeeper.lua:14-17` ที่แยก "ไม่มี key" ออกจาก "เป็น 0" — อันนั้น load-bearing
+
+> ✅ **อัปเดต 2026-08-30** — "นับ metric" ที่ CORRECT ขอไว้มีของจริงแล้ว: `catalog_degraded_reads_total`
+> (`products.service.ts:135`) นับคู่กับ `getDegradedReadCount()` ที่นับใน process
+> ตัวแรกรวมข้าม 6 instance และอ่านได้ที่ `/admin/insights` ตัวหลังเห็นแค่ instance เดียว
 
 ---
 
 ## 4. `compensated:{jobId}` ทำให้ระบบไม่ self-heal
 
+> **✅ อัปเดต 2026-08-30** — key จริงตอนนี้คือ **`compensated:{jobId}:{requestToken}`** ไม่ใช่ `compensated:{jobId}` แล้ว (`redis.keys.ts:19`)
+> เหตุผลไม่เกี่ยวกับข้อถกเถียงข้างล่างนี้: `jobId` เป็น deterministic guard เดิมจึงคุมข้าม **คำขอ** ไม่ใช่แค่ข้าม retry ตามที่ CLAUDE.md §4 ข้อ 8 ตั้งใจ → คนเดิมสั่งใหม่ภายใน TTL แล้วไม่ได้คืนสต็อก = หายถาวร (ลงเอย `remaining_stock` ค้าง 1, orders 49/50)
+> ข้อความด้านล่างเก็บไว้ตามที่ถกกันจริง **ณ 2026-08-26** — ข้อสรุปเรื่อง attractor ที่ 1 ยังใช้ได้เหมือนเดิม
+
 **🔒 CORRECT:** guard ตัวนี้ทำให้ compensation idempotent ด้วยการทำให้มัน **ย้อนกลับไม่ได้** — พอคืนไปแล้วก็คืนตลอดกาลแม้ job จะสำเร็จทีหลัง ผลคือ Redis สูงกว่า DB → gatekeeper ปล่อยคนที่ 51 → job ตาย sold-out → คืนอีก → **`stock:flash_sale:p-1001` ลู่เข้าหา 1 ไม่มีวันถึง 0** ตกเกณฑ์ §9.3 ข้อ 4 ตรงๆ ควรใส่เพดานใน `compensate-once.lua` ไหม
 
 **🏎️ PERF:** เพดานฟรีอยู่แล้ว สคริปต์ถือ key อยู่ในมือ เพิ่ม 2 op ใส่ไปเถอะ — **แต่มันไม่แก้ loop ที่คุณอธิบาย** เพราะ attractor นั่งอยู่ที่ **1** ส่วนเพดานคือ 50 มันไม่มีวันทำงาน
 
-เครื่องยนต์ของ loop คือ `err instanceof SoldOutError` ที่ `orders.processor.ts:101` — `SoldOutError` เกิดตอน Tier 1 บอกผ่านแต่ DB บอกไม่ผ่าน **นั่นคือสัญญาณว่าเพี้ยนอยู่แล้ว** การคืนตรงนั้นคือการง้างกับดักใหม่ทุกครั้ง **ถ้าไม่คืนตอน `SoldOutError` loop จะกลายเป็นการลู่เข้า** — แต่ละใบยังกิน user ไป 1 คน (ได้ 202 แล้วไม่มีของ) แต่มันดัน Redis ลงหา DB แล้วจบ
+เครื่องยนต์ของ loop คือ `err instanceof SoldOutError` ที่ `orders.processor.ts:108` — `SoldOutError` เกิดตอน Tier 1 บอกผ่านแต่ DB บอกไม่ผ่าน **นั่นคือสัญญาณว่าเพี้ยนอยู่แล้ว** การคืนตรงนั้นคือการง้างกับดักใหม่ทุกครั้ง **ถ้าไม่คืนตอน `SoldOutError` loop จะกลายเป็นการลู่เข้า** — แต่ละใบยังกิน user ไป 1 คน (ได้ 202 แล้วไม่มีของ) แต่มันดัน Redis ลงหา DB แล้วจบ
 
 **✂️ SIMPLE:** ผมรับ attractor ได้ และ **ไม่เอาเพดานใน Lua** เพราะ Lua ไม่รู้ `available_stock` ต้อง seed key `stock:cap:*` เพิ่ม ซึ่งโปรเจกต์นี้แพ้เรื่อง seed ค้างมาแล้ว และ `SET NX` จะการันตีว่า cap ที่ผิดไม่มีวันถูกแก้ แถม **การ clamp เงียบๆ เปลี่ยน drift ที่ตรวจเจอให้กลายเป็น drift ที่มองไม่เห็น** — ให้ดังแทน: assert `redis GET == DB remaining_stock` ในสคริปต์ verify แล้ว fail ทั้ง run ไปเลย
 
@@ -93,11 +111,17 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 
 **เงื่อนไขจริงที่จะจุดชนวน**: ต้องมีคนกด **Retry ใน Bull-Board** — ซึ่งเป็น dashboard ที่โจทย์บังคับให้มี และปุ่มอยู่ตรงนั้นพอดี → **ระหว่างเก็บผล ห้ามกด**
 
+> ✅ **อัปเดต 2026-08-30** — สิ่งที่ SIMPLE ขอ ("ให้ดังแทน: assert `redis GET == DB remaining_stock`")
+> ตอนนี้ทำอัตโนมัติแล้วที่ `IntegrityService.buildRow()` (`integrity.service.ts:260-266`):
+> `redisRemaining > dbRemaining` → verdict `critical` ทันที และ `drift < 0` ตอนคิวว่างแล้ว → `warn`
+> (`integrity.service.ts:138-147`) **แต่ยังเป็นการอ่านอย่างเดียว ไม่ clamp ไม่ซ่อม** ตามที่ทั้งวงเห็นตรงกัน
+> — เพดานใน `compensate-once.lua` **ยังไม่ได้ใส่** ตามมติเดิม
+
 ---
 
 ## 5. Cache invalidation 50 ครั้งใน 1 วินาที
 
-**✂️ SIMPLE:** ADR-4 เขียนว่าได้ hit ratio ≥90% *"โดยไม่ต้อง invalidate ตอนขายเลยแม้แต่ครั้งเดียว"* แต่ `orders.processor.ts:129` ล้าง **ทุกหน้า** ทุกครั้งที่ขายได้ PERF ทำนาย hit ratio เท่าไหร่ นี่เป็นตัวเลขที่ต้องขึ้น dashboard
+**✂️ SIMPLE:** ADR-4 เขียนว่าได้ hit ratio ≥90% *"โดยไม่ต้อง invalidate ตอนขายเลยแม้แต่ครั้งเดียว"* แต่ `orders.processor.ts:160` ล้าง **ทุกหน้า** ทุกครั้งที่ขายได้ PERF ทำนาย hit ratio เท่าไหร่ นี่เป็นตัวเลขที่ต้องขึ้น dashboard
 
 **🏎️ PERF:** *(ยอมถอย)* คำถามนี้ทำให้ผมกลับไปคำนวณใหม่ **แล้วผลออกมาอ่อนกว่าที่ผมจัดอันดับไว้** k6 สร้าง cache key แค่ 7 ตัว, 50 wipe เกิดใน window ~300 ms → miss ~900–1,500 ใบ จาก ~180,000 ใบ = **hit ratio ~98%** คำสัญญา ≥90% รอดสบาย **ผมขอลด finding นี้จาก p95 ลงไปเป็น p99 blip**
 
@@ -110,6 +134,12 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 > เหตุผลที่ต้องล้างทั้งหมด ไม่ใช่เฉพาะสินค้านั้น: แคช key ตาม **หน้า** ไม่ใช่ตามสินค้า
 > จะ scope ต่อสินค้าได้ต้องเปลี่ยน key ทั้งระบบ — เขียนไว้ในรายงานสัก 1 ประโยคว่าเป็นต้นทุนที่รู้ตัวของการแคชแบบ page-keyed
 
+> ✅ **อัปเดต 2026-08-30** — "ตัวเลขที่ต้องขึ้น dashboard" มีที่อยู่แล้ว และ **แยกสองแบบตามที่ PERF ยืนยัน**:
+> `catalog_cache_hits_total` / `catalog_cache_misses_total` (`products.service.ts:78-80`) คือ
+> **metadata cache GET hit ratio** ที่นับเฉพาะ `getCatalogPage()` ตรงตามชื่อที่ PERF ขอ
+> ส่วน `keyspace_hits`/`keyspace_misses` จาก `INFO` (`integrity.service.ts:340-341`) เป็นเลขรวมทั้ง instance
+> (มี `SMEMBERS` ปนอยู่) — **หน้า insights แสดงทั้งคู่ ห้ามเอามาสลับกัน**
+
 ---
 
 ## 6. Worker กับ API แย่ง connection pool กันจริงไหม
@@ -121,6 +151,11 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 เพดานจริงของ write ไม่ใช่ pool ด้วยซ้ำ — 50 update ยิงแถวเดียวกัน มัน serialize ที่ row lock ไม่ว่า concurrency จะเป็น 5 หรือ 50
 
 **พิสูจน์**: `SELECT count(*) FROM pg_stat_activity` ทั้งพอร์ต 5432 และ 5433 ระหว่าง read burst — ถ้า primary ขยับตามโหลดอ่าน แปลว่า PERF ผิด
+
+> ✅ **อัปเดต 2026-08-30** — `IntegrityService.readPool()` (`integrity.service.ts:379-398`) อ่าน
+> `totalCount` / `idleCount` / `waitingCount` ของ **master pool** ออกมาโชว์ที่ `/admin/insights`
+> `waiting > 0` ต่อเนื่อง = `WORKER_CONCURRENCY` สูงเกิน pool ซึ่งเป็นคอขวดที่ต่างจากที่ ADR-6 อ้าง
+> ⚠️ มันอ่านโครงสร้างภายในของ node-postgres จึงคืน `null` เงียบๆ ถ้า TypeORM เปลี่ยนรูป
 
 ---
 
@@ -136,7 +171,7 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 
 **✂️ SIMPLE:** กับดักจริง และแก้ด้วยบรรทัดเดียว — `DB_POOL_SIZE=13` แล้ว `6 × 13 = 78 ≤ 80` headroom เท่าเดิม (⚠️ เลข 20 ที่เคยเขียนตอน 3 instance ตอนนี้จะเป็น 6 × 20 = 120 > 100 คือ start ไม่ขึ้น) `WORKER_CONCURRENCY=5` ยังอยู่ในของตัวเองจริงๆ **การตัดจึงทำให้เหตุผลของ ADR-6 กลายเป็นเรื่องจริงแทนที่จะเป็นความหวัง — เป็นของแถม ไม่ใช่ต้นทุน**
 
-**🔒 CORRECT:** จากมุมความถูกต้องผม**ไม่คัดค้าน** ขอแค่ `orders.processor.ts:56` ยังเป็น `createQueryRunner('master')` เพื่อให้ invariant รอดจากการ refactor ไม่ใช่กลายเป็นจริงโดยบังเอิญ
+**🔒 CORRECT:** จากมุมความถูกต้องผม**ไม่คัดค้าน** ขอแค่ `orders.processor.ts:62` ยังเป็น `createQueryRunner('master')` เพื่อให้ invariant รอดจากการ refactor ไม่ใช่กลายเป็นจริงโดยบังเอิญ
 
 ---
 
@@ -146,7 +181,7 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 
 **✂️ SIMPLE:** ผมไม่เคยเสนอให้ตัด — ผมจัดมันเป็น "เก็บ" ตั้งแต่รอบแรก แต่กรอบของคุณดีกว่าของผม ขอรับไปใช้: **`UNIQUE` ปกป้อง *order* ส่วน lock ปกป้อง *counter*** กดรัวโดยไม่มี lock = `DECR` สองครั้ง order ใบเดียว ตัวที่สองไม่มีใครกิน และ**ไม่มี path ชดเชยเพราะไม่มีอะไรล้มเหลว** นั่นคือ undersell ซึ่งทั้งสามคนเห็นตรงกันแล้วว่าเป็นความเสี่ยงตัวจริง
 
-มันยังทำให้ข้อสังเกตของผมคมขึ้นด้วย — คุณค่าทั้งหมดของ lock อยู่ในช่องว่างระหว่าง `markBought` กับ `releaseInFlightLock` (`orders.processor.ts:126-128`) **และไม่มีอะไรในโค้ดบอกว่า 2 บรรทัดนั้นห้ามสลับ**
+มันยังทำให้ข้อสังเกตของผมคมขึ้นด้วย — คุณค่าทั้งหมดของ lock อยู่ในช่องว่างระหว่าง `markBought` กับ `releaseInFlightLock` (`orders.processor.ts:150-159`) **ตอนนี้มีคอมเมนต์ 3 บรรทัดบอกไว้แล้วว่าห้ามสลับ (`:151-153`) — เพิ่มหลังรีวิวรอบนี้**
 
 ---
 
@@ -154,9 +189,9 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 
 **🔒 CORRECT:** `release-lock.lua` ทำ compare-and-delete ถูกต้องตามหลัก **แต่ token ไม่ unique ต่อการถือครอง** — ค่าใน lock คือ `jobId` = `order:{u}:{p}` ซึ่งเหมือนกันทุกครั้งที่ user คนนี้ขอสินค้าตัวนี้ CAS จึงไม่มีวันปฏิเสธตัวที่ผิดได้
 
-ซ้ำร้าย `compensate.lua:9` ทำ `DEL` แบบไม่มีเงื่อนไข ซึ่งผิดกฎ `CLAUDE.md` §6 ตรงๆ → request B ที่ถูกปฏิเสธจะไปลบ lock ที่กำลังคุ้มครอง job A อยู่ → request C ผ่าน gatekeeper ได้ → รั่วอีกหน่วย **ขยายผลตัวเอง**
+ซ้ำร้าย `compensate.lua:9` *(ณ 2026-08-26 — ตอนนี้เป็น compare-and-delete ที่ `:15-17`)* ทำ `DEL` แบบไม่มีเงื่อนไข ซึ่งผิดกฎ `CLAUDE.md` §6 ตรงๆ → request B ที่ถูกปฏิเสธจะไปลบ lock ที่กำลังคุ้มครอง job A อยู่ → request C ผ่าน gatekeeper ได้ → รั่วอีกหน่วย **ขยายผลตัวเอง**
 
-`requestToken` ที่สร้างไว้แล้วที่ `orders.service.ts:111` **คือ nonce ที่ต้องการพอดี — แค่ถูกส่งผิดที่** (ไปอยู่ใน job payload แทนที่จะเป็นค่าของ lock)
+`requestToken` ที่สร้างไว้แล้วที่ `orders.service.ts:111` *(ณ 2026-08-26 — ตอนนี้ `:79`)* **คือ nonce ที่ต้องการพอดี — แค่ถูกส่งผิดที่** (ไปอยู่ใน job payload แทนที่จะเป็นค่าของ lock)
 
 ---
 
@@ -179,7 +214,7 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 | # | ประเด็น |
 | :-- | :--- |
 | 1 | `isPreexistingJob` เป็น dead code · blocker (b) ยังเปิดอยู่ · แก้ด้วย `queue.getJob()` |
-| 2 | เทสต์ `orders.service.spec.ts:222-238` ปลอมพฤติกรรมที่ BullMQ ทำไม่ได้ ต้องเขียนใหม่ |
+| 2 | เทสต์ `orders.service.spec.ts:222-238` *(ณ 2026-08-26)* ปลอมพฤติกรรมที่ BullMQ ทำไม่ได้ ต้องเขียนใหม่ |
 | 3 | ไม่มีทาง reset = ปัญหาที่จะเจอก่อนเพื่อน |
 | 4 | Stock Overlay เป็นไอเดียที่ดีที่สุดในดีไซน์นี้ ไม่มีใครแตะ |
 | 5 | atomic `UPDATE … WHERE remaining_stock > 0` + `UNIQUE` คือที่มาเดียวของการกัน oversell |
@@ -200,7 +235,7 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 
 ### สิ่งที่เอกสารเขียนไว้แล้วโค้ดไม่ตรง
 1. `architecture.md` §8 — สูตร connection **มิติผิด** และ "API แย่ง pool กับ worker" **ไม่จริง**
-2. `architecture-rationale.md` ADR-4 — "ไม่ต้อง invalidate ตอนขายเลย" **ขัดกับ `orders.processor.ts:129`**
+2. `architecture-rationale.md` ADR-4 — "ไม่ต้อง invalidate ตอนขายเลย" **ขัดกับ `orders.processor.ts:160`**
 3. `architecture-rationale.md` Q3 — "คอขวดคือ `redis-data`" **ผิดลำดับ** คอขวดคือ event loop
 4. `CLAUDE.md` §6 — "Redis คือ optimization ไม่ใช่ dependency" **ไม่จริงตอน runtime** เพราะ `maxRetriesPerRequest: null` ไม่มี `commandTimeout` → คำสั่งค้าง ไม่ reject → `catch` ไม่ทำงาน ได้ 504 แทน fallback
 
@@ -220,10 +255,37 @@ PERF ทำนาย: app แต่ละตัว ≥85% ของ core, redis 
 | 11 | แก้เอกสาร 4 จุดที่ไม่ตรงโค้ด | ทั้ง 3 | ✅ §8, ADR-4, Q3, §6 |
 
 > ทั้งหมดแตะ `CLAUDE.md` §8 จึงขออนุมัติก่อน — ได้รับอนุมัติ 2026-08-26
-> ตรวจหลังแก้: `build` ✅ · `lint` ✅ · `test` **32/32** ✅ (เดิม 30)
+> ตรวจหลังแก้ **ณ 2026-08-26**: `build` ✅ · `lint` ✅ · `test` **32/32** ✅ (เดิม 30)
+> **ปัจจุบัน (2026-08-30): 43 เทสต์ / 4 suites** — `orders.service.spec.ts` 18 · `products.service.spec.ts` 9 ·
+> `orders.processor.spec.ts` 8 · `observability/integrity.service.spec.ts` 8 (ไฟล์ใหม่)
+> เอกสารรุ่นก่อนบางที่เขียน 32 บ้าง 35 บ้าง — **เลขที่ถูกคือ 43**
 >
-> ⚠️ **ยังไม่เคยรันบน container จริง** — ทุกอย่างข้างบนยืนยันด้วย unit test กับการอ่านโค้ดเท่านั้น
-> โดยเฉพาะข้อ 1 ที่พึ่งพฤติกรรมของ `queue.getJob()` ควรมี integration test ยืนยันเมื่อมี container runtime
+> ⚠️ ข้อ 1 ที่พึ่งพฤติกรรมของ `queue.getJob()` **ผ่านการยิงจริงแล้ว** ตั้งแต่ k6 run 003 (2026-08-27)
+> แต่ยัง **ไม่มี e2e test** (`pnpm run test:e2e` ยัง exit non-zero) — CLAUDE.md §0.1 ยังนับเป็นรูที่เปิดอยู่
+
+---
+
+## 📌 ภาคผนวก — เพิ่มมาหลังรีวิว (2026-08-30)
+
+`src/observability/` (7 ไฟล์) ไม่ได้อยู่ในบทสนทนาข้างบนเลย เพราะยังไม่มีตอนรีวิว
+มันไม่ได้เปลี่ยนดีไซน์ของ write path หรือ read path แม้แต่บรรทัดเดียว — **เป็นเครื่องมือวัด ไม่ใช่กลไก**
+แต่มันเปลี่ยนสถานะของข้อถกเถียง 4 ข้อจาก "เถียงกันโดยไม่มีตัวเลข" เป็น "มีที่ให้ดูตัวเลข":
+
+| ข้อ | เดิม | ตอนนี้ |
+| :-- | :--- | :--- |
+| 2 (คอขวด) | ต้องรัน `podman stats` แล้วเดา | event loop p99 ราย instance + ops/s ของ Redis ที่ `/admin/insights` |
+| 3 (degraded read) | นับใน process เดียว (`getDegradedReadCount()`) | `catalog_degraded_reads_total` รวมข้าม 6 instance |
+| 5 (hit ratio) | ไม่มีตัวเลข | แยก "metadata cache GET hit ratio" ออกจากเลข `INFO` แล้ว |
+| 6 (pool) | ต้อง query `pg_stat_activity` เอง | `pool.waiting` โชว์อยู่บนหน้าเดียวกัน |
+
+**สิ่งที่ยังไม่เปลี่ยน**: ไม่มีอะไรซ่อม drift ให้อัตโนมัติ · ไม่มีเพดานใน `compensate-once.lua` ·
+`23505` ยังไม่คืนสต็อกใน Redis · job ที่ stall เกิน `maxStalledCount` ยังหลุด `compensateOnce`
+ทั้งหมดนี้ **จงใจ** ตามมติในเอกสารนี้ + CLAUDE.md §0.1 — `IntegrityService` แค่ทำให้มันมองเห็นได้เร็วขึ้น
+
+ต้นทุนที่เพิ่มเข้ามาจริง (ต้องเขียนในรายงานถ้าถูกถาม):
+- `registerQueue('orders')` เพิ่มเป็นที่ที่ 4 → **+1 connection ไป `redis-data` ต่อ container** (36 → 42 ทั้งคลัสเตอร์)
+- `HINCRBY` + `HSET` 1 pipeline/วินาที/instance บน `redis-data` (≈ 6 roundtrip/วินาทีทั้งคลัสเตอร์)
+- ถ้า container โดน SIGKILL ตัวนับ ≤ 1 วินาทีสุดท้ายหาย (SIGTERM ไม่หาย — `onModuleDestroy` flush ปิดท้าย)
 
 ---
 

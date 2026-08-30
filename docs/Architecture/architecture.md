@@ -17,7 +17,7 @@
 | 1.4 | Caching & Invalidation: Redis | §5 |
 | 1.5 | Message Queue: **BullMQ** (async order processing) | §6.2 |
 | 1.6 | **Stateless Auth: JWT** (ห้าม in-memory session) | §4 |
-| 1.7 | Observability Dashboard (Bull-Board) | §9 |
+| 1.7 | Observability Dashboard (Bull-Board + หน้า Insights ของเราเอง) | §9 · **§9.4** |
 | 2.1 | `POST /api/v1/auth/token` | §4.2 |
 | 2.2 | `GET /api/v1/products?page=1&limit=10` + cache invalidation | §5 |
 | 2.3 | `POST /api/v1/orders` → **202 Accepted** | §6 |
@@ -25,7 +25,7 @@
 | 2.3.2 | Concurrency (API level) — atomic Redis ops | §6.1 |
 | 2.3.3 | Concurrency (Worker/DB level) — locking + unique constraint | §6.3 + §6.4 |
 | 2.3.4 | Cache Invalidation หลัง worker ตัดสต็อกสำเร็จ | §5.4 |
-| 3 | Load Test (k6) + Dashboard + Data Integrity Proof | §9, §10 |
+| 3 | Load Test (k6) + Dashboard + Data Integrity Proof | §9 (§9.3 = proof ทำมือ · §9.4 = อัตโนมัติ), §10 |
 
 ---
 
@@ -64,6 +64,7 @@ flowchart TD
         LUA["Atomic Lua Gatekeeper<br/>stock counter · in-flight lock<br/>has_bought flag"]
         QUEUE["BullMQ: orders queue<br/>deterministic jobId"]
         BOARD["Bull-Board /admin/queues<br/>(behind Basic Auth)"]
+        METRICS["metrics:counters · metrics:instances<br/>write-behind counters (flush 1s)"]
     end
 
     subgraph WorkerTier["⚙️ BullMQ Consumer"]
@@ -92,6 +93,8 @@ flowchart TD
     PG_PRIMARY -->|streaming replication| PG_REPLICA
     WORKER -.->|invalidate metadata| CACHE
     QUEUE --- BOARD
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 -.->|"metrics flush 1/s"| METRICS
+    METRICS --- INSIGHTS["/admin/insights + /admin/metrics<br/>(same Basic Auth on /admin)"]
 ```
 
 > **หมายเหตุสำคัญ — แยก Redis 2 instance**
@@ -161,7 +164,7 @@ server {
 
 ```
 src/
-├─ main.ts                        # global ValidationPipe, graceful shutdown, mount Bull-Board
+├─ main.ts                        # global ValidationPipe, graceful shutdown, Basic Auth ครอบ `/admin` ทั้ง prefix (`main.ts:47`)
 ├─ app.module.ts
 ├─ config/
 │  ├─ database.config.ts          # buildTypeOrmOptions() — replication (master/slaves) + pool sizing
@@ -172,7 +175,9 @@ src/
 │  └─ migrations/                 # <ts>-InitSchema.ts (DDL ตาม §3.1.1)
 ├─ database_config/database.module.ts    # TypeOrmModule.forRootAsync
 ├─ bullmq_config/bullmq.module.ts        # BullModule.forRootAsync (redis-data) + queue 'orders'
-├─ bull_board/                    # /admin/queues + Basic Auth
+├─ bull_board/                    # /admin/queues (Basic Auth ครอบมาจาก main.ts)
+│  ├─ bull-board.service.ts     # BullMQAdapter + uiConfig + formatter ที่ redact requestToken
+│  └─ bull-board.theme.ts       # ธีม/โลโก้/favicon — ตกแต่งล้วน ไม่มี logic
 ├─ logger/logger.module.ts        # nestjs-pino — single-line JSON + redact
 ├─ common/
 │  ├─ middleware/correlation-id.middleware.ts
@@ -196,6 +201,13 @@ src/
 │  ├─ entities/order.entity.ts
 │  ├─ dto/create-order.dto.ts
 │  └─ errors/sold-out.error.ts
+├─ observability/                 # §9.4
+│  ├─ observability.module.ts     # @Global — MetricsService ถูกฉีดเข้า orders/products/worker
+│  ├─ metrics.constants.ts        # ⚠️ ชื่อ metric รวมศูนย์ ห้ามพิมพ์ string ลอยๆ (เหตุผลเดียวกับ redis.keys.ts)
+│  ├─ metrics.service.ts          # write-behind counter → hash `metrics:counters` บน redis-data
+│  ├─ integrity.service.ts        # เทียบ Redis counter ↔ DB (อ่านอย่างเดียว ไม่ซ่อม)
+│  ├─ observability.controller.ts # /admin/insights · /admin/insights.json · /admin/metrics
+│  └─ insights.page.ts            # HTML หน้าเดียว ไม่มี build step (auto-refresh 3 วิ)
 ├─ redis/
 │  ├─ redis.module.ts             # 2 connections: cache / data
 │  ├─ redis.service.ts
@@ -348,7 +360,7 @@ export class Order {
 | 6 | **ไม่มีคอลัมน์ `quantity`** | โจทย์บังคับ 1 ชิ้น/คน และ `UNIQUE (user_id, product_id)` เป็นตัวบังคับ | มี `quantity` เมื่อไหร่ `UNIQUE` ก็กัน oversell ไม่ได้อีก |
 
 > **`chk_stock_ceiling` ทำอะไรได้และทำอะไรไม่ได้** — มันกันไม่ให้ `remaining_stock` โตเกินสต็อกตั้งต้น (เช่นถ้าอนาคตมี path คืนสต็อกใน DB)
-> ⚠️ แต่ **มันจับ drift ระหว่าง Redis กับ DB ไม่ได้** เพราะ compensation เกิดฝั่ง Redis ล้วน ส่วน `remaining_stock` ใน DB ไม่เคยเพิ่มขึ้นเลยในดีไซน์ปัจจุบัน — ตัวจับ drift ตัวเดียวที่มีคือ **§9.3 ข้อ 4**
+> ⚠️ แต่ **มันจับ drift ระหว่าง Redis กับ DB ไม่ได้** เพราะ compensation เกิดฝั่ง Redis ล้วน ส่วน `remaining_stock` ใน DB ไม่เคยเพิ่มขึ้นเลยในดีไซน์ปัจจุบัน — ตัวจับ drift อยู่นอก DB: **§9.3 ข้อ 4** (ทำมือ) หรือ **§9.4 `IntegrityService`** (อัตโนมัติ แต่ยังเป็น *ตัวจับ* ไม่ใช่ *ตัวซ่อม*)
 
 #### 3.1.5 การแมป seed → คอลัมน์ → response
 
@@ -410,8 +422,11 @@ worker ทุกตัวใน 6 instance (รวม 30 concurrent — §8) `UP
 | :--- | :--- | :--- | :--- |
 | **Metadata** (แทบไม่เปลี่ยน) | `productId`, `name`, `price`, `availableStock`, `isFlashSaleActive` | `redis-cache` → `catalog:page:{p}:limit:{l}` | 30–60s **+ jitter** |
 | **Stock** (เปลี่ยนตลอด) | `remainingStock` | `redis-data` → `stock:flash_sale:{productId}` | ไม่มี TTL (`noeviction`) |
+| **ตัวนับ observability** (§9.4) | ชื่อ metric → จำนวนสะสมทั้งคลัสเตอร์ | `redis-data` → `metrics:counters` (hash) | ไม่มี TTL — ล้างด้วย `pnpm run reset` หรือ `POST /admin/metrics/reset` |
+| **สถานะราย instance** (§9.4) | `rssMb`, `eventLoopP99Ms`, `updatedAt` | `redis-data` → `metrics:instances` (hash, field = `INSTANCE_ID`) | ไม่มี TTL — ถือว่า stale เมื่อ heartbeat เก่ากว่า 15s (`metrics.service.ts:20`) |
 
 > `availableStock` = สต็อกตั้งต้น (คงที่, มาจาก seed) · `remainingStock` = คงเหลือจริง (นับถอยหลัง) — response ต้องมีทั้งคู่
+> สอง key ล่างอยู่บน **`redis-data` ไม่ใช่ `redis-cache`** โดยเจตนา: `allkeys-lru` จะ evict ตัวนับหายเงียบๆ กลางการทดสอบ (`redis.keys.ts:31-41`)
 
 ### 5.2 Read Flow — Cache-Aside + Stock Overlay
 
@@ -607,6 +622,9 @@ async createOrder(userId: string, productId: string) {
 ```
 
 - `removeOnComplete` ตั้ง `count` ให้มากกว่าจำนวน job ทั้งหมดของการทดสอบ (500) ไม่งั้น Bull-Board จะโชว์ **Completed Jobs** ไม่ครบ ซึ่งเป็นสิ่งที่โจทย์บังคับให้แสดง
+  — และมันไม่ใช่แค่เรื่องหน้าจอ: dedup ของเราพึ่ง BullMQ ปฏิเสธ `jobId` ซ้ำ (invariant §4 ข้อ 9 ของ `CLAUDE.md`) ซึ่งทำงานได้ **ก็ต่อเมื่อ job เดิมยังอยู่ใน Redis** ถ้า trim ทิ้ง คนเดิมสั่งซื้อซ้ำได้
+- ⚠️ **`defaultJobOptions` ใน `bullmq_config/bullmq.module.ts:32-37` ไม่มีผลกับคิว `orders`** — ตรงนั้นตั้ง `attempts: 3`, `backoff.delay: 500`, `removeOnComplete/removeOnFail: false` (ไม่ลบเลย) แต่ `orders.service.ts:152-155` ส่ง option ครบชุดมาทับทุกตัวทุกครั้งที่ `add()` ค่าที่บังคับใช้จริงคือ `delay: 200` + `count: 5000` ตามโค้ดด้านบน
+  ถือเป็น **dead config ที่ยังไม่ลบ** เพราะคอมเมนต์ในไฟล์นั้นอธิบายเหตุผลของ retention ไว้ — อย่าอ่านค่าจากไฟล์นั้นแล้วเชื่อว่านั่นคือค่าที่ job ใช้จริง
 - `attempts` มาคู่กับข้อบังคับว่า **handler ต้อง idempotent** เสมอ — BullMQ เป็น at-least-once *(B05)*
 - BullMQ **ไม่มี** job option ชื่อ `timeout` (นั่นคือ Bull v4) ถ้าต้องการ ให้ทำเองด้วย `Promise.race` *(B05 slide-errata #2)*
 
@@ -657,9 +675,10 @@ export class OrdersProcessor extends WorkerHost {
 
       // ⚠️ FIX (a) — คืนสต็อก **เฉพาะตอนล้มเหลวถาวรจริง** เท่านั้น
       // ถ้าคืนทุกครั้งที่ catch: attempt 1 เจอ deadlock 40P01 → คืนสต็อก → attempt 2 สำเร็จ
-      // → Redis สูงกว่า DB ถาวร 1 หน่วย ตกเกณฑ์ §9.3 ข้อ 4 (`compensated:{jobId}` กันได้แค่คืน "ซ้ำ")
+      // → Redis สูงกว่า DB ถาวร 1 หน่วย ตกเกณฑ์ §9.3 ข้อ 4
+      //   (`compensated:{jobId}:{requestToken}` กันได้แค่คืน "ซ้ำ")
       // compensate เป็น Lua ที่ INCR stock + DEL lock ในสเต็ปเดียว และ
-      // guard ด้วย key `compensated:{jobId}` ไม่ให้คืนซ้ำเมื่อ retry
+      // guard ด้วย key `compensated:{jobId}:{requestToken}` ไม่ให้คืนซ้ำเมื่อ retry
       const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
 
       if (err instanceof SoldOutError) {
@@ -701,7 +720,8 @@ export class OrdersProcessor extends WorkerHost {
 **สามจุดที่ต่างจากโค้ดที่เขียนกันทั่วไป และเป็นจุดชี้ขาด:**
 1. **`committed` flag** — กัน `rollbackTransaction()` ถูกเรียกบน transaction ที่ commit ไปแล้ว (TypeORM จะ throw ทับ error เดิม กลบสาเหตุจริง)
 2. **Side effect หลัง commit อยู่นอก try เดิม** — ป้องกันเคสที่ Redis สะดุดหลัง DB commit แล้วระบบไป "คืนสต็อก" ทั้งที่ของขายไปแล้วจริง
-3. **`compensateOnce` guard ด้วย jobId + คืนเฉพาะ attempt สุดท้าย** — BullMQ retry ได้ 3 ครั้ง `compensated:{jobId}` กันการคืน *ซ้ำ* ส่วน `isFinalAttempt` กันการคืน *job ที่ยังไม่ตาย* (ต้องมีทั้งคู่)
+3. **`compensateOnce` guard ด้วย jobId + requestToken + คืนเฉพาะ attempt สุดท้าย** — BullMQ retry ได้ 3 ครั้ง `compensated:{jobId}:{requestToken}` กันการคืน *ซ้ำ* ส่วน `isFinalAttempt` กันการคืน *job ที่ยังไม่ตาย* (ต้องมีทั้งคู่)
+   > ⚠️ `requestToken` อยู่ใน key **โดยเจตนา** (แก้ 2026-08-30) — `jobId` เป็น deterministic ถ้า guard มีแค่ `jobId` คำขอ *รอบถัดไป* ของคนเดิมจะชน guard ของรอบก่อน แล้วไม่คืนสต็อก = หายถาวร · retry ยังถูกคุมเหมือนเดิมเพราะ BullMQ อ่าน `job.data` ชุดเดิม จึงได้ token เดิม
 4. **`SoldOutError` → `return` ไม่ใช่ `throw`** — เป็น permanent failure การ retry ไม่มีทางสำเร็จ มีแต่เปลือง attempt *(B05 slide-errata #6, #8)*
 
 ### 6.4 Tier 4: Database Constraints
@@ -742,6 +762,7 @@ Error mapping (**ในตัว worker ไม่ใช่ HTTP** — client ไ
 | Worker concurrency > DB pool | job timeout รอ connection | concurrency 5 ≤ master pool 8 (§8) |
 | ผู้ใช้กดรัว 2–3 ครั้ง | ได้ของเกิน 1 ชิ้น | in-flight lock + `bought` flag + `UNIQUE` (§6.1, §6.4) |
 | Cache หมดอายุพร้อมกันตอน 1,000 VUs | DB โดนถล่ม (stampede/avalanche) | single-flight + TTL jitter (§5.3) |
+| `redis-data` สะดุดตอน flush ตัวนับ observability | ตัวเลขในรายงานขาดหาย + log storm ซ้ำเติมตอนโหลดพีค | buffer ที่ flush ไม่ผ่านถูกใส่กลับ แล้ว log ทุก 30 ครั้งเท่านั้น (§9.4) |
 
 ---
 
@@ -831,14 +852,15 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 
 | หมวด | Metric | เป้าหมาย | ดูจากไหน |
 | :--- | :--- | :--- | :--- |
-| **Cache** | Hit / Miss Ratio | ≥ 90% | `redis-cli INFO stats` → `keyspace_hits` / `keyspace_misses` |
-| **Queue** | Waiting / Active / Completed / **Failed** | Completed = 50, Failed = job ของคนที่ของหมด | Bull-Board `/admin/queues` |
+| **Cache** | Hit / Miss Ratio | ≥ 90% | `redis-cli INFO stats` → `keyspace_hits` / `keyspace_misses` · หรือ `/admin/insights` (§9.4) ที่อ่าน `INFO` ให้ทั้งสองตัว **และ** มีตัวนับระดับแอป `catalog_cache_hits_total` / `catalog_cache_misses_total` แยกต่างหาก |
+| **Queue** | Waiting / Active / Completed / **Failed** | Completed = 50, Failed = job ของคนที่ของหมด | Bull-Board `/admin/queues` (แท็บ Metrics มีกราฟจริงเพราะ worker เปิด `metrics: { maxDataPoints: MetricsTime.ONE_WEEK }` — `orders.processor.ts:43`) |
 | **Throughput** | Req/s, **p95 latency**, Error rate | p95 read < 200ms, error < 0.1% | k6 summary |
-| **DB Primary** | Active connections, lock wait | active < 48 (= 6 x pool 8) | `pg_stat_activity` |
-| **DB Replica** | Replication lag | < 1s | `pg_stat_replication` |
+| **DB Primary** | Active connections, lock wait | active < 48 (= 6 x pool 8) | `pg_stat_activity` · pool ของ instance ที่ตอบคำขอนี้ดูได้ที่ `/admin/insights` (§9.4) |
+| **DB Replica** | Replication lag | < 1s | `pg_stat_replication` · หรือ `/admin/insights` ที่ถาม `pg_last_xact_replay_timestamp()` จากฝั่ง replica เอง (`integrity.service.ts:309-332`) |
 
 > วัด **percentile ไม่ใช่ average** — p95/p99 คือคนที่โกรธที่สุดและมักเป็นคนที่ข้อมูลเยอะที่สุด *(B06)*
 > Bull-Board **ต้องมี Basic Auth คลุม** เพราะมันเปิดดู payload และกด retry/remove job ได้ *(B05 slide-errata #10)*
+> ตั้งแต่ 2026-08-30 Basic Auth ถูกครอบที่ **prefix `/admin` ทั้งก้อน** (`main.ts:47`) ไม่ใช่เฉพาะ `/admin/queues` — route ใหม่ใต้ `/admin` จึงถูกคลุมอัตโนมัติ
 
 ### 9.2 โครงสร้าง `loadtest.js` (k6)
 
@@ -889,6 +911,77 @@ GROUP BY user_id HAVING COUNT(*) > 1;
 --    redis-cli GET stock:flash_sale:p-1001  →  ต้องได้ "0"
 ```
 ข้อ 4 ไม่ได้อยู่ในโจทย์ แต่เป็นตัวจับ bug ที่ดีที่สุด: ถ้า Redis ≠ DB แปลว่า compensation logic (§6.2, §6.3) มีรูรั่ว
+
+> ทั้ง 4 ข้อนี้ถูกทำให้อัตโนมัติแล้วที่ `/admin/insights` (§9.4) — แต่ SQL ชุดนี้ยังเป็นหลักฐานที่เอาไปใส่รายงานได้ตรงๆ ห้ามตัดทิ้ง
+
+### 9.4 🔭 ชั้น Observability ในตัวแอป (`src/observability/`)
+
+> เพิ่ม **2026-08-30** · เหตุผล: ทุกแถวใน §9.1 เดิมต้องไปเปิดของคนละที่แล้วเอามาต่อกันเอง (`redis-cli` + `psql` + Bull-Board + k6 summary) ซึ่งทำระหว่างยิงโหลดไม่ทัน
+> โมดูลนี้เป็น `@Global` เพราะ `MetricsService` ถูกฉีดเข้าเกือบทุก service ที่มีเส้นทางร้อน (`observability.module.ts:16-22`)
+
+#### 9.4.1 เอนด์พอยต์ + auth
+
+| path | คืออะไร | หมายเหตุ |
+| :--- | :--- | :--- |
+| `GET /admin/insights` | หน้า HTML หน้าเดียว auto-refresh ทุก 3 วินาที | ไม่มี build step ไม่มี dependency ภายนอก — HTML เป็น string ใน `insights.page.ts` |
+| `GET /admin/insights.json` | payload ดิบของหน้าเดียวกัน `{ counters, instances, integrity }` | `observability.controller.ts:39-47` |
+| `GET /admin/metrics` | Prometheus exposition format (`text/plain; version=0.0.4`) | **ยังไม่มี Prometheus ในสแตกโดยเจตนา** (ตกลงกันว่าไม่เพิ่ม service) — เปิดไว้ให้ชี้ scrape มาได้ทีหลัง และ `curl` ดูดิบๆ ก็อ่านออก |
+| `POST /admin/metrics/reset` | ล้างตัวนับก่อนยิง k6 รอบใหม่ | ไม่แตะข้อมูลธุรกิจ (`orders` / `stock:*` ไม่เกี่ยว) — `observability.controller.ts:164-169` |
+
+ทุก route อยู่ใต้ `/admin` **เดียวกับ Bull-Board โดยเจตนา** — Basic Auth ครอบทีเดียวที่ prefix นั้น (`main.ts:47`) จะได้ไม่มีทางเผลอเปิดหน้าใดหน้าหนึ่งทิ้งไว้ และ route ใหม่ใต้ `/admin` ในอนาคตถูกคลุมอัตโนมัติ
+
+#### 9.4.2 ตัวนับ: ทำไมต้อง write-behind ไม่ใช่ `HINCRBY` ตรงๆ
+
+- `MetricsService.inc()` เป็น **synchronous ล้วน ไม่มี I/O และไม่มีทาง throw ใส่ผู้เรียก** (`metrics.service.ts:85-87`) — เรียกจาก hot path ได้โดยไม่เพิ่ม latency และ *การวัดผลห้ามทำให้คำสั่งซื้อล้ม*
+- ถ้าเปลี่ยนเป็น `HINCRBY` ทุกครั้งที่นับ: ที่เพดานที่วัดได้ (~1,500 rps ตอน 3 instances — ยังไม่ได้วัดซ้ำหลังขยายเป็น 6) จะเพิ่มภาระให้ `redis-data` อีกราว **1,500 ops/s บน connection เดียวกับที่ gatekeeper ใช้** = เครื่องมือวัดไปกวนสิ่งที่กำลังวัด
+  buffer ใน RAM แล้ว flush **1 ครั้ง/วินาที ด้วย pipeline** เหลือ ~1 roundtrip/วินาที/instance (`metrics.service.ts:18`, `143-157`)
+- **state จริงอยู่บน `redis-data` (hash `metrics:counters`) ไม่ใช่ RAM ของ process** — 6 instance ต้องบวกลงถังใบเดียวกัน ถ้าเก็บใน RAM หน้าแดชบอร์ดจะเห็นแค่ ~1 ใน 6 ของทราฟฟิก (และผิดกฎ stateless — `CLAUDE.md` §6 DON'T)
+  buffer ใน RAM มีอายุ ≤ 1 วินาที จึงเป็น **write-behind buffer ไม่ใช่ shared state** — ไม่ขัด §5 ข้อ 1 ด้วยเหตุผลเดียวกับ single-flight memoization ใน §5.3
+- ต้นทุนที่ยอมรับ: `SIGKILL` = ตัวนับ ≤ 1 วินาทีสุดท้ายหาย · `SIGTERM` ปกติไม่หาย เพราะ `onModuleDestroy` flush ปิดท้าย (`metrics.service.ts:73-79`) — อีกเหตุผลหนึ่งที่ `app.enableShutdownHooks()` ต้องอยู่
+- flush ไม่ผ่าน → **ใส่ของกลับเข้า buffer ห้ามทิ้ง** แล้ว log แค่ทุก 30 ครั้ง (Redis สะดุดตอนพีคจะ flush ไม่ผ่านรัวๆ = log storm ซ้ำเติม) — `metrics.service.ts:159-172`
+- `readCounters()` บวก buffer ที่ยังค้างของ instance ที่ตอบคำขอนั้นเข้าไปด้วย (`metrics.service.ts:90-100`) — ตัวเลขที่เห็นจึงไม่ได้ช้ากว่าจริง 1 วินาทีเต็ม
+- ชื่อ metric รวมศูนย์ที่ `metrics.constants.ts` **ด้วยเหตุผลเดียวกับ `redis.keys.ts`** — สะกดผิดที่จุดเรียกใช้ = ตัวนับแตกเป็นสองใบเงียบๆ
+
+**จุดที่ยิงตัวนับ** — ทุกจุดเป็น branch ที่มีอยู่แล้ว ไม่มีการเพิ่ม I/O หรือ try/catch ใหม่:
+
+| ไฟล์ | นับอะไร |
+| :--- | :--- |
+| `orders.service.ts:74`, `203` และทุก `case` | ผลลัพธ์ทุกกิ่งของ write path: 202 · 409 ซื้อซ้ำ · 409 ของหมด · 429 กดรัว · 503 ไม่มี counter · 503 gatekeeper ล้ม · 503 enqueue ล้ม · 409 โดน dedup · "ยืนยัน job ไม่ได้จึงไม่คืนสต็อก" · การชดเชยทั้งสั่ง/สำเร็จ/ล้มเหลว |
+| `orders.processor.ts` | `confirmed` · `already_confirmed` (23505) · `sold_out` · transient failure · post-commit side effect ล้ม · ระยะเวลา job (sum + count) วัดจาก `job.processedOn` ที่ BullMQ ประทับให้ (`orders.processor.ts:190-196`) |
+| `products.service.ts:79`, `135` | cache hit / miss ต่อคำขอ และ **degraded read** (อ่าน stock counter ไม่ได้แล้วเสิร์ฟค่าจากแคช — §5 DO) |
+
+**ราย instance** (hash `metrics:instances`, field = `INSTANCE_ID`): `pid`, uptime, `rssMb`, `heapUsedMb` และ **event loop delay p99/max ราย 1 วินาที** จาก `monitorEventLoopDelay`
+p99 ที่พุ่งคือสัญญาณเตือนล่วงหน้าของรูที่ `CLAUDE.md` §0.1 ระบุไว้: event loop ตันเกิน 30 วินาที → BullMQ ทิ้ง job ไป `failed` **โดยไม่เรียก handler** → `compensateOnce` ไม่ทำงาน → สต็อกหาย 1 ชิ้น
+`INSTANCE_ID` ตั้งไว้ครบทั้ง 6 service ใน `docker-compose.yml` ถ้าลืมตั้งจะ fallback เป็น `hostname()` เพื่อไม่ให้ทั้ง 6 ตัวเขียนทับ field เดียวกัน (`metrics.service.ts:62`)
+heartbeat ที่เก่ากว่า 15 วินาที ถือว่า instance ตายแล้ว (`metrics.service.ts:20`)
+
+#### 9.4.3 `IntegrityService` — ตัวจับ drift ไม่ใช่ตัวซ่อม
+
+ทำสิ่งที่ §9.3 ทั้ง 4 ข้อทำด้วยมือ ให้เป็นอัตโนมัติ แล้วสรุปเป็น verdict เดียว:
+
+| verdict | เงื่อนไข |
+| :--- | :--- |
+| `critical` | `orders > available_stock` (oversell) · `remaining_stock < 0` · `orders ≠ distinct users` (ซื้อซ้ำ) · `available_stock − remaining_stock ≠ orders` (DB ไม่สมดุลในตัวเอง) · **`redisRemaining > dbRemaining`** |
+| `warn` | ไม่มี stock counter ใน Redis (ยังไม่ `seed:redis`?) · คิวว่างแล้วแต่ Redis ยังต่ำกว่า DB |
+| `ok` | ไม่มี oversell ไม่มีคนซื้อซ้ำ Redis กับ DB ตรงกัน |
+
+- **`drift = redisRemaining − dbRemaining`** · ติดลบระหว่างที่ยังมี job ค้างในคิว = **ปกติ** (Redis จองก่อน DB ตัดทีหลัง) แต่ถ้าคิวว่างแล้วยังติดลบ = สต็อกรั่วจริง จึงยกระดับเป็น `warn` (`integrity.service.ts:133-147`)
+  เป็นบวก = อันตราย เพราะ Redis สูงกว่า DB คือการปล่อยคนที่ 51 เข้ามา
+- ⚠️ **ต้องอ่านจาก master เท่านั้น** (`integrity.service.ts:182` — invariant §4 ข้อ 3) ถ้าอ่านจาก replica ที่มี lag แล้วเอาไปเทียบกับ Redis ที่สดเสมอ หน้านี้จะรายงาน drift ปลอมทุกครั้งที่ replica ตามไม่ทัน
+- อ่านเพิ่มในรอบเดียวกัน: `getJobCounts` ของคิว `orders` · replication lag ถามจากฝั่ง replica เอง (`pg_last_xact_replay_timestamp()`) · `INFO` ของ Redis ทั้งสองตัว (hit ratio, ops/s, evicted keys) · ขนาด pool ของ master — `waiting > 0` ต่อเนื่องคือคอขวดที่ `WORKER_CONCURRENCY` สูงเกิน pool (§8)
+- ทุกแหล่งที่อ่านไม่ได้ **คืน `null` แทนที่จะโยน** — หน้าแดชบอร์ดต้องไม่ล้มเพราะแหล่งเดียวล่ม (หลักเดียวกับ degrade ของ read path ใน §5)
+
+> ⚠️ **ไม่มีการซ่อม drift อัตโนมัติ และจงใจไม่ทำ** (`integrity.service.ts:105-109`)
+> `INCR` ลอยๆ เพื่อ "ปรับให้ตรง" คือการปล่อยคนที่ 51 เข้ามา ซึ่งแย่กว่าปัญหาเดิม หน้าที่ของที่นี่คือ *บอกให้คนตัดสินใจ*
+> รูที่ `CLAUDE.md` §0.1 เขียนว่า "ไม่มี reconciliation Redis ↔ DB" จึง **แคบลงเป็น "มีตัวจับแล้ว แต่ยังไม่มีตัวซ่อม" — ไม่ได้ถูกปิด**
+
+#### 9.4.4 ข้อจำกัดที่ต้องรู้ก่อนใช้ตอนยิงจริง
+
+- ทุกครั้งที่หน้าเว็บ poll (`insights.json` ทุก 3 วินาที) **และทุกครั้งที่ scrape `/admin/metrics`** จะยิง query ไป primary + replica + `INFO` Redis 2 ตัว + `getJobCounts` ในรอบเดียว — **อย่าเปิดหน้านี้ทิ้งไว้หลายแท็บระหว่างยิง k6** เพราะมันใช้ทรัพยากรตัวเดียวกับที่กำลังวัด · **overhead จริงยังไม่ถูกวัด**
+- ตัวเลขทุกตัวเป็น **counter สะสม ไม่มี rate** — ต้องล้างก่อนยิงรอบใหม่ ไม่งั้นเป็นผลรวมของหลายรอบ (`pnpm run reset` ล้าง `metrics:counters` + `metrics:instances` ให้แล้ว — `reset.ts:79-82`)
+- **ไม่มี histogram ของ latency ฝั่ง HTTP** — p95/p99 ยังต้องอ่านจาก k6 summary เท่านั้น ส่วนของ worker มีแค่ sum/count คือ *ค่าเฉลี่ย* ซึ่ง §9.1 เตือนเองว่าห้ามใช้ตัดสิน
+- hash สองใบนี้อยู่บน `redis-data` ที่เป็น `noeviction` จึงไม่มีวันหายเอง — ขนาดไม่โต (field คงที่: จำนวน metric ใน `metrics.constants.ts` + 6 instance) แต่**ค่าไม่มีวันลดเอง** — ต้องล้างด้วยมือทุกครั้ง
+- **ยังไม่เคยเปิดหน้านี้ระหว่างยิง k6 จริง** — ทุกอย่างในหัวข้อนี้พิสูจน์แล้วแค่ระดับ unit test (`integrity.service.spec.ts`)
 
 ---
 

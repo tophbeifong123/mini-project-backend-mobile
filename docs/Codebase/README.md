@@ -16,8 +16,9 @@
 
 ## สรุปสั้นที่สุด
 
-**Primer** ตอบว่า request หนึ่งใบเดินผ่านอะไรบ้าง — 4 เส้นทาง (`auth/token`, `products`, `orders`, worker)
-พร้อม mermaid, ตารางว่าใครคุยกับ datastore ไหน, connection topology, ลำดับตอน boot และค่าคงที่ทั้งหมด
+**Primer** ตอบว่า request หนึ่งใบเดินผ่านอะไรบ้าง — 5 เส้นทาง (`auth/token`, `products`, `orders`, worker
+และ `/admin/*` observability) พร้อม mermaid, ตารางว่าใครคุยกับ datastore ไหน, connection topology,
+ลำดับตอน boot และค่าคงที่ทั้งหมด
 
 **Q&A** เป็นบันทึกจริงของ reviewer 3 มุม (performance / correctness / simplicity) ที่อ่านแยกกันแล้วมาถกกัน
 ของที่ออกมาหนักที่สุด: **blocker (b) ที่คิดว่าปิดไปแล้ว ยังเปิดอยู่** เพราะ `job.data.requestToken`
@@ -25,3 +26,6 @@
 
 ✅ **แก้ไปแล้ว 10 จาก 11 ข้อ** (2026-08-26) — เหลือข้อ 10 "ตัด PG replica" ที่ตัดสินใจว่าไม่ทำ
 เพราะกระทบ requirement โดยตรง (read-write split เป็นหัวข้อที่ต้องมีในรายงาน)
+
+> 🔄 **ตรวจ `file:line` ทั้งชุดใหม่ 2026-08-30** พร้อมเพิ่ม `src/observability/` (Primer §9)
+> และภาคผนวกท้าย Q&A · เทสต์ปัจจุบัน **43 ข้อ / 4 suites** (เอกสารรุ่นก่อนเขียน 32 หรือ 35 — ผิดทั้งคู่)

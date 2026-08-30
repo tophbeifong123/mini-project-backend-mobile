@@ -6,10 +6,13 @@
 >
 > **อ่านเอกสารนี้ก่อน แล้วค่อยไปอ่าน [`architecture.md`](architecture.md)**
 
-> ⚠️ **หมายเหตุ (2026-08-26)** — เอกสารนี้เขียนขึ้น**ก่อนจะมีโค้ดจริง** จึงเป็นฉบับ *ปูพื้นแนวคิด* เท่านั้น
+> ⚠️ **หมายเหตุ (ตรวจล่าสุด 2026-08-30)** — เอกสารนี้เขียนขึ้น**ก่อนจะมีโค้ดจริง** จึงเป็นฉบับ *ปูพื้นแนวคิด* เท่านั้น
 > โค้ดตัวอย่างในนี้ถูกไล่แก้ให้ตรงกับ `src/` ที่มีอยู่จริงแล้ว แต่ถ้าเจอจุดไหนขัดกัน
 > **ให้ยึด [`architecture.md`](architecture.md) และ [`../Codebase/Separate/01-codebase-primer.md`](../Codebase/Separate/01-codebase-primer.md) เป็นหลัก**
 > (อันหลังอ้าง `file:line` ของโค้ดจริง)
+>
+> **เอกสารนี้ตั้งใจไม่มี `file:line`** — มันอธิบายแนวคิด ไม่ใช่แผนที่โค้ด · แผนที่โค้ด (รวมโมดูล
+> `src/observability/` ที่เพิ่มมา 2026-08-30) อยู่ที่ [`01-codebase-primer.md`](../Codebase/Separate/01-codebase-primer.md) §9
 
 ---
 
@@ -113,6 +116,11 @@ SELECT COUNT(*), COUNT(DISTINCT user_id) FROM orders WHERE product_id = 'p-1001'
 ```
 
 **จำ 3 บรรทัดนี้ไว้** ทุกอย่างที่อธิบายต่อจากนี้ คือความพยายามทำให้ 3 บรรทัดนี้ผ่าน
+
+> 💡 **ไม่ต้องพิมพ์ SQL เองก็ได้ (ตั้งแต่ 2026-08-30)** — `GET /admin/insights` รันคำถามชุดนี้ให้อัตโนมัติ
+> (อ่าน `remaining_stock` จาก **primary** แล้วเทียบกับ counter ใน Redis) แล้วสรุปเป็น `ok` / `warn` / `critical`
+> ⚠️ มัน **อ่านอย่างเดียว ไม่ซ่อมอะไรให้** — การ `INCR` ซ่อม drift เองอันตรายกว่าปัญหาเดิม
+> เพราะจะปล่อยคนที่ 51 เข้ามา รายละเอียดอยู่ที่ [`01-codebase-primer.md`](../Codebase/Separate/01-codebase-primer.md) §9
 
 ### 1.4 แล้วใส่ lock ธรรมดาไม่จบเหรอ?
 
@@ -821,6 +829,7 @@ stateDiagram-v2
 | `nginx.conf` ทั้งไฟล์ | ก็อปจากเอกสารได้เลย | ตอนเขียน `docker-compose.yml` → [§2](architecture.md) |
 | k6 scenarios / thresholds | เขียนทีหลัง หลังระบบขึ้นแล้ว | ตอนทำ `loadtest.js` → [§9.2](architecture.md) |
 | Bull-Board, health checks, structured logging | เป็น deliverable แต่ไม่ใช่แก่นของ concurrency | ตอนใกล้ส่งงาน → [§9](architecture.md) |
+| `src/observability/` (`/admin/insights`, `/admin/metrics`) | **เครื่องมือวัด ไม่ใช่กลไก** — ไม่เปลี่ยน read/write path แม้แต่บรรทัดเดียว | ตอนเก็บตัวเลขใส่รายงาน → [`01-codebase-primer.md`](../Codebase/Separate/01-codebase-primer.md) §9 |
 | Probabilistic early expiration (XFetch) | เอกสารระบุเองว่า **ไม่ใช้ในการส่งงาน** | ข้ามได้ |
 
 ---
