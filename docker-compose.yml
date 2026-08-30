@@ -135,7 +135,7 @@ services:
     container_name: fs-redis-cache
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.5"
+    cpus: "1.0"
     logging:
       driver: "json-file"
       options:
@@ -161,7 +161,7 @@ services:
     container_name: fs-redis-data
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.5"
+    cpus: "1.0"
     logging:
       driver: "json-file"
       options:
@@ -191,7 +191,7 @@ services:
     container_name: fs-app-1
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    cpus: "1.5"
     logging:
       driver: "json-file"
       options:
@@ -199,7 +199,10 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
-      NODE_OPTIONS: "--max-old-space-size=384"
+      # --max-semi-space-size=32 : young generation ใหญ่ขึ้น -> scavenge ถี่น้อยลง
+      # วัดจริง (1 instance / 1.0 CPU / ยิงตรง): 494 -> 718 rps (+45%) · peak RSS 141MiB < 512m
+      # ที่มา: CPU profile ชี้ว่า GC กิน 21.4% ของ CPU ทั้งหมดบน read path
+      NODE_OPTIONS: "--max-old-space-size=384 --max-semi-space-size=32"
       PORT: "3000"
       INSTANCE_ID: app-1
       # migration + seed DB + seed Redis stock ทำที่ instance นี้เท่านั้น
@@ -250,14 +253,11 @@ services:
   # NestJS app-2 — รอจน schema + seed พร้อม (ดู scripts/app-entrypoint.sh)
   # ===========================================================================
   app-2:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: flash-sale-backend:latest
     container_name: fs-app-2
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    cpus: "1.5"
     logging:
       driver: "json-file"
       options:
@@ -265,7 +265,10 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
-      NODE_OPTIONS: "--max-old-space-size=384"
+      # --max-semi-space-size=32 : young generation ใหญ่ขึ้น -> scavenge ถี่น้อยลง
+      # วัดจริง (1 instance / 1.0 CPU / ยิงตรง): 494 -> 718 rps (+45%) · peak RSS 141MiB < 512m
+      # ที่มา: CPU profile ชี้ว่า GC กิน 21.4% ของ CPU ทั้งหมดบน read path
+      NODE_OPTIONS: "--max-old-space-size=384 --max-semi-space-size=32"
       PORT: "3000"
       INSTANCE_ID: app-2
 
@@ -313,14 +316,11 @@ services:
   # NestJS app-3
   # ===========================================================================
   app-3:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: flash-sale-backend:latest
     container_name: fs-app-3
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    cpus: "1.5"
     logging:
       driver: "json-file"
       options:
@@ -328,7 +328,10 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
-      NODE_OPTIONS: "--max-old-space-size=384"
+      # --max-semi-space-size=32 : young generation ใหญ่ขึ้น -> scavenge ถี่น้อยลง
+      # วัดจริง (1 instance / 1.0 CPU / ยิงตรง): 494 -> 718 rps (+45%) · peak RSS 141MiB < 512m
+      # ที่มา: CPU profile ชี้ว่า GC กิน 21.4% ของ CPU ทั้งหมดบน read path
+      NODE_OPTIONS: "--max-old-space-size=384 --max-semi-space-size=32"
       PORT: "3000"
       INSTANCE_ID: app-3
 
@@ -376,14 +379,11 @@ services:
   # NestJS app-4
   # ===========================================================================
   app-4:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: flash-sale-backend:latest
     container_name: fs-app-4
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    cpus: "1.5"
     logging:
       driver: "json-file"
       options:
@@ -391,7 +391,10 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
-      NODE_OPTIONS: "--max-old-space-size=384"
+      # --max-semi-space-size=32 : young generation ใหญ่ขึ้น -> scavenge ถี่น้อยลง
+      # วัดจริง (1 instance / 1.0 CPU / ยิงตรง): 494 -> 718 rps (+45%) · peak RSS 141MiB < 512m
+      # ที่มา: CPU profile ชี้ว่า GC กิน 21.4% ของ CPU ทั้งหมดบน read path
+      NODE_OPTIONS: "--max-old-space-size=384 --max-semi-space-size=32"
       PORT: "3000"
       INSTANCE_ID: app-4
 
@@ -439,14 +442,11 @@ services:
   # NestJS app-5
   # ===========================================================================
   app-5:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: flash-sale-backend:latest
     container_name: fs-app-5
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    cpus: "1.5"
     logging:
       driver: "json-file"
       options:
@@ -454,7 +454,10 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
-      NODE_OPTIONS: "--max-old-space-size=384"
+      # --max-semi-space-size=32 : young generation ใหญ่ขึ้น -> scavenge ถี่น้อยลง
+      # วัดจริง (1 instance / 1.0 CPU / ยิงตรง): 494 -> 718 rps (+45%) · peak RSS 141MiB < 512m
+      # ที่มา: CPU profile ชี้ว่า GC กิน 21.4% ของ CPU ทั้งหมดบน read path
+      NODE_OPTIONS: "--max-old-space-size=384 --max-semi-space-size=32"
       PORT: "3000"
       INSTANCE_ID: app-5
 
@@ -502,14 +505,11 @@ services:
   # NestJS app-6
   # ===========================================================================
   app-6:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: flash-sale-backend:latest
     container_name: fs-app-6
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    cpus: "1.5"
     logging:
       driver: "json-file"
       options:
@@ -517,9 +517,135 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
-      NODE_OPTIONS: "--max-old-space-size=384"
+      # --max-semi-space-size=32 : young generation ใหญ่ขึ้น -> scavenge ถี่น้อยลง
+      # วัดจริง (1 instance / 1.0 CPU / ยิงตรง): 494 -> 718 rps (+45%) · peak RSS 141MiB < 512m
+      # ที่มา: CPU profile ชี้ว่า GC กิน 21.4% ของ CPU ทั้งหมดบน read path
+      NODE_OPTIONS: "--max-old-space-size=384 --max-semi-space-size=32"
       PORT: "3000"
       INSTANCE_ID: app-6
+
+      JWT_SECRET: flash-sale-dev-secret-change-me
+      JWT_EXPIRES_IN: 15m
+
+      DB_HOST: postgres-primary
+      DB_PORT: "5432"
+      DB_USERNAME: flashsale
+      DB_PASSWORD: flashsale
+      DB_DATABASE: flashsale
+      DB_REPLICA_HOST: postgres-replica
+      DB_REPLICA_PORT: "5432"
+      DB_POOL_SIZE: "8"
+
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_CACHE_PORT: "6379"
+      REDIS_DATA_HOST: redis-data
+      REDIS_DATA_PORT: "6379"
+
+      CATALOG_CACHE_TTL_BASE: "30"
+      CATALOG_CACHE_TTL_JITTER: "30"
+      ORDER_LOCK_TTL_MS: "30000"
+      WORKER_CONCURRENCY: "5"
+
+      BULL_BOARD_USER: admin
+      BULL_BOARD_PASSWORD: admin
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-data:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  # ===========================================================================
+  # NestJS app-7 / app-8
+  #
+  # ทำไมถึงเพิ่มจาก 6 เป็น 8: Node รัน JS ด้วย **thread เดียวต่อ process**
+  # การเพิ่ม `cpus:` ให้เกิน ~1.25 จึงไม่ทำให้เร็วขึ้นอีก (ส่วนเกินได้แค่ GC/libuv thread)
+  # วัดได้: 1 instance ตัน ~800 rps -> 6 instance = ~4,700 rps ตรงกับที่วัดจริงเป๊ะ
+  # เพิ่มความจุจึงต้องเพิ่ม "จำนวน process" ไม่ใช่เพิ่ม CPU ต่อ process
+  # ผลจริงหลังเพิ่มเป็น 8: read 253k -> 288k req · write p95 5,190ms -> 340–1,542ms
+  # ===========================================================================
+  app-7:
+    image: flash-sale-backend:latest
+    container_name: fs-app-7
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: "1.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=384 --max-semi-space-size=32"
+      PORT: "3000"
+      INSTANCE_ID: app-7
+
+      JWT_SECRET: flash-sale-dev-secret-change-me
+      JWT_EXPIRES_IN: 15m
+
+      DB_HOST: postgres-primary
+      DB_PORT: "5432"
+      DB_USERNAME: flashsale
+      DB_PASSWORD: flashsale
+      DB_DATABASE: flashsale
+      DB_REPLICA_HOST: postgres-replica
+      DB_REPLICA_PORT: "5432"
+      DB_POOL_SIZE: "8"
+
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_CACHE_PORT: "6379"
+      REDIS_DATA_HOST: redis-data
+      REDIS_DATA_PORT: "6379"
+
+      CATALOG_CACHE_TTL_BASE: "30"
+      CATALOG_CACHE_TTL_JITTER: "30"
+      ORDER_LOCK_TTL_MS: "30000"
+      WORKER_CONCURRENCY: "5"
+
+      BULL_BOARD_USER: admin
+      BULL_BOARD_PASSWORD: admin
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-data:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:3000/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 60s
+
+  app-8:
+    image: flash-sale-backend:latest
+    container_name: fs-app-8
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: "1.5"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=384 --max-semi-space-size=32"
+      PORT: "3000"
+      INSTANCE_ID: app-8
 
       JWT_SECRET: flash-sale-dev-secret-change-me
       JWT_EXPIRES_IN: 15m
@@ -569,7 +695,9 @@ services:
     container_name: fs-nginx
     restart: unless-stopped
     mem_limit: 256m
-    cpus: "0.5"
+    # วัดจริง: ที่ 1,808 rps nginx ใช้ 0.44 core = 88% ของเพดานเดิม 0.5
+    # ถ้าเร่งเฉพาะ app tier คอขวดจะย้ายมาที่นี่ทันที (ดู nginx.conf: worker_processes)
+    cpus: "2.0"
     logging:
       driver: "json-file"
       options:
@@ -591,6 +719,10 @@ services:
       app-5:
         condition: service_healthy
       app-6:
+        condition: service_healthy
+      app-7:
+        condition: service_healthy
+      app-8:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1/health/live || exit 1"]

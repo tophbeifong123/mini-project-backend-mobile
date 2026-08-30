@@ -1,6 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import { Logger, LoggerErrorInterceptor } from 'nestjs-pino';
 
 import { AppModule } from './app.module';
@@ -12,11 +13,16 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 async function bootstrap(): Promise<void> {
-  // bufferLogs: เก็บ log ช่วง bootstrap ไว้ แล้วปล่อยผ่าน pino เมื่อ logger พร้อม
-  const app = await NestFactory.create(AppModule, { bufferLogs: true });
+
+  const app = await NestFactory.create<NestExpressApplication>(AppModule, {
+    bufferLogs: true,
+  });
 
   // log ของ NestJS เองก็ต้องออกมาเป็น JSON บรรทัดเดียวเหมือนกัน
   app.useLogger(app.get(Logger));
+
+  app.set('etag', false);
+  app.disable('x-powered-by');
 
   // ⚠️ ไม่มี global prefix โดยเจตนา — controller ประกาศ path เต็มเอง
   //    ('api/v1/...' สำหรับ contract, 'health/...' สำหรับ probe)

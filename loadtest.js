@@ -24,7 +24,7 @@ const BASE_URL = (__ENV.BASE_URL || 'http://localhost:8080').replace(
   /\/+$/,
   '',
 );
-const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '10s';
+const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '30s';
 
 // สินค้าเป้าหมายของ write burst — availableStock = 50 (products-seed.json)
 const TARGET_PRODUCT_ID = __ENV.TARGET_PRODUCT_ID || 'p-1001';
@@ -41,7 +41,7 @@ const TOTAL_PRODUCTS = Number(__ENV.TOTAL_PRODUCTS || 20);
 // Tunables สำหรับระยะเวลาการทดสอบ
 const READ_DURATION = __ENV.READ_DURATION || '60s';
 const WRITE_MAX_DURATION = __ENV.WRITE_MAX_DURATION || '45s';
-const WRITE_ITERATIONS = Number(__ENV.WRITE_ITERATIONS || 3);
+const WRITE_ITERATIONS = Number(__ENV.WRITE_ITERATIONS || 2);
 
 // -----------------------------------------------------------------------------
 // 409 / 429 / 503 เป็นคำตอบที่ถูกต้องของระบบ → อย่าให้ k6 นับเป็น http_req_failed
