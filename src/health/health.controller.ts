@@ -46,7 +46,16 @@ export class HealthController {
 
   /**
    * Readiness — เช็ค dependency จริง: PostgreSQL primary + replica + redis ทั้งสองตัว
-   * ถ้าตัวใดตัวหนึ่งล่ม terminus จะตอบ **503** เพื่อให้ nginx ถอด instance นี้ออกจาก pool
+   * ถ้าตัวใดตัวหนึ่งล่ม terminus จะตอบ **503**
+   *
+   * ⚠️ **ไม่มีอะไรถอด instance ออกจาก pool ให้อัตโนมัติจาก 503 นี้**
+   *    healthcheck ทั้ง 6 ตัวใน `docker-compose.yml` ชี้ `/health/live` ไม่ใช่เส้นนี้ ·
+   *    nginx OSS ไม่มี active health check และ `nginx.conf` ตั้ง `max_fails=0`
+   *    ปิด passive check ไว้โดยเจตนา
+   *
+   *    เส้นนี้จึงเป็น **เครื่องมือให้คนดู (operator diagnostic)** ไม่ใช่ probe ของ LB
+   *    ผู้เรียกจริงคือคน: เมนู "Readiness" ใน Bull-Board (`bull-board.service.ts`)
+   *    และ `curl` ที่เขียนไว้ใน `README.md` กับ `loadtest/README.md`
    *
    * เช็ค master แยกจาก slave เพราะ DataSource ตั้ง `defaultMode: 'slave'` ไว้
    * ถ้า ping แค่ default จะไม่มีวันรู้เลยว่า primary (ฝั่ง write) ล่มไปแล้ว

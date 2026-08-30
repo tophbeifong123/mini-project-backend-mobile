@@ -367,7 +367,7 @@ export class RedisService implements OnModuleInit {
     }
   }
 
-  /** การล้างจริง — ไม่มี debounce (ใช้ภายในและตอน shutdown) */
+  /** การล้างจริง — ไม่มี debounce (เรียกจาก `invalidateCatalogCache` เท่านั้น) */
   private async flushCatalogCache(): Promise<void> {
     const indexKey = RedisKeys.catalogIndex();
     try {

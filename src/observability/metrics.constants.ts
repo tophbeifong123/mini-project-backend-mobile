@@ -40,29 +40,3 @@ export const Metric = {
 } as const;
 
 export type MetricName = (typeof Metric)[keyof typeof Metric];
-
-/** คำอธิบายไทยสำหรับหน้าแดชบอร์ด — ไม่ได้ใช้ในเส้นทาง hot */
-export const METRIC_LABELS: Record<string, string> = {
-  [Metric.ORDERS_REQUESTS]: 'คำขอสั่งซื้อทั้งหมด',
-  [Metric.ORDERS_ACCEPTED]: 'รับเข้าคิว (202)',
-  [Metric.ORDERS_REJECTED_DUPLICATE]: 'ซื้อซ้ำ (409)',
-  [Metric.ORDERS_REJECTED_SOLD_OUT]: 'ของหมด (409)',
-  [Metric.ORDERS_REJECTED_IN_FLIGHT]: 'กดรัวขณะมี order ค้าง (429)',
-  [Metric.ORDERS_REJECTED_NO_COUNTER]: 'ยังไม่ seed counter (503)',
-  [Metric.ORDERS_GATEKEEPER_ERRORS]: 'gatekeeper ล้ม/timeout (503)',
-  [Metric.ORDERS_ENQUEUE_FAILURES]: 'enqueue ล้ม (503)',
-  [Metric.ORDERS_DEDUPED]: 'โดน BullMQ dedup (409)',
-  [Metric.ORDERS_JOB_UNVERIFIED]: 'ยืนยัน job ไม่ได้ — ไม่คืนสต็อก',
-  [Metric.STOCK_COMPENSATED]: 'สั่งชดเชยสต็อก',
-  [Metric.STOCK_COMPENSATION_RESTORED]: 'ชดเชยแล้วคืนได้จริง',
-  [Metric.STOCK_COMPENSATION_FAILURES]: '⚠️ ชดเชยล้มเหลว (สต็อกรั่ว)',
-  [Metric.WORKER_CONFIRMED]: 'order สำเร็จ',
-  [Metric.WORKER_ALREADY_CONFIRMED]: 'ซ้ำ 23505 (idempotent)',
-  [Metric.WORKER_SOLD_OUT]: 'worker เจอของหมด',
-  [Metric.WORKER_TRANSIENT_FAILURES]: 'job ล้มชั่วคราว (retry)',
-  [Metric.WORKER_POST_COMMIT_FAILURES]: 'side effect หลัง commit ล้ม',
-  [Metric.CATALOG_CACHE_HITS]: 'cache hit',
-  [Metric.CATALOG_CACHE_MISSES]: 'cache miss',
-  [Metric.CATALOG_DEGRADED_READS]: 'อ่าน stock ไม่ได้ ใช้ค่าจากแคช',
-  [Metric.CATALOG_MISSING_STOCK_KEY]: '⚠️ ไม่มี stock counter (ยังไม่ได้ seed)',
-};

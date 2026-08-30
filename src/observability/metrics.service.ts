@@ -16,8 +16,6 @@ import { RedisKeys } from '../redis/redis.keys';
 import type { MetricName } from './metrics.constants';
 
 const FLUSH_INTERVAL_MS = 1_000;
-/** instance ที่ heartbeat เก่ากว่านี้ถือว่าตายแล้ว (หน้าเว็บจะขึ้นเป็น stale) */
-export const INSTANCE_STALE_MS = 15_000;
 
 export interface InstanceSnapshot {
   instanceId: string;

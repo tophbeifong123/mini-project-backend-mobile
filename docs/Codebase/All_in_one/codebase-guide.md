@@ -408,7 +408,7 @@ PostgreSQL READ COMMITTED จะ **ประเมิน `WHERE` ใหม่** 
 
 | ไฟล์ | หน้าที่ |
 | :--- | :--- |
-| `metrics.constants.ts` | ชื่อ metric 23 ตัว (`Metric.*`) + คำอธิบายไทย (`METRIC_LABELS`) — ห้ามพิมพ์ชื่อเป็น string ลอยที่จุดเรียก |
+| `metrics.constants.ts` | ชื่อ metric 24 ตัว (`Metric.*`) — ห้ามพิมพ์ชื่อเป็น string ลอยที่จุดเรียก |
 | `metrics.service.ts` | `inc()` บวกใน RAM · flush ลง `redis-data` ทุก 1 วิ · เก็บ heartbeat ราย instance |
 | `integrity.service.ts` | `check()` — reconciliation Redis ↔ DB + queue counts + replication lag + `INFO` ของ Redis ทั้งสอง |
 | `observability.controller.ts` | 4 route ใต้ `/admin` |
@@ -503,7 +503,7 @@ readRedis() × 2        → INFO ของ redis-cache และ redis-data (hit
 
 - `INSTANCE_ID` มาจาก `docker-compose.yml` (`app-1` … `app-6`) ถ้าไม่ตั้ง จะ fallback เป็น `hostname()`
   (`metrics.service.ts:62`) — ถ้าทั้ง 6 ตัวได้ค่าเดียวกัน field ใน `metrics:instances` จะทับกัน
-- instance ที่ heartbeat เก่ากว่า `INSTANCE_STALE_MS` (15 วิ, `metrics.service.ts:20`) หน้าเว็บจะขึ้นว่า stale
+- instance ที่ heartbeat เก่ากว่า 15 วินาที หน้าเว็บจะขึ้นว่า stale (เกณฑ์นี้ hardcode อยู่ในหน้าเว็บเอง `insights.page.ts:309`)
 - `metrics:counters` / `metrics:instances` อยู่บน **`redis-data`** (`redis.keys.ts:38` `:41`) ไม่ใช่ `redis-cache`
   เพราะ `allkeys-lru` จะ evict ตัวนับหายเงียบๆ
 - `RESET_CONFIRM=yes pnpm run reset` ล้าง 2 key นั้นให้ด้วยแล้ว (`database/reset.ts:79-82`)

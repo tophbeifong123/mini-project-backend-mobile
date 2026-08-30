@@ -164,15 +164,21 @@ export class OrdersService {
       throw new ServiceUnavailableException('Queue unavailable');
     }
 
-    // ── Blocker (b) fix (architecture-rationale.md §7b) ──
-    // BullMQ เจอ jobId ซ้ำแล้ว **คืน job เดิมเงียบๆ ไม่ throw** -> catch ข้างบนไม่เคยทำงาน
-    // ถ้าไม่ตรวจ จะได้ 202 ทั้งที่ไม่มี job ใหม่วิ่ง = สต็อกหายถาวร 1 ชิ้น
+    // narrowing ให้ TypeScript เท่านั้น — `job` ประกาศเป็น `Job | undefined` ไว้ก่อน try
+    // และ TS ไม่ narrow ข้าม try/catch · ในทางปฏิบัติ `add()` ที่ไม่ throw คืน job เสมอ
+    // (รวมถึงตอน jobId ซ้ำ ซึ่งคืน job เดิมที่ truthy) บล็อกนี้จึงไม่ใช่ตัวดัก dedup
     if (!job) {
       this.metrics.inc(Metric.ORDERS_ENQUEUE_FAILURES);
       await this.compensate(userId, productId, jobId, requestToken);
       throw new ServiceUnavailableException('Queue unavailable');
     }
 
+    // ── Blocker (b) fix (architecture-rationale.md §7b) ──
+    // BullMQ เจอ jobId ซ้ำแล้ว **คืน job เดิมเงียบๆ ไม่ throw** -> catch ข้างบนไม่เคยทำงาน
+    // และ job ที่คืนมาก็ truthy -> `if (!job)` ข้างบนก็ดักไม่ได้เหมือนกัน
+    // ถ้าไม่ตรวจ จะได้ 202 ทั้งที่ไม่มี job ใหม่วิ่ง = สต็อกหายถาวร 1 ชิ้น
+    // ตัวดัก dedup จริงคือบล็อกข้างล่างนี้ (readStoredJob + เทียบ requestToken)
+    //
     // ⚠️ ห้ามเทียบกับ `job.data` ที่ `add()` คืนมา — มันคือ object literal ที่เราส่งเข้าไปเอง
     //    `Job.create()` เขียนกลับแค่ `job.id` ไม่เคยอ่าน data จาก Redis
     //    (node_modules/bullmq/dist/cjs/classes/job.js:124-135)

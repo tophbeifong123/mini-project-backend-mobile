@@ -61,19 +61,6 @@ export function renderInsightsPage(params: {
     --sidebar: #070c17;
   }
 }
-:root[data-theme="dark"] {
-  color-scheme: dark;
-  --page: #0b1120;
-  --surface: #111a2e;
-  --surface-2: #172033;
-  --ink: #e2e8f0;
-  --ink-2: #b8c2d0;
-  --muted: #8b96a8;
-  --border: #1e293b;
-  --accent: #fb7185;
-  --bar: #3987e5;
-  --sidebar: #070c17;
-}
 * { box-sizing: border-box; }
 body {
   margin: 0;
@@ -178,6 +165,7 @@ footer a { color: var(--accent); }
       <h2>Worker</h2>
       <p class="hint">ผลของ job ที่ประมวลผลไปแล้ว</p>
       <div class="bars" id="worker-bars"></div>
+      <div class="sub" id="worker-avg" style="margin-top:12px;color:var(--muted);font-size:12px"></div>
     </section>
     <section class="card">
       <h2>Read path &amp; คิว</h2>
@@ -396,9 +384,8 @@ footer a { color: var(--accent); }
       { label: 'ชดเชยแล้วคืนได้', value: counters.stock_compensation_restored_total || 0 }
     ]);
     var avg = count > 0 ? (sum / count).toFixed(1) + ' ms' : '—';
-    document.getElementById('worker-bars').insertAdjacentHTML('afterend',
-      '<div class="sub" style="margin-top:12px;color:var(--muted);font-size:12px">' +
-      'เวลาเฉลี่ยต่อ job: ' + avg + ' (จาก ' + num(count) + ' job)</div>');
+    document.getElementById('worker-avg').textContent =
+      'เวลาเฉลี่ยต่อ job: ' + avg + ' (จาก ' + num(count) + ' job)';
   }
 
   async function tick() {
