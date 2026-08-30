@@ -4,14 +4,16 @@
 > **โจทย์ต้นทาง**: [`docs/Requirement/Flash Sale System.pdf`](docs/Requirement/Flash%20Sale%20System.pdf)
 > **สถาปัตยกรรม (source of truth)**: [`docs/Architecture/architecture.md`](docs/Architecture/architecture.md)
 > **สถานะ**: 🛠️ implemented — `src/` ครบทุก module · `docker-compose.yml` 1-click start · `loadtest.js` พร้อม
-> `build` / `lint` / `test` (32 tests) ผ่านหมด · **ยังไม่เคยรันบน container จริงและยังไม่เคยยิง k6**
+> `build` / `lint` / `test` (49 tests) ผ่านหมด · รันบน container จริงและยิง k6 มาแล้วหลายรอบ (§9.3 ผ่านครบ)
+> **ที่ยังไม่เคยเกิดขึ้น: ยิงข้ามกลุ่ม · e2e test · รายงาน PDF** (ดู §0.1)
 
 ---
 
 ## 0. ⚠️ อ่านก่อนเริ่มทุกครั้ง
 
 repo นี้มีทั้ง **เอกสารออกแบบ** และ **โค้ดจริง** แล้ว (`src/`, `package.json`, `docker-compose.yml`, `loadtest.js`)
-สิ่งที่ **ยังไม่เคยเกิดขึ้นเลย** คือการรันบน container จริงและการยิง k6 — ตัวเลข performance ทุกตัวในเอกสารยังเป็นค่าประมาณ
+container ขึ้นจริงและยิง k6 มาแล้ว — ตัวเลข performance ที่บันทึกไว้เป็นของจริง ไม่ใช่ค่าประมาณอีกต่อไป
+สิ่งที่ **ยังไม่เคยเกิดขึ้นเลย** คือ **ยิงข้ามกลุ่ม · e2e test · รายงาน PDF** (ดู §0.1)
 เพราะฉะนั้น:
 
 - **ห้ามเดาว่าไฟล์มีอยู่แล้ว** — ตรวจสอบก่อนเสมอ (`ls`, `cat`) แล้วค่อยแก้
@@ -30,7 +32,7 @@ repo นี้มีทั้ง **เอกสารออกแบบ** แล
 | อะไร | ทำไมถึงสำคัญ |
 | :--- | :--- |
 | **ไม่เคยยิงข้ามกลุ่ม** | เป็น deliverable ตรงๆ (§9 ตารางเทียบกับกลุ่มเพื่อน) |
-| **ไม่มี e2e test** | `pnpm run test:e2e` exit non-zero ("no tests found") — มีแต่ unit test 35 ข้อ |
+| **ไม่มี e2e test** | `pnpm run test:e2e` exit non-zero ("no tests found") — มีแต่ unit test 49 ข้อ |
 | **ยังไม่ได้ทำรายงาน PDF** | diagram มีวัตถุดิบอยู่แล้วใน [`diagrams.md`](docs/Architecture/diagrams.md) แต่ยังไม่มีตัวรายงาน |
 | **ยังไม่ได้เก็บ dashboard** | Cache Hit/Miss (ใช้ `./scripts/cache-stats.sh`) และภาพ Bull-Board ตอน Completed = 50 |
 | **ยังไม่เคยยิงที่โหลดต่ำกว่าเพดาน** | ตัวเลข latency ที่มีตอนนี้มาจากการยิงเกินเพดานราว 2 เท่า ใช้เทียบกับกลุ่มเพื่อนตรงๆ ไม่ได้ — เพดานที่วัดได้คือ ~1,500 rps (ที่ 400 VUs: p95 237ms, error 0) — ⚠️ **วัดตอน 3 instance ยังไม่ได้วัดซ้ำหลังขยายเป็น 6** |
@@ -49,7 +51,8 @@ podman compose version                                  # podman-compose (python
 | รู | สภาพตอนนี้ |
 | :--- | :--- |
 | `23505` ไม่คืนสต็อกใน Redis | ถูกต้องสำหรับเคสที่ตั้งใจ (retry ของ job ที่ commit แล้ว) แต่ถ้า `bought:` key หายและ job record เดิมถูก evict → Redis ต่ำกว่า DB ถาวร · **reviewer ทั้ง 3 เห็นตรงกันว่าปล่อยไว้ถูกแล้ว** — การคืนตรงนี้จะทำให้ retry ปกติคืนซ้ำ |
-| ไม่มี reconciliation Redis ↔ DB | **มีตัวตรวจแล้ว (2026-08-30)** — `/admin/insights` เทียบ Redis counter กับ DB สดๆ ทุก 3 วิ และ `/admin/metrics` เปิด gauge `flash_sale_stock_drift` · แต่ยัง **ไม่มีตัวซ่อมอัตโนมัติ** โดยเจตนา (INCR ลอยๆ = ปล่อยคนที่ 51 เข้ามา) และยังไม่มีใครคอยดูให้ = ต้องเปิดหน้าเอง |
+| ไม่มี reconciliation Redis ↔ DB | **มีตัวตรวจแล้ว (2026-08-30)** — `/admin/insights` เทียบ Redis counter กับ DB และ `/admin/metrics` เปิด gauge `flash_sale_stock_drift` · ⚠️ **`IntegrityService` ไม่มี timer ฝั่ง server** `check()` รันตอนมีคนขอ endpoint เท่านั้น (`observability.controller.ts:44,59`) เลข 3 วิคือ `setInterval` ใน**เบราว์เซอร์** (`insights.page.ts:431`) → **ปิดแท็บ = ไม่มีใครตรวจ ไม่มี alert** · และยัง **ไม่มีตัวซ่อมอัตโนมัติ** โดยเจตนา (INCR ลอยๆ = ปล่อยคนที่ 51 เข้ามา) |
+| `compensate()` แบบไม่มีเงื่อนไขตอน `queue.add` ล้ม (`orders.service.ts`) | **จงใจปล่อยไว้ — อย่าแก้** (ตรวจซ้ำ 2026-08-30) · ถ้า `add()` timeout แต่ job ถูกสร้างจริง การคืนจะทำให้ Redis สูงกว่า DB — **ซึ่งซ่อมตัวเองได้** เพราะคนถัดไปจะเจอ `affected = 0` → `SoldOutError` → จงใจไม่คืน → counter ลู่ลงจนถึง 0 พอดี · ส่วน **Redis ต่ำกว่า DB ไม่มีวันซ่อม** (ค้างที่ `remaining_stock = 1`, orders 49/50) การไม่คืนจึงเป็นการเดิมพันฝั่งที่แย่กว่า · ⚠️ `compensate-if-reserved.lua` **ใช้ตรงนี้ไม่ได้** — ณ จุดนั้น lock ยังถือ token ของเราอยู่เสมอ สคริปต์จึงกลายเป็น `compensate.lua` เป๊ะๆ (no-op) |
 | `WORKER_CONCURRENCY` อ่านตอน decorate class | เห็นเฉพาะ env จริงของ container ปรับจาก `.env` แล้วไม่มีผล |
 | `proxy_read_timeout` ใน nginx | **ดันขึ้นเป็น 10s แล้ว (2026-08-27)** พร้อม 6 instance · แต่อาการต้นเดิมยังอยู่: ถ้า upstream ช้าเกิน 10 วิก็ยังเป็น 504 เหมือนเดิม — การดันค่าขึ้นซ่อนอาการ ไม่ได้แก้เหตุ |
 | `reset` ไม่ล้าง BullMQ job | `jobId` เป็น deterministic (`order:{userId}:{productId}`) job เก่าจึงชนกับรอบใหม่ได้ · ต้องล้างเองด้วย `redis-cli --scan --pattern 'bull:orders:*' \| xargs redis-cli DEL` |
@@ -227,7 +230,8 @@ curl -u admin:admin -X POST http://localhost:8080/admin/metrics/reset   # ล้
 5. **หัก/คืน stock ใน Redis ต้องอยู่ใน Lua script** ห้ามทำเป็นหลายคำสั่งแยกกัน
 6. **ทุก path ที่หักสต็อกแล้วต้องมีทางชดเชย** — ถ้า `queue.add()` ล้มหลัง `DECR` ต้อง `INCR` คืนใน `catch`
 7. **Side effect หลัง `commitTransaction()` ต้องอยู่นอก try/catch ของ transaction** ไม่งั้นจะคืนสต็อกทั้งที่ขายไปแล้ว → oversell
-8. **Compensation ต้อง idempotent** guard ด้วย key ที่ผูกกับ `jobId` (BullMQ retry ได้หลายครั้ง)
+8. **Compensation ต้อง idempotent** guard ด้วย `compensated:{jobId}:{requestToken}` (BullMQ retry ได้หลายครั้ง)
+   ⚠️ **ต้องมี `requestToken` ด้วย ห้ามใช้ `jobId` เดี่ยวๆ** — `jobId` เป็น deterministic (ข้อ 9) guard จะคุมข้าม *คำขอ* ไม่ใช่แค่ข้าม retry → คนเดิมสั่งใหม่ใน TTL แล้วไม่ได้คืนสต็อก = หายถาวร (แก้ 2026-08-30) · retry ยังถูกคุมอยู่เพราะ BullMQ อ่าน `job.data` ชุดเดิม จึงได้ token เดิม
 9. **`jobId` ต้องเป็น `order:{userId}:{productId}`** (deterministic) เพื่อให้ BullMQ ปฏิเสธ job ซ้ำเอง
 10. **Permanent failure ต้อง `return` ไม่ใช่ `throw`** (ของหมด / unique violation `23505`) — retry ไม่มีทางสำเร็จ
 11. **`redis-data` ต้อง `noeviction`** ถ้า LRU evict `stock:*` หรือ BullMQ job = ระบบพังเงียบๆ
