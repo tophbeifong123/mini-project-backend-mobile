@@ -156,7 +156,7 @@ digraph write {
 
 Process 3.0 และ 4.0 คือสองจุดเดียวในระบบที่แตะสต็อก การพิสูจน์ความถูกต้องทั้งหมดจึงโฟกัสที่สองจุดนี้
 
-**เทคโนโลยีที่ใช้** — Node.js 22 · NestJS 11 · Nginx alpine · PostgreSQL 16 (Primary + Streaming Replica) · Redis 7 × 2 · BullMQ · JWT (HS256, stateless) · Jest 30 (35 unit tests ผ่านทั้งหมด) · k6 · Docker/Podman Compose
+**เทคโนโลยีที่ใช้** — Node.js 22 · NestJS 11 · Nginx alpine · PostgreSQL 16 (Primary + Streaming Replica) · Redis 7 × 2 · BullMQ · JWT (HS256, stateless) · Jest 30 (43 unit tests ผ่านทั้งหมด) · k6 · Docker/Podman Compose · ชั้น Observability ในตัว (Bull-Board + `/admin/insights` + `/admin/metrics`)
 
 <div style="page-break-after: always;"></div>
 
@@ -467,6 +467,24 @@ redis-cli -p 6380 GET stock:flash_sale:p-1001                       # "0"
 
 ผลการทดสอบทุกรอบผ่านครบทั้ง 4 ข้อ — **Zero Overselling 100%**
 
+### 3.8 Observability — ตรวจความถูกต้องแบบสดโดยไม่ต้องรันคำสั่งเอง
+
+การพิสูจน์ในหัวข้อ 3.7 ต้องเปิด `psql` และ `redis-cli` รันเองทีละคำสั่ง ซึ่งใช้ได้ตอนตรวจหลังจบการทดสอบ แต่ใช้ไม่ได้ตอนกำลังยิงอยู่ ระบบจึงมีชั้น observability ในตัวเพิ่มมาอีก 3 หน้า ทั้งหมดอยู่ใต้ Basic Auth เดียวกัน (ครอบที่ prefix `/admin` ใน `main.ts` ทีเดียว จะได้ไม่มีทางเผลอเปิดหน้าใดหน้าหนึ่งทิ้งไว้)
+
+| หน้า | ใช้ดูอะไร |
+|---|---|
+| `/admin/queues` | Bull-Board — Waiting / Active / Completed / Failed พร้อมกราฟ metrics รายนาทีของ worker |
+| `/admin/insights` | ตารางเทียบ **Redis counter กับ DB สด ๆ ทุก 3 วินาที** ต่อสินค้าทุกตัว พร้อมคอลัมน์ `drift`, จำนวน order/ผู้ซื้อไม่ซ้ำ, event loop lag, replication lag, สถานะ pool |
+| `/admin/metrics` | Prometheus exposition format (ยังไม่มี Prometheus ในสแตก — ดูดไปใช้ทีหลังได้) |
+
+**ตารางที่ 8** หน้า observability ที่มีในระบบ
+
+**การอ่านค่า `drift` (= `redisRemaining − dbRemaining`)** — ค่า **ติดลบเป็นเรื่องปกติ** เพราะแปลว่ามี job ค้างอยู่ในคิว (Redis จองสิทธิ์ล่วงหน้าไปแล้วแต่ worker ยังไม่ได้ตัด DB) ส่วนค่าที่ **เป็นบวกคืออันตราย** เพราะแปลว่า Redis สูงกว่า DB ซึ่งจะปล่อยให้คนที่ 51 เข้ามาซื้อของที่ไม่มีแล้ว
+
+ตัวนับที่เก็บครอบคลุมทุก exit path ของหัวข้อ 2.4–2.5 รวมถึงสองกรณีที่มองไม่เห็นจาก log ปกติ คือ `orders_deduped_total` (โดน BullMQ dedup แล้วคืนสต็อก) และ `orders_job_unverified_total` (ยืนยัน job ไม่ได้ จึงจงใจไม่คืน) และตัวที่ต้องเฝ้าที่สุดคือ `stock_compensation_failures_total` — **ถ้าไม่เป็นศูนย์แปลว่าสต็อกรั่วจริง** ต้องตามเก็บด้วยมือ
+
+> ตัวนับถูกออกแบบเป็น **write-behind** — `inc()` เป็น synchronous ล้วน (บวกลง Map ใน RAM) แล้ว flush ลง hash บน redis-data ทุก 1 วินาที เก็บบน Redis เพราะทั้ง 6 instance ต้องบวกลงถังใบเดียวกัน ถ้าเก็บใน RAM อย่างเดียวหน้าแดชบอร์ดจะเห็นแค่ 1 ใน 6 ของทราฟฟิก **ห้ามเปลี่ยนไปเรียก `HINCRBY` ตรง ๆ ในเส้นทางร้อน** ที่ 1,500 rps จะเพิ่มภาระ redis-data อีก 1,500 ops/s บน connection เดียวกับ gatekeeper
+
 <div style="page-break-after: always;"></div>
 
 ---
@@ -490,7 +508,7 @@ redis-cli -p 6380 GET stock:flash_sale:p-1001                       # "0"
 | Cache Hit Ratio | 97.63% |  |  |
 | Infra Failure Rate | 0.01–0.46% |  | ควรน้อยกว่า 1% |
 
-**ตารางที่ 8** เปรียบเทียบผลการยิง Load Test ระหว่างกลุ่ม
+**ตารางที่ 9** เปรียบเทียบผลการยิง Load Test ระหว่างกลุ่ม
 
 ### 4.1 แนวทางวิเคราะห์สาเหตุของคอขวด
 
@@ -502,14 +520,14 @@ redis-cli -p 6380 GET stock:flash_sale:p-1001                       # "0"
 | 502 / 504 จำนวนมาก | instance ไม่พอ หรือ nginx ตัด backend ออกจาก retry amplification | ดู error log ของ nginx และค่า `max_fails` / `proxy_next_upstream` |
 | Throughput ตันแม้ CPU ของ DB ยังว่าง | คอขวดอยู่ที่ Node.js event loop ของแต่ละ instance ไม่ใช่ที่ DB | เทียบการใช้ CPU ของ app container กับ PostgreSQL และ Redis ระหว่างยิง |
 
-**ตารางที่ 9** แนวทางวิเคราะห์คอขวด
+**ตารางที่ 10** แนวทางวิเคราะห์คอขวด
 
 **คอขวดของระบบเรา** — จุดที่ตันก่อนเสมอคือ **Node.js event loop** ของแต่ละ instance ไม่ใช่ PostgreSQL หรือ Redis เพราะ Redis เป็น single-threaded แต่คำสั่งที่ใช้ทั้งหมดเป็น O(1) และ PostgreSQL ใช้ connection pool แค่ 6 instances × 8 = 48 จาก `max_connections = 100` **ต่อเซิร์ฟเวอร์** (TypeORM replication สร้าง pool แยกต่อ master และต่อ replica จึงเป็น 48/100 บน primary และ 48/100 บน replica ไม่ใช่ 96 รวมกัน) จึงยังมี headroom เหลือมากตอนที่ app instance ตันแล้ว เพดานที่วัดได้คือ ~1,500 req/s ที่ 400 VUs (p95 = 237 ms, error = 0) ตอนใช้ 3 instances และขึ้นเป็น 2,548 req/s หลังขยายเป็น 6 instances พร้อมปรับจูน
 
 **คอขวดที่ยังเหลืออยู่ (ข้อจำกัดที่รู้ตัว)**
 
 - `proxy_read_timeout 10s` — ดันค่าขึ้นจากเดิมแล้ว แต่เป็นการซ่อนอาการ ไม่ได้แก้เหตุ ถ้า upstream ช้าเกิน 10 วินาทีก็ยังเป็น 504 เหมือนเดิม
-- ไม่มี reconciliation ระหว่าง Redis กับ DB — ตัวจับ drift ตัวเดียวที่มีคือการรันคำสั่งตรวจในหัวข้อ 3.7 ด้วยมือ
+- **ตรวจ drift ระหว่าง Redis กับ DB ได้แล้ว แต่ยังไม่มีตัวซ่อมอัตโนมัติ** — `/admin/insights` (หัวข้อ 3.8) เทียบให้ทุก 3 วินาที และ `/admin/metrics` เปิดค่า drift ออกมาเป็น gauge แต่ระบบ **จงใจไม่ซ่อมเอง** เพราะการ `INCR` คืนโดยไม่รู้สาเหตุคือการปล่อยคนที่ 51 เข้ามา · ข้อจำกัดที่เหลือคือยังไม่มีใครเฝ้าหน้าจอให้ ต้องเปิดดูเอง
 - Job stall เกิน `maxStalledCount` — ถ้า event loop ตันเกิน 30 วินาที BullMQ จะทิ้ง job เป็น failed โดยไม่เรียก handler → ไม่มีการชดเชย → สต็อกหาย 1 ชิ้น
 
 **สรุปผลการวิเคราะห์เปรียบเทียบ** (เขียนหลังได้ตัวเลขของกลุ่มเพื่อน)
@@ -536,7 +554,7 @@ redis-cli -p 6380 GET stock:flash_sale:p-1001                       # "0"
 | 4 |  |  |  |
 | 5 |  |  |  |
 
-**ตารางที่ 10** รายชื่อสมาชิกและการแบ่งหน้าที่
+**ตารางที่ 11** รายชื่อสมาชิกและการแบ่งหน้าที่
 
 ตัวอย่างขอบเขตงานสำหรับกรอกในคอลัมน์หน้าที่รับผิดชอบ
 
