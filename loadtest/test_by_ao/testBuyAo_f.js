@@ -29,6 +29,7 @@ import { Counter, Rate, Trend } from 'k6/metrics';
 // ============================ Tunables (env-overridable) ====================
 const BASE_URL = __ENV.BASE_URL || 'http://localhost';
 const USER_COUNT = Number(__ENV.USER_COUNT || 500); // unique users / JWTs
+const USER_PREFIX = __ENV.USER_PREFIX || 'user-';
 const PRODUCT_ID = __ENV.PRODUCT_ID || 'p-1001'; // write contention target
 const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '10s'; // per-request HTTP timeout
 
@@ -60,6 +61,7 @@ const infraFail = new Rate('infra_failures'); // 5xx / timeout / unexpected 4xx 
 const ordersAccepted = new Counter('orders_accepted'); // HTTP 202
 const ordersSoldout = new Counter('orders_soldout'); // HTTP 409 "Product sold out"
 const ordersDuplicate = new Counter('orders_duplicate'); // HTTP 409 already-claimed
+const ordersThrottled = new Counter('orders_throttled_429'); // HTTP 429 in-flight lock
 const readCacheHitPct = new Trend('read_cache_hit_pct'); // sampled during read phase
 const writeQueueBacklog = new Trend('write_queue_backlog'); // waiting+active, sampled during write
 const edgeCacheHit = new Rate('edge_cache_hit'); // nginx X-Cache: HIT vs miss/expired
@@ -69,12 +71,14 @@ const REQ = { timeout: REQ_TIMEOUT };
 const JSON_HDR = { 'Content-Type': 'application/json' };
 
 // A response is an infra failure only if it is neither the read success (200)
-// nor an expected order outcome (202 accepted, 409 sold-out / duplicate).
+// nor an expected order outcome (202 accepted, 409 conflict, 429 in-flight lock).
 function isInfraFailure(res) {
   if (res.status === 0) return true; // timeout / connection error
-  if (res.status === 200 || res.status === 202 || res.status === 409) return false;
+  if (res.status === 200 || res.status === 202 || res.status === 409 || res.status === 429) return false;
   return true;
 }
+
+http.setResponseCallback(http.expectedStatuses(200, 202, 409, 429));
 
 // ============================ Options =====================================
 export const options = {
@@ -114,12 +118,12 @@ export const options = {
 export function setup() {
   const requests = [];
   for (let i = 1; i <= USER_COUNT; i++) {
-    requests.push(['POST', `${BASE_URL}/api/v1/auth/token`, JSON.stringify({ userId: `user-${i}` }), { headers: JSON_HDR, timeout: REQ_TIMEOUT }]);
+    requests.push(['POST', `${BASE_URL}/api/v1/auth/token`, JSON.stringify({ userId: `${USER_PREFIX}${i}` }), { headers: JSON_HDR, timeout: REQ_TIMEOUT }]);
   }
   const responses = http.batch(requests);
 
   const tokens = responses.map((res, idx) => {
-    const userId = `user-${idx + 1}`;
+    const userId = `${USER_PREFIX}${idx + 1}`;
     if (res.status !== 200) {
       throw new Error(`setup: auth/token for ${userId} returned ${res.status} (spec §2.1 requires 200) — body: ${res.body}`);
     }
@@ -128,7 +132,7 @@ export function setup() {
     return token;
   });
 
-  console.log(`setup: issued ${tokens.length} JWTs (user-1..user-${tokens.length})`);
+  console.log(`setup: issued ${tokens.length} JWTs (${USER_PREFIX}1..${USER_PREFIX}${tokens.length})`);
   return { tokens };
 }
 
@@ -183,12 +187,19 @@ export function writeScenario(data) {
 }
 
 function tallyOrder(res) {
-  const ok = check(res, { 'write: status 202 or 409': (r) => r.status === 202 || r.status === 409 });
+  const ok = check(res, {
+    'write: status 202, 409, or 429': (r) =>
+      r.status === 202 || r.status === 409 || r.status === 429,
+  });
   infraFail.add(isInfraFailure(res));
   if (!ok) return;
 
   if (res.status === 202) {
     ordersAccepted.add(1);
+    return;
+  }
+  if (res.status === 429) {
+    ordersThrottled.add(1);
     return;
   }
   let msg = '';
@@ -197,7 +208,7 @@ function tallyOrder(res) {
   } catch (e) {
     /* keep '' */
   }
-  if (msg === 'Product sold out') ordersSoldout.add(1);
+  if (msg === 'Sold out' || msg === 'Product sold out') ordersSoldout.add(1);
   else ordersDuplicate.add(1);
 }
 
@@ -347,6 +358,7 @@ export function handleSummary(data) {
     `    orders accepted .. ${g('orders_accepted', 'count')}   (expect 50)`,
     `    409 sold out ..... ${g('orders_soldout', 'count')}`,
     `    409 duplicate .... ${g('orders_duplicate', 'count')}`,
+    `    429 in-flight .... ${g('orders_throttled_429', 'count')}`,
     `    p95 latency ...... ${f2(g(wd, 'p(95)'))} ms   (max ${f2(g(wd, 'max'))} ms)`,
     `    checks .......... ${f2(g('checks{scenario:write_load}', 'rate') * 100)}% pass`,
     `    queue backlog .... peak ${g('write_queue_backlog', 'max')} (waiting+active, sampled)`,

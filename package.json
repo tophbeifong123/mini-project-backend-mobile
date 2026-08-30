@@ -28,7 +28,9 @@
     "seed": "ts-node -r tsconfig-paths/register src/seed/seed.ts",
     "seed:redis": "ts-node -r tsconfig-paths/register src/seed/seed-redis.ts",
     "reset": "ts-node -r tsconfig-paths/register src/database/reset.ts",
-    "migrate:seed": "ts-node -r tsconfig-paths/register src/database/migrate-and-seed.ts"
+    "migrate:seed": "ts-node -r tsconfig-paths/register src/database/migrate-and-seed.ts",
+    "test:load": "k6 run loadtest.js",
+    "test:load:all": "node loadtest/run-all.js"
   },
   "dependencies": {
     "@bull-board/api": "^9.4.0",

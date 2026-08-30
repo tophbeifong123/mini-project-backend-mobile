@@ -30,6 +30,7 @@ import { textSummary } from 'https://jslib.k6.io/k6-summary/0.0.3/index.js';
 
 const BASE_URL = (__ENV.BASE_URL || 'http://localhost:8080').replace(/\/+$/, '');
 const TOTAL_USERS = 500;
+const USER_PREFIX = __ENV.USER_PREFIX || 'user-';
 const TARGET_PRODUCT = 'p-1001';
 const TOTAL_PRODUCTS = 20;
 const OVERFLOW_RATE = 0.05;
@@ -38,14 +39,18 @@ const REQ_PARAMS = { timeout: REQ_TIMEOUT, tags: { expected_response: 'true' } }
 
 const orderAccepted = new Counter('order_accepted_total');
 const orderConflicted = new Counter('order_conflicted_total');
+const orderThrottled = new Counter('orders_throttled_429');
 const httpFailures = new Rate('http_infra_failures');
 
 function isInfraFailure(res) {
   if (res.status === 0) return true;
   if (res.status >= 500) return true;
-  if (res.status >= 400 && res.status !== 409) return true;
+  if (res.status >= 400 && res.status !== 409 && res.status !== 429) return true;
   return false;
 }
+
+// 429 is the documented in-flight-lock response, not an infrastructure failure.
+http.setResponseCallback(http.expectedStatuses(200, 202, 409, 429));
 
 const LIMIT_OPTIONS = [5, 10, 15, 20, 25, 50];
 
@@ -114,15 +119,15 @@ export function setup() {
   for (let i = 1; i <= TOTAL_USERS; i++) {
     const res = http.post(
       `${BASE_URL}/api/v1/auth/token`,
-      JSON.stringify({ userId: `user-${i}` }),
+      JSON.stringify({ userId: `${USER_PREFIX}${i}` }),
       { headers: { 'Content-Type': 'application/json' } },
     );
     if (res.status !== 200) {
-      throw new Error(`Setup failed: cannot fetch JWT for user-${i} (status=${res.status})`);
+      throw new Error(`Setup failed: cannot fetch JWT for ${USER_PREFIX}${i} (status=${res.status})`);
     }
     const body = res.json();
     if (!body.accessToken) {
-      throw new Error(`Setup failed: no accessToken in response for user-${i}`);
+      throw new Error(`Setup failed: no accessToken in response for ${USER_PREFIX}${i}`);
     }
     tokens.push(body.accessToken);
   }
@@ -193,18 +198,21 @@ export function writeScenario(data) {
       },
     );
     const ok = check(res, {
-      'status is 202 or 409': (r) => r.status === 202 || r.status === 409,
+      'status is 202, 409, or 429': (r) =>
+        r.status === 202 || r.status === 409 || r.status === 429,
     });
     httpFailures.add(isInfraFailure(res));
     if (!ok) continue;
     if (res.status === 202) orderAccepted.add(1);
     else if (res.status === 409) orderConflicted.add(1);
+    else if (res.status === 429) orderThrottled.add(1);
   }
 }
 
 export function handleSummary(data) {
   const accepted = data.metrics.order_accepted_total?.values?.count ?? 0;
   const conflicted = data.metrics.order_conflicted_total?.values?.count ?? 0;
+  const throttled = data.metrics.orders_throttled_429?.values?.count ?? 0;
   const infraRate = data.metrics.http_infra_failures?.values?.rate ?? 0;
 
   const banner = [
@@ -212,8 +220,9 @@ export function handleSummary(data) {
     '============================================================',
     '  FLASH SALE LOAD TEST — BUSINESS SUMMARY',
     '============================================================',
-    `  orders accepted (HTTP 202) .........: ${accepted}`,
-    `  orders conflicted (HTTP 409) .......: ${conflicted}`,
+  `  orders accepted (HTTP 202) .........: ${accepted}`,
+  `  orders conflicted (HTTP 409) .......: ${conflicted}`,
+  `  orders throttled (HTTP 429) ........: ${throttled}`,
     `  infra failure rate (5xx/timeout/4xx): ${(infraRate * 100).toFixed(2)}%`,
     '============================================================',
     '',
