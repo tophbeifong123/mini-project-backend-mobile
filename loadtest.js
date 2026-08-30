@@ -29,8 +29,15 @@ const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '60s';
 // สินค้าเป้าหมายของ write burst — availableStock = 50 (products-seed.json)
 const TARGET_PRODUCT_ID = __ENV.TARGET_PRODUCT_ID || 'p-1001';
 
-// จำนวน user ที่จะ mint JWT ให้ใน setup()
-const USER_COUNT = Number(__ENV.USER_COUNT || 500);
+// --- ขนาดโหลด (ปรับจาก command line ได้ ค่า default = สเปกในโจทย์) ------------
+//   k6 run -e WRITE_VUS=10 -e WRITE_ITERATIONS=1 loadtest.js   # ให้สำเร็จแค่ 10 คน
+const READ_VUS = Number(__ENV.READ_VUS || 1000);
+const READ_DURATION = __ENV.READ_DURATION || '30s';
+const WRITE_VUS = Number(__ENV.WRITE_VUS || 500);
+const WRITE_ITERATIONS = Number(__ENV.WRITE_ITERATIONS || 1);
+
+// จำนวน user ที่จะ mint JWT ให้ใน setup() — ต้อง >= WRITE_VUS ไม่งั้น token จะถูกใช้ซ้ำ
+const USER_COUNT = Number(__ENV.USER_COUNT || WRITE_VUS);
 
 // จำนวนสินค้าทั้งหมดใน seed — ใช้คำนวณช่วง page ที่ถูกต้อง
 const TOTAL_PRODUCTS = Number(__ENV.TOTAL_PRODUCTS || 20);
@@ -60,8 +67,8 @@ export const options = {
     read_heavy: {
       // 1,000 concurrent readers
       executor: 'constant-vus',
-      vus: 1000,
-      duration: '60s',
+      vus: READ_VUS,
+      duration: READ_DURATION,
       exec: 'readProducts',
       startTime: '5s',
       tags: { scenario_kind: 'read' },
@@ -69,8 +76,8 @@ export const options = {
     write_burst: {
       // 500 คนแย่ง 50 ชิ้น พร้อมกัน — iterations: 3 = จำลองการ "กดรัว"
       executor: 'per-vu-iterations',
-      vus: 500,
-      iterations: 3,
+      vus: WRITE_VUS,
+      iterations: WRITE_ITERATIONS,
       exec: 'placeOrder',
       startTime: '10s',
       maxDuration: '20s',

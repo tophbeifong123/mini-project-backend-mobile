@@ -219,6 +219,8 @@ export class OrdersService {
    * คืน `null` เมื่ออ่านไม่ได้หรือไม่มี job — ผู้เรียกต้องตีความว่า "ยืนยันไม่ได้"
    * ไม่ใช่ "เป็นของคนอื่น" (ดูเหตุผลที่จุดเรียกใช้)
    */
+  
+  //  อ่าน job กลับจาก Redis ด้วย jobId แล้วคืน Job หรือ null ใช้งาน BullMQ เจอ jobId ซ้ำแล้วคืน job
   private async readStoredJob(
     jobId: string,
   ): Promise<Job<OrderJobData> | null> {
