@@ -187,14 +187,14 @@ flowchart TD
 | **ศัพท์** | **Reverse Proxy** (ตัวกลางที่รับแทน backend) · **Upstream** (backend ที่มันกระจายไปหา) · **`least_conn`** (ส่งให้ตัวที่มีงานค้างน้อยสุด ต่างจาก round-robin ที่ส่งวนไปเรื่อยๆ ไม่สนว่าใครยุ่ง) · **Keepalive** (ใช้ TCP connection เดิมซ้ำ ไม่ handshake ใหม่ทุกครั้ง) |
 
 **💥 ถ้าทำผิดจะพังยังไง**
-ใน `nginx.conf` ถ้าใส่ `keepalive 128` แต่ **ลืม** 2 บรรทัดนี้:
+ใน `nginx.conf` ถ้าใส่ `keepalive 768` แต่ **ลืม** 2 บรรทัดนี้:
 
 ```nginx
 proxy_http_version 1.1;
 proxy_set_header Connection "";
 ```
 
-Nginx จะคุยกับ app-1..6 ด้วย HTTP/1.0 ซึ่งปิด connection ทุกครั้ง → `keepalive 128` **ไม่ทำงานเลยแม้แต่นิดเดียว** → ทุก request เสีย TCP handshake ใหม่ (~1–3ms) × 1,000 VUs
+Nginx จะคุยกับ app-1..6 ด้วย HTTP/1.0 ซึ่งปิด connection ทุกครั้ง → `keepalive 768` **ไม่ทำงานเลยแม้แต่นิดเดียว** → ทุก request เสีย TCP handshake ใหม่ (~1–3ms) × 1,000 VUs
 
 [`architecture.md` §2](architecture.md) เรียกอันนี้ว่า **"ตัวฉุด p95 อันดับ 1"** — คือจะเห็นตัวเลขแย่ในรายงานโดยไม่รู้สาเหตุ
 
@@ -580,7 +580,7 @@ flowchart TD
     Q1 -->|✅| R202
     R202 -.->|"HTTP response ออกไปแล้ว<br/>ลูกค้าไม่รออีกต่อไป"| W1
 
-    subgraph T3["Tier 3 — Worker → PostgreSQL Primary เท่านั้น · concurrency 5 ต่อ node (×6 = 30)"]
+    subgraph T3["Tier 3 — Worker → PostgreSQL Primary เท่านั้น · concurrency 1 ต่อ node (×6 = 6)"]
         W1["UPDATE products<br/>SET remaining_stock = remaining_stock - 1<br/>WHERE id = $1 AND remaining_stock &gt; 0"]
         W2{"affected === 0 ?"}
         W3["INSERT INTO orders"]

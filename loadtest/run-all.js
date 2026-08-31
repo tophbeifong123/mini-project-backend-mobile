@@ -149,6 +149,13 @@ function command(binary, args, options = {}) {
 }
 
 function detectContainerEngine() {
+  let parsed;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {}
+  if (parsed && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
+    return 'remote-ssh';
+  }
   for (const candidate of ['podman', 'docker']) {
     try {
       const result = command(candidate, ['info'], { stdio: 'ignore' });
@@ -218,7 +225,7 @@ async function resetMetrics() {
     method: 'POST',
     auth: true,
   });
-  if (response.status !== 200) {
+  if (response.status !== 200 && response.status !== 404) {
     throw new Error(
       `Could not reset observability metrics (status=${response.status}${
         response.error ? `, ${response.error}` : ''
@@ -228,6 +235,20 @@ async function resetMetrics() {
 }
 
 function resetBusinessData(engine) {
+  let parsed;
+  try {
+    parsed = new URL(baseUrl);
+  } catch {}
+  if (parsed && parsed.hostname !== 'localhost' && parsed.hostname !== '127.0.0.1') {
+    const remoteCmd = `ssh cloud@${parsed.hostname} "docker exec -i -e RESET_CONFIRM=yes ${appContainer} node dist/database/reset.js && docker exec -i fs-redis-cache redis-cli FLUSHDB"`;
+    const result = spawnSync(remoteCmd, { shell: true, encoding: 'utf8' });
+    if (result.status !== 0) {
+      throw new Error(
+        `Reset failed on remote host via SSH: ${result.stderr || result.stdout || `exit ${result.status}`}`,
+      );
+    }
+    return;
+  }
   const result = command(engine, [
     'exec',
     '-e',

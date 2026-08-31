@@ -56,7 +56,7 @@ digraph arch {
   edge  [fontname="Sarabun", fontsize=10, color="#33506E"];
 
   K6    [label="k6 Load Generator\n1,000 Read VUs + 500 Write VUs", fillcolor="#FFF3D6", color="#9A7B15"];
-  NGINX [label="Nginx Reverse Proxy :8080\nleast_conn · keepalive 128", fillcolor="#E4F0E4", color="#3F6B3F"];
+  NGINX [label="Nginx Reverse Proxy :8080\nleast_conn · keepalive 768", fillcolor="#E4F0E4", color="#3F6B3F"];
   APPS  [label="NestJS × 6 instances (stateless)\napp-1 · app-2 · app-3 · app-4 · app-5 · app-6"];
 
   RCACHE [label="redis-cache :6379\nallkeys-lru\nเก็บ metadata เท่านั้น", shape=cylinder, style=filled, fillcolor="#FDECEC", color="#A34B4B"];
@@ -78,7 +78,7 @@ digraph arch {
 
 | องค์ประกอบ | เหตุผลที่ต้องมี |
 |---|---|
-| Nginx (least_conn, keepalive 128) | กระจายโหลดไปตัวที่มี connection ค้างน้อยที่สุด · keepalive กันการสร้าง TCP handshake ใหม่ทุกคำขอ |
+| Nginx (least_conn, keepalive 768) | กระจายโหลดไปตัวที่มี connection ค้างน้อยที่สุด · keepalive กันการสร้าง TCP handshake ใหม่ทุกคำขอ |
 | NestJS × 6 instances | stateless ทั้งหมด ไม่มี session/counter ใน RAM จึงขยายจำนวนได้อิสระโดยคำตอบไม่เพี้ยน |
 | redis-cache (allkeys-lru) | เก็บ metadata ที่แทบไม่เปลี่ยน หายได้ไม่เสียหาย เพราะ fallback ไป DB ได้ |
 | redis-data (noeviction + AOF) | เก็บ stock counter, lock, คิวงาน ซึ่งหายไม่ได้เด็ดขาด จึงต้องแยกอินสแตนซ์ออกจากตัวแคช |

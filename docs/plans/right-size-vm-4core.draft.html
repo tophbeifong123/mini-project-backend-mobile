@@ -1,0 +1,460 @@
+<title>Capacity Budget 4-Core</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+Thai:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root{
+    --paper:#F4F7FA; --card:#FFFFFF; --line:#D9E2EE; --line-soft:#EAF0F7;
+    --ink:#0F1620; --ink-2:#4A5872; --ink-3:#7887A0;
+    --accent:#0D6E78; --accent-soft:#E2F1F2; --accent-line:#9CCFD3;
+    --over:#B3261E; --over-soft:#FCE9E7;
+    --warn:#8A5A00; --warn-soft:#FCF2DD;
+    --ok:#1A7F52; --ok-soft:#E3F4EB;
+    --shadow:0 1px 2px rgba(15,22,32,.05), 0 8px 24px -12px rgba(15,22,32,.18);
+  }
+  @media (prefers-color-scheme: dark){
+    :root:not([data-theme="light"]){
+      --paper:#0C1219; --card:#131C26; --line:#26313F; --line-soft:#1C2531;
+      --ink:#E7EEF6; --ink-2:#A3B2C6; --ink-3:#77879D;
+      --accent:#4FD1C5; --accent-soft:#16302F; --accent-line:#2C5F5D;
+      --over:#FF7A6E; --over-soft:#331A18;
+      --warn:#E3B341; --warn-soft:#302615;
+      --ok:#59D397; --ok-soft:#14301F;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#0C1219; --card:#131C26; --line:#26313F; --line-soft:#1C2531;
+    --ink:#E7EEF6; --ink-2:#A3B2C6; --ink-3:#77879D;
+    --accent:#4FD1C5; --accent-soft:#16302F; --accent-line:#2C5F5D;
+    --over:#FF7A6E; --over-soft:#331A18;
+    --warn:#E3B341; --warn-soft:#302615;
+    --ok:#59D397; --ok-soft:#14301F;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -12px rgba(0,0,0,.7);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    background:var(--paper); color:var(--ink);
+    font-family:'IBM Plex Sans Thai', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    font-size:15.5px; line-height:1.65; margin:0; -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1140px; margin:0 auto; padding:44px 26px 90px}
+  .mono{font-family:'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace; font-variant-numeric:tabular-nums}
+
+  .eyebrow{font-family:'IBM Plex Mono', monospace; font-size:11.5px; font-weight:600; letter-spacing:.13em; text-transform:uppercase; color:var(--accent)}
+  h1{font-size:38px; line-height:1.18; font-weight:700; margin:10px 0 12px; letter-spacing:-.02em; text-wrap:balance}
+  h2{font-size:22px; font-weight:600; margin:0 0 4px; letter-spacing:-.01em; text-wrap:balance}
+  h3{font-size:15.5px; font-weight:600; margin:0 0 8px}
+  p{margin:0 0 12px; max-width:74ch; color:var(--ink-2)}
+  .lede{font-size:17px; color:var(--ink-2); max-width:70ch}
+  a{color:var(--accent)}
+
+  section{margin-top:52px}
+  .shead{display:flex; align-items:baseline; gap:12px; padding-bottom:12px; margin-bottom:22px; border-bottom:1px solid var(--line)}
+  .snum{font-family:'IBM Plex Mono',monospace; font-size:12px; font-weight:600; color:var(--ink-3); padding-top:4px}
+
+  .card{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:22px 24px; box-shadow:var(--shadow)}
+  .grid2{display:grid; grid-template-columns:1fr 1fr; gap:20px}
+  .grid3{display:grid; grid-template-columns:repeat(3,1fr); gap:16px}
+  @media(max-width:880px){.grid2,.grid3{grid-template-columns:1fr}}
+
+  .verdict{border-left:3px solid var(--accent); background:var(--card); border-radius:10px; padding:22px 26px; box-shadow:var(--shadow); border-top:1px solid var(--line); border-right:1px solid var(--line); border-bottom:1px solid var(--line)}
+
+  .quote{
+    border-left:3px solid var(--accent); background:var(--accent-soft); border-radius:0 8px 8px 0;
+    padding:14px 18px; margin:0 0 14px; font-size:14px; color:var(--ink-2);
+  }
+  .quote .src{display:block; margin-top:8px; font-family:'IBM Plex Mono',monospace; font-size:11.5px; color:var(--ink-3)}
+
+  .meter{margin:0 0 18px}
+  .meter:last-child{margin-bottom:0}
+  .meter-top{display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:7px}
+  .meter-label{font-size:13.5px; font-weight:600; color:var(--ink)}
+  .meter-val{font-family:'IBM Plex Mono',monospace; font-size:13px; font-variant-numeric:tabular-nums}
+  .track{position:relative; height:26px; background:var(--line-soft); border:1px solid var(--line); border-radius:5px; overflow:hidden}
+  .fill{position:absolute; inset:0 auto 0 0; border-radius:4px 0 0 4px}
+  .fill.over{background:var(--over)} .fill.ok{background:var(--ok)} .fill.warn{background:var(--warn)}
+  .capline{position:absolute; top:-4px; bottom:-4px; width:2px; background:var(--ink); opacity:.85}
+  .capnote{font-size:11.5px; color:var(--ink-3); margin-top:6px; font-family:'IBM Plex Mono',monospace}
+
+  .tw{overflow-x:auto; border:1px solid var(--line); border-radius:10px; background:var(--card); box-shadow:var(--shadow)}
+  table{border-collapse:collapse; width:100%; font-size:13.5px; min-width:600px}
+  th{text-align:left; padding:11px 14px; font-size:11px; font-weight:600; letter-spacing:.08em; text-transform:uppercase; color:var(--ink-3); border-bottom:1px solid var(--line); white-space:nowrap}
+  td{padding:10px 14px; border-bottom:1px solid var(--line-soft); color:var(--ink-2); vertical-align:top}
+  tbody tr:last-child td{border-bottom:none}
+  td.n, th.n{text-align:right; font-family:'IBM Plex Mono',monospace; font-variant-numeric:tabular-nums; white-space:nowrap}
+  td strong{color:var(--ink); font-weight:600}
+
+  .pill{display:inline-block; padding:1px 8px; border-radius:999px; font-size:11px; font-weight:600; font-family:'IBM Plex Mono',monospace; white-space:nowrap}
+  .p-over{background:var(--over-soft); color:var(--over)}
+  .p-ok{background:var(--ok-soft); color:var(--ok)}
+  .p-warn{background:var(--warn-soft); color:var(--warn)}
+  .p-acc{background:var(--accent-soft); color:var(--accent)}
+
+  pre{background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px; overflow-x:auto; font-family:'IBM Plex Mono',monospace; font-size:12.5px; line-height:1.6; margin:0; color:var(--ink-2); box-shadow:var(--shadow)}
+  .add{color:var(--ok)} .del{color:var(--over)} .ctx{color:var(--ink-3)}
+
+  .stage{background:var(--card); border:1px solid var(--line); border-radius:10px; box-shadow:var(--shadow); padding:20px 22px; margin-bottom:16px}
+  .stage-top{display:flex; align-items:center; gap:12px; margin-bottom:10px; flex-wrap:wrap}
+  .stage-n{font-family:'IBM Plex Mono',monospace; font-size:11px; font-weight:600; color:var(--accent); background:var(--accent-soft); border:1px solid var(--accent-line); padding:2px 9px; border-radius:5px}
+  .stage h3{margin:0; flex:1; min-width:200px}
+  .stage ul{margin:8px 0 0; padding-left:18px}
+  .stage li{font-size:14px; color:var(--ink-2); margin-bottom:6px}
+  .stage li:last-child{margin-bottom:0}
+
+  ul.plain{margin:0; padding-left:18px}
+  ul.plain li{margin-bottom:7px; color:var(--ink-2); font-size:14px}
+  ul.plain li:last-child{margin-bottom:0}
+
+  .note{background:var(--warn-soft); border:1px solid color-mix(in srgb, var(--warn) 30%, transparent); border-radius:8px; padding:14px 16px; font-size:13.5px; color:var(--ink-2)}
+  .note strong{color:var(--ink)}
+  .note.acc{background:var(--accent-soft); border-color:var(--accent-line)}
+
+  figure{margin:0}
+  figcaption{font-size:12px; color:var(--ink-3); margin-top:10px; font-family:'IBM Plex Mono',monospace}
+  svg{display:block; width:100%; height:auto}
+</style>
+
+<div class="wrap">
+
+  <header>
+    <div class="eyebrow">Implementation plan · draft v2 · แก้ตาม review 2 รอบ</div>
+    <h1>เอา config กลับไปตามสเปก แล้วค่อยวัด</h1>
+    <p class="lede">
+      <span class="mono">architecture.md</span> §8.1 ระบุ VM <strong>4 core / 6 GB</strong> ไว้อยู่แล้ว พร้อมสเปกของแต่ละ service
+      แต่ <span class="mono">docker-compose.yml</span> ปัจจุบันหลุดไปจากนั้นมาก แผนนี้คือการดึงกลับ —
+      ไม่ใช่การออกแบบใหม่ — โดยแบ่งเป็น 4 ระยะที่ความเสี่ยงไล่จากศูนย์ขึ้นไป
+    </p>
+  </header>
+
+  <section style="margin-top:34px">
+    <div class="verdict">
+      <h2 style="margin-bottom:12px">ข้อสรุปก่อนอ่านต่อ</h2>
+      <p>
+        <strong style="color:var(--ink)">config หลุดจากสเปกของตัวเอง</strong> — §8.1 เขียนว่า
+        <span class="mono">app-N: mem_limit 512m, cpus 0.75</span> และ <strong>6 instance</strong>
+        แต่ของจริงคือ <span class="mono">cpus 1.5</span> และ <strong>8 instance</strong>
+        ทำให้ <span class="mono">mem_limit</span> รวมเป็น <span class="mono">7,424 MB</span>
+        ซึ่ง <strong style="color:var(--over)">เกิน RAM ทั้งเครื่อง (6,144 MB)</strong> — นี่คือข้อเดียวที่พิสูจน์ได้ด้วยเลขล้วนว่าต้องแก้
+      </p>
+      <p style="margin-bottom:0">
+        <strong style="color:var(--ink)">แต่การแก้ config จะไม่ทำให้ p95 ที่เห็นในผล k6 ดีขึ้นเท่าไหร่</strong>
+        เพราะสาเหตุจริงคือยิงเกินเพดานเครื่อง ตัวที่น่าจะให้ผลมากที่สุดและ<em>เสี่ยงศูนย์</em>คือแก้ pacing ของ k6 ก่อน
+        (ระยะ 0) — จึงต้องทำก่อนแตะ <span class="mono">docker-compose.yml</span> เลย
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><span class="snum">01</span><h2>สเปกเขียนไว้แล้ว — แค่ไม่ได้ทำตาม</h2></div>
+
+    <div class="quote">
+      “vCPU <strong>4 core</strong> — 6 Node process (app) + nginx + postgres ×2 + redis ×2 · RAM <strong>6 GB</strong> ·
+      app-N: <span class="mono">mem_limit 512m</span>, <span class="mono">cpus 0.75</span>”
+      <span class="src">docs/Architecture/architecture.md §8.1 (2026-08-28)</span>
+    </div>
+    <div class="quote">
+      “แต่ละ instance คือ 1 Node process = 1 JS thread — <strong>6 process บน 4 core คือ oversubscribe อยู่แล้ว</strong>
+      เพิ่มเป็น 8–10 จะได้ context switch มากขึ้น ไม่ใช่ throughput”
+      <span class="src">docs/Architecture/architecture.md §8.2 ข้อ 1</span>
+    </div>
+    <div class="quote">
+      “<span class="mono">redis-data</span> เป็น single thread ตัวเดียวที่รับงานทั้ง 4 อย่างพร้อมกัน:
+      <span class="mono">gatekeeper.lua</span> · BullMQ · <span class="mono">MGET stock:*</span> ทุก read request ไม่เคยแคช · AOF fsync”
+      <span class="src">docs/Architecture/architecture.md §8.2 ข้อ 2 — คอขวดอันดับ 2 ของระบบ</span>
+    </div>
+
+    <div class="tw" style="margin-top:20px">
+      <table>
+        <thead><tr><th>เรื่อง</th><th>สเปกเขียนไว้</th><th>ของจริงตอนนี้</th><th>ผล</th></tr></thead>
+        <tbody>
+          <tr><td><strong>จำนวน instance</strong></td><td class="n">6</td><td class="n" style="color:var(--over)">8</td><td>ขัด §8.2 ข้อ 1 โดยตรง · pool 48 → 64</td></tr>
+          <tr><td><strong>app cpus</strong></td><td class="n">0.75</td><td class="n" style="color:var(--over)">1.5</td><td>เพดาน app tier 4.5 → 12.0</td></tr>
+          <tr><td><strong>mem_limit รวม</strong></td><td class="n">≤ 6,144m</td><td class="n" style="color:var(--over)">7,424m</td><td>เกิน RAM เครื่อง 121%</td></tr>
+          <tr><td><strong>README topology</strong></td><td class="n">6</td><td class="n" style="color:var(--over)">3</td><td><span class="mono">README.md:37-39, 85-86</span> ค้างที่ 3</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><span class="snum">02</span><h2>งบ RAM — ตัวเดียวที่พิสูจน์ได้ด้วยเลขล้วน</h2></div>
+    <div class="grid2">
+      <div class="card">
+        <h3 style="margin-bottom:16px">Memory <span class="pill p-over">ต้องแก้</span></h3>
+        <div class="meter">
+          <div class="meter-top"><span class="meter-label">ตอนนี้ — mem_limit รวม</span><span class="meter-val" style="color:var(--over)">7,424 MB · 121%</span></div>
+          <div class="track"><div class="fill over" style="width:100%"></div><div class="capline" style="left:82.8%"></div></div>
+          <div class="capnote">เส้นดำ = 6,144 MB · เกินไป 1,280 MB</div>
+        </div>
+        <div class="meter">
+          <div class="meter-top"><span class="meter-label">ที่เสนอ (ชั่วคราว)</span><span class="meter-val" style="color:var(--ok)">5,056 MB · 82%</span></div>
+          <div class="track"><div class="fill ok" style="width:82.3%"></div><div class="capline" style="left:100%"></div></div>
+          <div class="capnote">เหลือ 1,088 MB ให้ OS + page cache</div>
+        </div>
+      </div>
+      <div class="card">
+        <h3 style="margin-bottom:16px">CPU <span class="pill p-warn">เพดาน ไม่ใช่การจอง</span></h3>
+        <div class="meter">
+          <div class="meter-top"><span class="meter-label">ตอนนี้ — cpus รวม</span><span class="meter-val" style="color:var(--over)">18.0 / 4 core</span></div>
+          <div class="track"><div class="fill over" style="width:100%"></div><div class="capline" style="left:22.2%"></div></div>
+          <div class="capnote">เพดานรวม 450% ของเครื่อง</div>
+        </div>
+        <div class="meter">
+          <div class="meter-top"><span class="meter-label">ที่เสนอ</span><span class="meter-val" style="color:var(--warn)">8.5 / 4 core</span></div>
+          <div class="track"><div class="fill warn" style="width:100%"></div><div class="capline" style="left:47%"></div></div>
+          <div class="capnote">app tier เหลือ 4.5 — กันไม่ให้กลืน datastore</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="note acc" style="margin-top:20px">
+      <strong>สิ่งที่เพดาน CPU ทำได้จริง —</strong> <span class="mono">cpus:</span> เป็นโควตาต่อ cgroup ไม่ใช่การจอง
+      คอนเทนเนอร์หนึ่งไม่ถูก throttle เพราะโควตาของอีกตัว ตัวเลขรวม 8.5 บน 4 core จึงไม่ได้ทำอะไรโดยตรง
+      ประโยชน์จริงคือ <strong>เพดาน app tier ที่ 4.5 กันไม่ให้ 6 Node process กลืน CPU จนไม่เหลือให้
+      <span class="mono">redis-data</span></strong> ซึ่ง §8.2 ระบุว่าเป็นคอขวดอันดับ 2
+      · ⚠️ <span class="mono">docker compose</span> ตั้ง <em>ลำดับความสำคัญ</em> ระหว่างคอนเทนเนอร์ไม่ได้ (ไม่มี <span class="mono">cpu_shares</span>)
+      เวลาแย่ง CPU จริง scheduler มอง app instance กับ redis-data เท่ากัน — ถ้ายังไม่พอ ค่อยพิจารณา <span class="mono">cpuset</span> แยก core ให้ datastore
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><span class="snum">03</span><h2>โครงสร้าง — ก่อน / หลัง</h2></div>
+    <div class="grid2">
+      <figure class="card">
+        <svg viewBox="0 0 420 300" role="img" aria-label="โครงสร้างปัจจุบัน 8 instance">
+          <g font-family="IBM Plex Mono, monospace" font-size="10">
+            <rect x="120" y="8" width="180" height="32" rx="6" fill="var(--over-soft)" stroke="var(--over)"/>
+            <text x="210" y="23" text-anchor="middle" fill="var(--ink)" font-weight="600">nginx · cpus 2.0</text>
+            <text x="210" y="35" text-anchor="middle" fill="var(--over)">worker_processes 4</text>
+            <path d="M210 40 L210 58" stroke="var(--ink-3)" stroke-width="1.2" marker-end="url(#b1)"/>
+            <rect x="16" y="58" width="388" height="74" rx="6" fill="var(--over-soft)" stroke="var(--over)"/>
+            <text x="210" y="75" text-anchor="middle" fill="var(--ink)" font-weight="600">NestJS × 8 instances</text>
+            <g fill="var(--card)" stroke="var(--line)">
+              <rect x="28" y="84" width="42" height="19" rx="4"/><rect x="76" y="84" width="42" height="19" rx="4"/>
+              <rect x="124" y="84" width="42" height="19" rx="4"/><rect x="172" y="84" width="42" height="19" rx="4"/>
+              <rect x="220" y="84" width="42" height="19" rx="4"/><rect x="268" y="84" width="42" height="19" rx="4"/>
+              <rect x="316" y="84" width="42" height="19" rx="4"/><rect x="364" y="84" width="30" height="19" rx="4"/>
+            </g>
+            <g fill="var(--ink-2)" text-anchor="middle" font-size="9">
+              <text x="49" y="97">app-1</text><text x="97" y="97">app-2</text><text x="145" y="97">app-3</text><text x="193" y="97">app-4</text>
+              <text x="241" y="97">app-5</text><text x="289" y="97">app-6</text><text x="337" y="97">app-7</text><text x="379" y="97">app-8</text>
+            </g>
+            <text x="210" y="121" text-anchor="middle" fill="var(--over)" font-weight="600">cpus 1.5 × 8 = 12.0 · pool 64 conn</text>
+            <path d="M210 132 L210 148" stroke="var(--ink-3)" stroke-width="1.2" marker-end="url(#b1)"/>
+            <g fill="var(--card)" stroke="var(--line)">
+              <rect x="16" y="148" width="90" height="40" rx="6"/><rect x="114" y="148" width="90" height="40" rx="6"/>
+              <rect x="212" y="148" width="94" height="40" rx="6"/><rect x="314" y="148" width="90" height="40" rx="6"/>
+            </g>
+            <g text-anchor="middle" font-size="9" fill="var(--ink-2)">
+              <text x="61" y="163">redis-cache</text><text x="61" y="177" fill="var(--over)">1.0 · 512m</text>
+              <text x="159" y="163">redis-data</text><text x="159" y="177" fill="var(--over)">1.0 · 512m</text>
+              <text x="259" y="163">pg-primary</text><text x="259" y="177" fill="var(--over)">1.0 · 1024m</text>
+              <text x="359" y="163">pg-replica</text><text x="359" y="177" fill="var(--over)">1.0 · 1024m</text>
+            </g>
+            <rect x="16" y="206" width="388" height="76" rx="6" fill="var(--over-soft)" stroke="var(--over)"/>
+            <text x="210" y="225" text-anchor="middle" fill="var(--over)" font-weight="600" font-size="12">cpus 18.0 · mem_limit 7,424 MB</text>
+            <text x="210" y="243" text-anchor="middle" fill="var(--ink-2)">VM = 4 core / 6,144 MB</text>
+            <text x="210" y="259" text-anchor="middle" fill="var(--over)">RAM เกินเพดานเครื่อง 121%</text>
+            <text x="210" y="274" text-anchor="middle" fill="var(--over)">ขัด architecture.md §8.1 · §8.2</text>
+          </g>
+          <defs><marker id="b1" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="var(--ink-3)"/></marker></defs>
+        </svg>
+        <figcaption>ตอนนี้ — หลุดจากสเปกทั้ง instance count และ resource</figcaption>
+      </figure>
+
+      <figure class="card">
+        <svg viewBox="0 0 420 300" role="img" aria-label="โครงสร้างที่เสนอ 6 instance">
+          <g font-family="IBM Plex Mono, monospace" font-size="10">
+            <rect x="120" y="8" width="180" height="32" rx="6" fill="var(--ok-soft)" stroke="var(--ok)"/>
+            <text x="210" y="23" text-anchor="middle" fill="var(--ink)" font-weight="600">nginx · cpus 1.0</text>
+            <text x="210" y="35" text-anchor="middle" fill="var(--ok)">worker_processes 2</text>
+            <path d="M210 40 L210 58" stroke="var(--ink-3)" stroke-width="1.2" marker-end="url(#b2)"/>
+            <rect x="16" y="58" width="388" height="74" rx="6" fill="var(--ok-soft)" stroke="var(--ok)"/>
+            <text x="210" y="75" text-anchor="middle" fill="var(--ink)" font-weight="600">NestJS × 6 instances <tspan fill="var(--ink-3)">(A/B กับ 4)</tspan></text>
+            <g fill="var(--card)" stroke="var(--line)">
+              <rect x="40" y="84" width="52" height="19" rx="4"/><rect x="100" y="84" width="52" height="19" rx="4"/>
+              <rect x="160" y="84" width="52" height="19" rx="4"/><rect x="220" y="84" width="52" height="19" rx="4"/>
+              <rect x="280" y="84" width="52" height="19" rx="4"/><rect x="340" y="84" width="44" height="19" rx="4"/>
+            </g>
+            <g fill="var(--ink-2)" text-anchor="middle" font-size="9">
+              <text x="66" y="97">app-1</text><text x="126" y="97">app-2</text><text x="186" y="97">app-3</text>
+              <text x="246" y="97">app-4</text><text x="306" y="97">app-5</text><text x="362" y="97">app-6</text>
+            </g>
+            <text x="210" y="121" text-anchor="middle" fill="var(--ok)" font-weight="600">cpus 0.75 × 6 = 4.5 · pool 48 conn ✓</text>
+            <path d="M210 132 L210 148" stroke="var(--ink-3)" stroke-width="1.2" marker-end="url(#b2)"/>
+            <g fill="var(--card)" stroke="var(--line)">
+              <rect x="16" y="148" width="90" height="40" rx="6"/>
+              <rect x="114" y="148" width="90" height="40" rx="6" stroke="var(--accent)" stroke-width="1.6"/>
+              <rect x="212" y="148" width="94" height="40" rx="6"/><rect x="314" y="148" width="90" height="40" rx="6"/>
+            </g>
+            <g text-anchor="middle" font-size="9" fill="var(--ink-2)">
+              <text x="61" y="163">redis-cache</text><text x="61" y="177" fill="var(--ok)">0.5 · 320m</text>
+              <text x="159" y="163" fill="var(--accent)" font-weight="600">redis-data</text><text x="159" y="177" fill="var(--accent)">1.0 · คงเดิม</text>
+              <text x="259" y="163">pg-primary</text><text x="259" y="177" fill="var(--ok)">1.0 · 768m</text>
+              <text x="359" y="163">pg-replica</text><text x="359" y="177" fill="var(--ok)">0.5 · 640m</text>
+            </g>
+            <rect x="16" y="206" width="388" height="76" rx="6" fill="var(--ok-soft)" stroke="var(--ok)"/>
+            <text x="210" y="225" text-anchor="middle" fill="var(--ok)" font-weight="600" font-size="12">cpus 8.5 · mem_limit 5,056 MB</text>
+            <text x="210" y="243" text-anchor="middle" fill="var(--ink-2)">VM = 4 core / 6,144 MB</text>
+            <text x="210" y="259" text-anchor="middle" fill="var(--ok)">RAM 82% · headroom 1,088 MB</text>
+            <text x="210" y="274" text-anchor="middle" fill="var(--accent)">redis-data ไม่ลด — คอขวดอันดับ 2</text>
+          </g>
+          <defs><marker id="b2" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0 0 L6 3 L0 6 z" fill="var(--ink-3)"/></marker></defs>
+        </svg>
+        <figcaption>ที่เสนอ — กลับไปตาม §8.1 · redis-data คงไว้เต็ม</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><span class="snum">04</span><h2>ค่าที่จะตั้ง</h2></div>
+    <div class="tw">
+      <table>
+        <thead>
+          <tr><th>service</th><th class="n">cpus</th><th class="n">mem_limit</th><th>ที่มาของตัวเลข</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><strong>nginx</strong></td><td class="n">2.0 → <strong>1.0</strong></td><td class="n">256m → <strong>128m</strong></td><td>วัดได้ 0.54 core ที่ 6,607 rps · RSS 23 MB</td></tr>
+          <tr><td><strong>app-1…app-6</strong></td><td class="n">1.5 → <strong>0.75</strong></td><td class="n">512m → <strong>448m</strong> <span class="pill p-warn">ชั่วคราว</span></td><td>cpus ตาม §8.1 · mem รอวัด <span class="mono">heapUsedMb</span> ก่อนยืนยัน</td></tr>
+          <tr><td><strong>app-7, app-8</strong></td><td class="n" style="color:var(--over)">ลบ</td><td class="n" style="color:var(--over)">ลบ</td><td>ไม่มีใน §8.1 · §8.2 ข้อ 1 ห้ามเกิน 6</td></tr>
+          <tr><td><strong>NODE_OPTIONS heap</strong></td><td class="n">—</td><td class="n"><strong>384 คงเดิม</strong></td><td><span class="pill p-ok">ถอนออก</span> RSS ไม่ใช่หลักฐานเรื่อง heap (ดู §07)</td></tr>
+          <tr><td><strong>postgres-primary</strong></td><td class="n">1.0 → <strong>1.0</strong></td><td class="n">1024m → <strong>768m</strong> <span class="pill p-warn">ชั่วคราว</span></td><td><span class="mono">shared_buffers 256MB + 48 conn</span> → พื้น 530–770 MB</td></tr>
+          <tr><td><strong>postgres-replica</strong></td><td class="n">1.0 → <strong>0.5</strong></td><td class="n">1024m → <strong>640m</strong> <span class="pill p-warn">ชั่วคราว</span></td><td>CPU 0.03% แต่ RAM ผูกกับจำนวน connection ไม่ใช่ CPU</td></tr>
+          <tr><td><strong>redis-data</strong></td><td class="n"><strong>1.0 คงเดิม</strong></td><td class="n">512m คงเดิม</td><td><span class="pill p-acc">ห้ามลด</span> §8.2 ข้อ 2 = คอขวดอันดับ 2</td></tr>
+          <tr><td><strong>redis-cache</strong></td><td class="n">1.0 → <strong>0.5</strong></td><td class="n">512m → <strong>320m</strong></td><td><span class="mono">maxmemory 256mb</span> + headroom 25% · RDB ปิดอยู่แล้ว</td></tr>
+          <tr style="background:var(--accent-soft)"><td><strong>รวม</strong></td><td class="n">18.0 → <strong>8.5</strong></td><td class="n">7,424m → <strong>5,056m</strong></td><td>82% ของ 6,144 MB</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="note" style="margin-top:18px">
+      <strong><span class="pill p-warn">ชั่วคราว</span> = ยังไม่มีหลักฐานพอ ต้องวัดในระยะ 1 ก่อนล็อกค่า</strong> —
+      ตัวเลข RAM ที่ผมวัดได้ (app 170–188 MB · postgres 28 MB) เก็บตอนระบบ<em>เกือบว่าง</em> ไม่ใช่ตอน write burst
+      ที่มี 48 connection จริง จึงใช้ยืนยันเพดานไม่ได้
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><span class="snum">05</span><h2>4 ระยะ — เรียงตามความเสี่ยง</h2></div>
+
+    <div class="stage" style="border-left:3px solid var(--ok)">
+      <div class="stage-top"><span class="stage-n">ระยะ 0</span><h3>แก้ pacing ของ k6 แล้ววัดใหม่</h3><span class="pill p-ok">เสี่ยงศูนย์ · ไม่ต้องขอ §8</span></div>
+      <p style="margin:0 0 6px">ทำก่อนแตะ config เลย เพราะอาจอธิบาย collapse ได้เกือบหมด แล้วทำให้ทั้งแผนนี้ไม่จำเป็น</p>
+      <ul>
+        <li><span class="mono">loadtest.js</span> + <span class="mono">testBuyAo_n.js</span> เปลี่ยน <span class="mono">per-vu-iterations</span> → <span class="mono">ramping-vus</span> ตามที่ <span class="mono">flash-sale.js</span> ทำ (ตัวนั้นได้ write p95 <strong>208 ms</strong> บนเซิร์ฟเวอร์เดียวกัน ต่างกัน 25 เท่า)</li>
+        <li>เพิ่ม threshold ความถูกต้อง ไม่ใช่แค่ latency — <span class="mono">testBuyAo_n.js:117-120</span> มีแต่ latency ทำให้ backend ตอบ 500 ทั้งหมดก็ยัง exit 0</li>
+        <li>รัน sweep 50 / 100 / 200 / 400 VUs ซ้ำ 3 รอบ เก็บ median (variance บนเครื่องพัฒนา 7.7 เท่า)</li>
+      </ul>
+    </div>
+
+    <div class="stage" style="border-left:3px solid var(--accent)">
+      <div class="stage-top"><span class="stage-n">ระยะ 1</span><h3>วัดพื้น memory จริงตอน burst</h3><span class="pill p-acc">อ่านอย่างเดียว</span></div>
+      <ul>
+        <li>เปิด <span class="mono">/admin/insights</span> ระหว่างยิง write burst → เก็บ <strong>peak <span class="mono">heapUsedMb</span></strong> ต่อ instance (มีอยู่แล้วใน <span class="mono">metrics.service.ts:20,128</span>)</li>
+        <li><span class="mono">docker stats</span> + <span class="mono">SELECT count(*) FROM pg_stat_activity</span> ตอน burst → หาพื้น RAM จริงของ postgres ทั้งสองตัว</li>
+        <li>เอาเลขที่ได้มาแทนค่า <span class="pill p-warn">ชั่วคราว</span> ทั้ง 3 ตัวใน §04</li>
+      </ul>
+    </div>
+
+    <div class="stage" style="border-left:3px solid var(--warn)">
+      <div class="stage-top"><span class="stage-n">ระยะ 2</span><h3>แก้ config</h3><span class="pill p-warn">ต้องขออนุมัติ §8</span></div>
+      <ul>
+        <li><span class="mono">docker-compose.yml</span> + <span class="mono">nginx.conf</span> — ไม่ทับกัน แก้ขนานได้</li>
+        <li><span class="mono">redis/redis-data.conf</span> — <strong>แยกอนุมัติ</strong>: <span class="mono">maxmemory 512mb → 384mb</span> (ตอนนี้เท่ากับ <span class="mono">mem_limit</span> พอดี แปลว่า cgroup OOM kill จะมาก่อน <span class="mono">noeviction</span> ทำงาน) และ <span class="mono">save "" </span> ปิด RDB เพราะ AOF ทำ durability อยู่แล้ว ส่วน <span class="mono">fork()</span> บน 4 core คือตัวสร้าง latency spike</li>
+        <li>เอกสาร: <span class="mono">README.md:37-39</span> <em>และ</em> <span class="mono">:85-86</span> ยังเขียน 3 instance · เช็ค §0 Requirement Traceability ตาม §7 ข้อ 6</li>
+      </ul>
+    </div>
+
+    <div class="stage" style="border-left:3px solid var(--over)">
+      <div class="stage-top"><span class="stage-n">ระยะ 3</span><h3>ยกสแตก · พิสูจน์ · A/B</h3><span class="pill p-over">บังคับครบทุกข้อ</span></div>
+      <ul>
+        <li><span class="mono">docker compose up -d --remove-orphans</span> — <strong>ขาด <span class="mono">--remove-orphans</span> ไม่ได้</strong> ไม่งั้น app-7/app-8 ค้างเป็น orphan</li>
+        <li><span class="mono">RESET_CONFIRM=yes pnpm run reset</span> — จำเป็นอีกเหตุผล: <span class="mono">reset.ts:79-82</span> ลบ hash <span class="mono">metrics:instances</span> ทิ้ง ถ้าไม่รัน <span class="mono">/admin/insights</span> จะโชว์ app-7/app-8 เป็นแถวตายค้างตลอดไป (ไม่มีใคร <span class="mono">HDEL</span>)</li>
+        <li><strong>§9.3 ต้องผ่านครบ 4 ข้อ</strong> — <span class="mono">remaining_stock = 0</span> · <span class="mono">COUNT = 50, 50</span> · <span class="mono">GET stock:… = "0"</span> · ไม่มีใครได้เกิน 1 ชิ้น · ไม่ผ่าน = rollback</li>
+        <li><strong>A/B 4 vs 6 instance</strong> บนเครื่องเป้าหมายจริง — ไม่มีใครรู้คำตอบตอนนี้ ต้องวัด</li>
+      </ul>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><span class="snum">06</span><h2>Impact — อะไรที่อาจพัง</h2></div>
+    <div class="grid3">
+      <div class="card">
+        <h3><span class="pill p-over">เสี่ยงสุด</span></h3>
+        <ul class="plain">
+          <li><strong><span class="mono">app-1</span> ทำ migration + seed คนเดียว</strong> (<span class="mono">RUN_MIGRATIONS: "true"</span> มีแค่ที่ <span class="mono">docker-compose.yml:186-213</span>) — ลบได้แค่ท้ายแถวเท่านั้น</li>
+          <li><strong>postgres OOM ตอน burst</strong> ถ้าตั้ง mem_limit ต่ำเกินพื้นจริง — บน primary คือโดนกลางทรานแซกชัน กระทบ §4 ข้อ 7</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="pill p-warn">ต้องเช็ค</span></h3>
+        <ul class="plain">
+          <li><strong>throughput อาจลดจาก 8 → 6</strong> — แต่ §8.2 ข้อ 1 บอกว่าบน 4 core การเพิ่ม instance ให้ context switch ไม่ใช่ throughput · ต้อง A/B</li>
+          <li><strong><span class="mono">cpus 0.75</span> ทำให้ Node โดน CFS throttle กลางคำขอได้</strong> ตอนโหลดเต็ม — เป็นราคาที่จ่ายเพื่อกัน app tier ไม่ให้กลืน redis-data · ดู p95 หลังแก้ว่าคุ้มไหม</li>
+        </ul>
+      </div>
+      <div class="card">
+        <h3><span class="pill p-ok">ไม่กระทบ</span></h3>
+        <ul class="plain">
+          <li><strong>API contract §3</strong> — ไม่แตะ path / field / status code</li>
+          <li><strong>invariant §4 ทั้ง 11 ข้อ</strong> — ไม่แตะ Lua / transaction / jobId / compensation</li>
+          <li><strong><span class="mono">app-entrypoint.sh:71-83</span></strong> — instance รอ schema + stock key ตรงๆ ไม่ได้ผูกกับ <span class="mono">depends_on: app-1</span> ลบท้ายแถวจึงไม่กระทบ</li>
+          <li><strong><span class="mono">loadtest/run-all.js:24</span></strong> อ้างแค่ <span class="mono">fs-app-1</span></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><span class="snum">07</span><h2>สิ่งที่แก้จากฉบับแรก (หลัง review 2 รอบ)</h2></div>
+    <div class="tw">
+      <table>
+        <thead><tr><th>ฉบับแรกเขียนว่า</th><th>ทำไมถึงผิด</th><th>แก้เป็น</th></tr></thead>
+        <tbody>
+          <tr>
+            <td>“6 instance บน 4 core โอเคเพราะงานเป็น <strong>I/O-bound</strong>”</td>
+            <td>ตัวเลขที่วัดได้บอกตรงข้าม — ตอน 400 VUs แอปกิน <strong>60–77% ของ core</strong> ขณะที่ redis-cache 15% / redis-data 11% · และ <span class="mono">/health/live</span> ทำได้ 10,213 rps เทียบกับ <span class="mono">/products</span> 4,190 rps ที่ VUs เท่ากัน = ต้นทุนอยู่ที่ handler CPU ไม่ใช่การรอ I/O</td>
+            <td>อ้าง §8.1 (สเปกกำหนด 6 อยู่แล้ว) แทน และยอมรับว่า <strong>4 vs 6 ต้อง A/B</strong></td>
+          </tr>
+          <tr>
+            <td><span class="mono">redis-data</span> ลด cpus 1.0 → 0.75</td>
+            <td>§8.2 ข้อ 2 ระบุว่าเป็น <strong>คอขวดอันดับ 2</strong> — thread เดียวรับ <span class="mono">gatekeeper.lua</span> + BullMQ + <span class="mono">MGET</span> ทุก read + AOF fsync · 11% ที่วัดได้เป็นค่าเฉลี่ย ไม่ใช่ burst</td>
+            <td><strong>คง 1.0</strong></td>
+          </tr>
+          <tr>
+            <td>heap <span class="mono">384 → 256</span>, mem_limit <span class="mono">512m → 384m</span></td>
+            <td>อ้าง <strong>RSS</strong> ซึ่งรวม native + code ไม่ได้บอก heap pressure · ถ้า V8 heap OOM ตอน worker ทำ job → stalled job → <strong>สต็อกหาย 1 ชิ้น</strong> (§0.1) → ตก §9.3</td>
+            <td><strong>คง heap 384</strong> · mem_limit 448m เป็นค่าชั่วคราวรอวัด <span class="mono">heapUsedMb</span></td>
+          </tr>
+          <tr>
+            <td>postgres primary 768m / replica <strong>512m</strong> เพราะ “CPU 1.7% / 0.03%”</td>
+            <td>CPU ไม่เกี่ยวกับ RAM ของ postgres ซึ่งเป็น process-per-connection · พื้นจริง = <span class="mono">shared_buffers 256MB + 48 conn × 5–10MB + overhead ≈ 530–770 MB</span> → 512m เสี่ยง OOM</td>
+            <td>replica <strong>640m</strong> · ทั้งคู่รอยืนยันจากระยะ 1</td>
+          </tr>
+          <tr>
+            <td>แก้ k6 อยู่ท้ายตาราง “ยังไม่แก้”</td>
+            <td>เสี่ยงศูนย์ ไม่ต้องขอ §8 และอาจอธิบาย collapse ได้เกือบหมด — ทำทีหลังคือเรียงผิด</td>
+            <td>ย้ายขึ้นเป็น <strong>ระยะ 0</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section>
+    <div class="shead"><span class="snum">08</span><h2>สิ่งที่แผนนี้ยังไม่ได้แก้</h2></div>
+    <div class="tw">
+      <table>
+        <thead><tr><th>เรื่อง</th><th>ทำไมถึงสำคัญ</th></tr></thead>
+        <tbody>
+          <tr><td><strong>ยิง k6 จาก VM ตัวเดียวกัน</strong></td><td>บน 4 core ถ้า k6 กิน 1–2 core สแตกเหลือ 2–3 → collapse แบบเดิมแต่หนักกว่า · ต้องยิงจากเครื่องอื่น</td></tr>
+          <tr><td><strong>datastore เปิดทุก interface ไม่มีรหัส</strong></td><td>พอเปิดให้ LAN ยิงเข้ามา ใครก็ <span class="mono">SET stock:flash_sale:p-1001 9999</span> ข้ามการป้องกันทั้ง 4 ชั้น (§0.1)</td></tr>
+          <tr><td><strong><span class="mono">orders.processor.ts:63-64</span></strong></td><td><span class="mono">connect()</span>/<span class="mono">startTransaction()</span> อยู่นอก <span class="mono">try</span> — path เดียวที่หักสต็อกแล้วชดเชยไม่ได้เลย</td></tr>
+          <tr><td><strong>ลดต้นทุน handler ของ read path</strong></td><td>ตัวที่ให้ผลต่อ p95 มากที่สุดในเชิงโค้ด — <span class="mono">/products</span> แพงกว่า <span class="mono">/health/live</span> 2.4 เท่า · ทางเลือก: ข้าม <span class="mono">ValidationPipe</span> reflection สำหรับ <span class="mono">page</span>/<span class="mono">limit</span> · ⚠️ แคช response ทั้งก้อนทำไม่ได้ เพราะ <span class="mono">remainingStock</span> ต้องสดเสมอ (§3)</td></tr>
+          <tr><td><span class="mono">enableAutoPipelining</span> + ถอด <span class="mono">ValidationPipe</span> ซ้ำ <span class="pill p-ok">แก้แล้ว</span></td><td>build / lint / test 49 ข้อผ่าน · ยังพิสูจน์ผลเชิงตัวเลขไม่ได้เพราะ variance 7.7 เท่าของเครื่องพัฒนากลบอยู่</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+</div>
