@@ -366,6 +366,5 @@ pnpm run test      # 3. unit tests ผ่านหมด
 | [`docs/Requirement/products-seed.json`](docs/Requirement/products-seed.json) | ข้อมูลตั้งต้น |
 | [`docs/Summary_Best_Practice/For_agent/INDEX.md`](docs/Summary_Best_Practice/For_agent/INDEX.md) | กฎสรุปจากบทเรียน + **slide-errata** (โค้ดในสไลด์ที่ผิด ห้ามลอก) |
 | [`docs/Summary_Best_Practice/For_human/`](docs/Summary_Best_Practice/For_human/) | ฉบับอ่านยาว ภาษาไทย |
-| [`docs/Meta/primer-template.md`](docs/Meta/primer-template.md) | แม่แบบ prompt สำหรับเขียนเอกสารปูพื้นฐาน — **ไม่ใช่สเปกของระบบนี้** เป็นเครื่องมือเขียนเอกสาร |
 | [`handoff_log/INDEX.md`](handoff_log/INDEX.md) | **บันทึกส่งต่องาน** — อ่านตัวล่าสุดก่อนเริ่มงานต่อ (มีของที่ไม่ได้อยู่ในโค้ด: เหตุผล, ทางตัน, สิ่งที่ยังไม่พิสูจน์) |
 | [`AGENTS.md`](AGENTS.md) | pointer มาที่ไฟล์นี้ (สำหรับ AI tool อื่น) |

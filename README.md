@@ -21,7 +21,6 @@ High-throughput, low-latency backend สำหรับสถานการณ�
 | 🌱 [**products-seed.json**](docs/Requirement/products-seed.json) | ข้อมูลสินค้าตั้งต้น (`p-1001` มีสต็อก 50 ชิ้น = ตัวที่ใช้ทดสอบ) |
 | 📖 [**สรุปบทเรียน (ฉบับอ่าน)**](docs/Summary_Best_Practice/For_human/) | Backend01–06 ภาษาไทยแบบละเอียด |
 | ⚙️ [**สรุปบทเรียน (ฉบับ agent)**](docs/Summary_Best_Practice/For_agent/INDEX.md) | กฎแบบย่อ + **slide-errata** (โค้ดในสไลด์ที่ผิด ห้ามลอก) |
-| 🗝️ [**Primer Template**](docs/Meta/primer-template.md) | แม่แบบ prompt สำหรับเขียนเอกสารปูพื้นฐาน — ถอดโครงมาจาก Architecture Primer ใช้กับวิชาอื่นได้ |
 | 📒 [**Handoff Log**](handoff_log/INDEX.md) | บันทึกส่งต่องานแต่ละรอบ — ตัดสินใจอะไรเพราะอะไร, ทางตันที่ลองแล้ว, อะไรยังไม่ชัวร์ |
 
 ---
