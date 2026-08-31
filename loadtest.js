@@ -41,7 +41,7 @@ const TOTAL_PRODUCTS = Number(__ENV.TOTAL_PRODUCTS || 20);
 // Tunables สำหรับระยะเวลาการทดสอบ
 const READ_DURATION = __ENV.READ_DURATION || '60s';
 const WRITE_MAX_DURATION = __ENV.WRITE_MAX_DURATION || '45s';
-const WRITE_ITERATIONS = Number(__ENV.WRITE_ITERATIONS || 2);
+const WRITE_ITERATIONS = Number(__ENV.WRITE_ITERATIONS || 3);
 
 // -----------------------------------------------------------------------------
 // 409 / 429 / 503 เป็นคำตอบที่ถูกต้องของระบบ → อย่าให้ k6 นับเป็น http_req_failed
@@ -82,7 +82,7 @@ export const options = {
       vus: 500,
       iterations: WRITE_ITERATIONS,
       exec: 'placeOrder',
-      startTime: '10s',
+      startTime: '20s',
       maxDuration: WRITE_MAX_DURATION,
       gracefulStop: '10s',
       tags: { scenario_kind: 'write' },

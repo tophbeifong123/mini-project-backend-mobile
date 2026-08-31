@@ -13,7 +13,6 @@ import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 async function bootstrap(): Promise<void> {
-
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bufferLogs: true,
   });
@@ -55,6 +54,19 @@ async function bootstrap(): Promise<void> {
 
   // ปิด worker/connection ให้เรียบร้อยตอน SIGTERM ไม่งั้น deploy ทีไรเกิด stalled job
   app.enableShutdownHooks();
+
+  // ── keepalive race กับ nginx (CLAUDE.md §4 ไม่ครอบ แต่ทำให้เกิด 5xx ที่ไม่ใช่ความผิดแอป) ──
+  // Node ปิด idle keepalive connection ที่ **5 วินาที** (ค่า default ของ Node)
+  // แต่ nginx ถือ upstream connection ไว้ใน pool นานกว่านั้นมาก (`keepalive_timeout` 65s)
+  // -> nginx หยิบ connection ที่ Node เพิ่งปิดมาส่ง request
+  // -> "upstream prematurely closed connection" / "recv() failed (104)" -> 500/502
+  // -> และ POST **retry ไม่ได้** (non-idempotent) ผู้ใช้เลยเห็น error ทั้งที่แอปไม่ได้พัง
+  //
+  // กฎ: ฝั่ง server ต้องถือ connection **นานกว่า** ฝั่ง proxy เสมอ
+  //     Node 75s > nginx 65s  ·  headersTimeout ต้องมากกว่า keepAliveTimeout
+  const server = app.getHttpServer();
+  server.keepAliveTimeout = 75_000;
+  server.headersTimeout = 80_000;
 
   const config = app.get(ConfigService);
   const port = Number(config.get<number>('PORT', 3000));

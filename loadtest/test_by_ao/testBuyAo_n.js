@@ -37,17 +37,16 @@ const WRITE_MAX_DURATION = __ENV.WRITE_MAX_DURATION || '20s';
 // แล้ว map idInTest โดยตรง ห้าม modulo เพราะทำให้สอง write VUs ใช้ user ซ้ำได้
 const VU_ID_DOMAIN = READ_VUS + WRITE_VUS;
 const USER_COUNT = integerEnv('USER_COUNT', VU_ID_DOMAIN, VU_ID_DOMAIN, 15_000);
-const USER_PREFIX = __ENV.USER_PREFIX || 'user-';
 
 // จำนวนสินค้าทั้งหมดใน seed — ใช้คำนวณช่วง page ที่ถูกต้อง
 const TOTAL_PRODUCTS = integerEnv('TOTAL_PRODUCTS', 20, 1, 100_000);
 
 // -----------------------------------------------------------------------------
-// 200/202/409/429 เป็น healthy HTTP outcomes ของ workload นี้
+// 200/202/409 เป็น healthy HTTP outcomes ของ workload นี้
 // 503 อยู่ใน API contract แต่ยังเป็น availability failure จึงต้องคงเป็น
 // http_req_failed และมี custom infrastructure metric แยกต่างหาก
 // -----------------------------------------------------------------------------
-http.setResponseCallback(http.expectedStatuses(200, 202, 409, 429));
+http.setResponseCallback(http.expectedStatuses(200, 202, 409));
 
 // --- custom metrics ----------------------------------------------------------
 const authSetupCount = new Counter('auth_setup_count');
@@ -58,7 +57,6 @@ const authSetupWallDuration = new Trend('auth_setup_wall_duration', true);
 const orderRequests = new Counter('orders_requests');
 const orders202 = new Counter('orders_202'); // เข้าคิวสำเร็จ
 const orders409 = new Counter('orders_409'); // admission race ที่ contract อนุญาต
-const orders429 = new Counter('orders_throttled_429'); // in-flight lock ที่ contract อนุญาต
 const orders503 = new Counter('orders_503'); // contract-valid แต่ availability fail
 const orders5xx = new Counter('orders_5xx');
 const orders401 = new Counter('orders_unauthorized_401'); // ไม่ควรเกิดเลย
@@ -83,7 +81,7 @@ function integerEnv(name, fallback, minimum, maximum) {
 }
 
 function contractOrderStatus(status) {
-  return [202, 400, 401, 404, 409, 422, 429, 500, 503].includes(status);
+  return [202, 400, 401, 404, 409, 422, 500, 503].includes(status);
 }
 
 function infrastructureFailure(status) {
@@ -129,7 +127,7 @@ export function setup() {
   const failures = [];
 
   for (let i = 1; i <= USER_COUNT; i++) {
-    const userId = `${USER_PREFIX}${i}`;
+    const userId = `user-${i}`;
     const res = http.post(
       `${BASE_URL}/api/v1/auth/token`,
       JSON.stringify({ userId }),
@@ -325,12 +323,6 @@ export function placeOrder(data) {
         'order 409: admission-in-progress contract response': () => true,
       });
       break;
-    case 429:
-      orders429.add(1);
-      check(res, {
-        'order 429: in-flight lock contract response': () => true,
-      });
-      break;
     case 503:
       // Contract-valid QUEUE_UNAVAILABLE แต่เป็น availability failure ของ benchmark
       orders503.add(1);
@@ -370,7 +362,6 @@ export function handleSummary(data) {
 
   const accepted = c('orders_202');
   const conflict = c('orders_409');
-  const throttled = c('orders_throttled_429');
   const unavailable = c('orders_503');
   const serverErrors = c('orders_5xx');
   const unauthorized = c('orders_unauthorized_401');
@@ -411,7 +402,6 @@ export function handleSummary(data) {
   );
   lines.push(`    202 accepted (เข้าคิว)      : ${accepted}`);
   lines.push(`    409 admission in progress  : ${conflict}`);
-  lines.push(`    429 in-flight lock         : ${throttled}`);
   lines.push(`    503 queue unavailable      : ${unavailable}   (availability fail)`);
   lines.push(`    all 5xx                    : ${serverErrors}   (ต้อง = 0)`);
   lines.push(`    401 unauthorized           : ${unauthorized}   (ต้อง = 0)`);
