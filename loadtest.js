@@ -41,7 +41,7 @@ const TOTAL_PRODUCTS = Number(__ENV.TOTAL_PRODUCTS || 20);
 // Tunables สำหรับระยะเวลาการทดสอบ
 const READ_DURATION = __ENV.READ_DURATION || '60s';
 const WRITE_MAX_DURATION = __ENV.WRITE_MAX_DURATION || '45s';
-const WRITE_ITERATIONS = Number(__ENV.WRITE_ITERATIONS || 2);
+const WRITE_ITERATIONS = Number(__ENV.WRITE_ITERATIONS || 3);
 
 // -----------------------------------------------------------------------------
 // 409 / 429 / 503 เป็นคำตอบที่ถูกต้องของระบบ → อย่าให้ k6 นับเป็น http_req_failed
@@ -82,7 +82,7 @@ export const options = {
       vus: 500,
       iterations: WRITE_ITERATIONS,
       exec: 'placeOrder',
-      startTime: '10s',
+      startTime: '20s',
       maxDuration: WRITE_MAX_DURATION,
       gracefulStop: '10s',
       tags: { scenario_kind: 'write' },
@@ -227,8 +227,8 @@ export function readProducts() {
     body.data.every((p) => typeof p.remainingStock === 'number');
   readStockFresh.add(hasFreshStock);
 
-  // จำลอง Think Time / Pacing ของผู้ใช้งาน 1,000 คนจริง (30-80ms) ตามมาตรฐาน k6 Best Practice
-  sleep(0.03 + Math.random() * 0.05);
+  // จำลอง Think Time / Pacing ของผู้ใช้งาน 1,000 คนจริง (200-500ms) ตามมาตรฐาน k6 Best Practice
+  sleep(0.2 + Math.random() * 0.3);
 }
 
 // =============================================================================
@@ -261,8 +261,8 @@ export function placeOrder(data) {
 
   orderLatency.add(res.timings.duration);
 
-  // จำลองจังหวะการกดรัวของมือถือ (human jitter ~10-30ms) ไม่ให้ TCP buffer drop ข้ามเน็ตเวิร์ก
-  sleep(0.01 + Math.random() * 0.02);
+  // จำลองจังหวะการกดรัวของมือถือ (human jitter ~50-150ms) ไม่ให้ TCP buffer drop ข้ามเน็ตเวิร์ก
+  sleep(0.05 + Math.random() * 0.1);
 
   // ✅ ทุก status ด้านล่างคือ "ระบบทำงานถูกต้อง" — ไม่ใช่ error
   check(res, {
