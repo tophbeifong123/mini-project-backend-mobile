@@ -39,7 +39,7 @@ flowchart TD
     end
 
     subgraph Edge["⚖️ Edge Layer"]
-        NGINX["Nginx Reverse Proxy :8080<br/>least_conn · keepalive 128<br/>proxy_http_version 1.1<br/>max_fails=0 · proxy_next_upstream error"]
+        NGINX["Nginx Reverse Proxy :8080<br/>least_conn · keepalive 768<br/>proxy_http_version 1.1<br/>max_fails=0 · proxy_next_upstream error"]
     end
 
     subgraph BackendCluster["🚀 NestJS Cluster (6 Instances)"]
@@ -68,7 +68,7 @@ flowchart TD
     end
 
     subgraph WorkerTier["⚙️ BullMQ Consumer"]
-        WORKER["Worker concurrency 5 / node<br/>6 nodes = 30 concurrent writes<br/>(≤ master pool 8 / instance)"]
+        WORKER["Worker concurrency 1 / node<br/>6 nodes = 6 concurrent writes<br/>(≤ master pool 8 / instance)"]
     end
 
     subgraph DatabaseTier["🗄️ PostgreSQL 16"]
@@ -120,7 +120,7 @@ upstream backend {
     server app-4:3000 max_fails=0;
     server app-5:3000 max_fails=0;
     server app-6:3000 max_fails=0;
-    keepalive 128;
+    keepalive 768;
 }
 
 server {
@@ -129,7 +129,7 @@ server {
     location / {
         proxy_pass http://backend;
 
-        # ⚠️ บังคับ 2 บรรทัดนี้ ไม่งั้น `keepalive 128` ข้างบนไม่ทำงานเลย
+        # ⚠️ บังคับ 2 บรรทัดนี้ ไม่งั้น `keepalive 768` ข้างบนไม่ทำงานเลย
         # Nginx จะคุย upstream ด้วย HTTP/1.0 + Connection: close
         # → TCP handshake ใหม่ทุก request (ตัวฉุด p95 อันดับ 1)
         proxy_http_version 1.1;
@@ -379,7 +379,7 @@ export class Order {
 
 #### 3.1.6 จุดที่ write ทั้งหมดไปรวมกัน
 
-worker ทุกตัวใน 6 instance (รวม 30 concurrent — §8) `UPDATE` **แถวเดียวกัน** คือ `products` ของ `p-1001`
+worker ทุกตัวใน 6 instance (รวม 6 concurrent — §8) `UPDATE` **แถวเดียวกัน** คือ `products` ของ `p-1001`
 → PostgreSQL จะ **serialize พวกมันที่ row lock ของแถวนั้น** ซึ่ง **ถูกต้องและตั้งใจ**: ของมี 50 ชิ้น = `UPDATE` สำเร็จ 50 ครั้ง ไม่ใช่ปริมาณที่ต้องกังวล
 ส่วน `INSERT INTO orders` ขอแค่ `KEY SHARE` บนแถว products (จาก FK) ซึ่ง **ไม่ชนกับ `FOR NO KEY UPDATE`** ที่ `UPDATE` ถือไว้ จึงไม่เกิด lock escalation
 
@@ -633,6 +633,8 @@ async createOrder(userId: string, productId: string) {
 > ⚠️ **กับดัก Read-Write Split**: `repository.findOne()` จะวิ่งไป **Replica** โดยอัตโนมัติ ซึ่งมี replication lag 10–100ms → worker อ่านเจอสต็อกเก่า → race condition ทันที
 > Worker **ต้อง** ใช้ `dataSource.createQueryRunner('master')` เท่านั้น
 
+> ตัวเลขข้างล่างคือ **source default** ของโค้ด (`Number(process.env.WORKER_CONCURRENCY) || 5`) — ค่าที่ deploy จริงตอนนี้คือ `WORKER_CONCURRENCY=1` ผ่าน env ใน `docker-compose.yml` (§8) ไม่ใช่ 5
+
 ```typescript
 // orders.processor.ts
 @Processor('orders', { concurrency: 5 })   // ≤ ขนาด pool ของ master (= 8, §8) ห้ามเกิน
@@ -759,7 +761,7 @@ Error mapping (**ในตัว worker ไม่ใช่ HTTP** — client ไ
 | Worker ตายหลัง commit ก่อน `markBought` | คืนสต็อกทั้งที่ขายไปแล้ว → oversell | side effect อยู่นอก try เดิม + `committed` flag (§6.3) |
 | BullMQ retry job ที่สำเร็จแล้ว | insert ซ้ำ / คืนสต็อกซ้ำ | `UNIQUE` → จับ `23505` แล้ว return + `compensateOnce` (§6.3) |
 | Worker อ่านสต็อกจาก Replica | race condition จาก replication lag | บังคับ `createQueryRunner('master')` (§6.3) |
-| Worker concurrency > DB pool | job timeout รอ connection | concurrency 5 ≤ master pool 8 (§8) |
+| Worker concurrency > DB pool | job timeout รอ connection | concurrency 1 ≤ master pool 8 (§8) |
 | ผู้ใช้กดรัว 2–3 ครั้ง | ได้ของเกิน 1 ชิ้น | in-flight lock + `bought` flag + `UNIQUE` (§6.1, §6.4) |
 | Cache หมดอายุพร้อมกันตอน 1,000 VUs | DB โดนถล่ม (stampede/avalanche) | single-flight + TTL jitter (§5.3) |
 | `redis-data` สะดุดตอน flush ตัวนับ observability | ตัวเลขในรายงานขาดหาย + log storm ซ้ำเติมตอนโหลดพีค | buffer ที่ flush ไม่ผ่านถูกใส่กลับ แล้ว log ทุก 30 ครั้งเท่านั้น (§9.4) |
@@ -790,10 +792,10 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 | Connections บน **primary** | **6 × 8 = 48** / 100 (48%) | master pool — เฉพาะ worker (`createQueryRunner('master')`) |
 | Connections บน **replica** | **6 × 8 = 48** / 100 (48%) | slave pool — catalog read (`defaultMode: 'slave'`) |
 | headroom ต่อเซิร์ฟเวอร์ | ✅ ยังใต้กฎ 80% | 48 ≤ 80 · เพดานที่พังคือ **10 instances** (10 × 8 = 80) |
-| **Worker concurrency** | **5 / instance** → รวม **30** | ≤ master pool 8 · อ่านจาก `process.env` ตอน decorate class แก้ใน `.env` ไม่มีผล |
+| **Worker concurrency** | **1 / instance** → รวม **6** | ค่า `docker-compose.yml` ปัจจุบัน — ลดจาก 5 (2026-08-31) เพราะ 5 × 6 = 30 concurrent transaction ชนกับ primary ที่มี 1 vCPU แล้วแย่ง CPU กับ HTTP event loop ตอน write burst · ≤ master pool 8 · อ่านจาก `process.env` ตอน decorate class แก้ใน `.env` ไม่มีผล |
 | Redis: `redis-cache` | 1 client / instance → **6** | แคชล้วน `allkeys-lru` · `maxmemory 256mb` |
 | Redis: `redis-data` | ≈ **36** (6 × 6) | ต่อ instance: ① client ทั่วไป/Lua ② BullMQ `Queue` (มี 3 ออบเจกต์ — Nest 11 ไม่ dedupe) ③ Worker 2 ตัว (client + blocking) · `maxmemory 512mb` `noeviction` + AOF |
-| Nginx | `worker_connections 10240`, `keepalive 128` | ต้องมาคู่กับ `proxy_http_version 1.1` (§2) |
+| Nginx | `worker_connections 10240`, `keepalive 768` | ต้องมาคู่กับ `proxy_http_version 1.1` (§2) |
 
 ### 8.1 🖥️ Deployment Target — Production VM
 
@@ -806,6 +808,9 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 > ✅ **แก้แล้ว (2026-08-28)** — เดิมไม่มี resource limit เลย ตอนนี้ `docker-compose.yml` มี `mem_limit`/`cpus`
 > ทุก service แล้ว (app-N: `mem_limit 512m`, `cpus 0.75`) และ `NODE_OPTIONS: "--max-old-space-size=384"`
 > ใน environment ของ app-N ด้วย — ดู `handoff_log/handoff_28_08_2026_performance-tuning-and-review-fixes.md` ข้อ 3
+>
+> ⚠️ **แก้ต่อ (2026-08-31)** — `cpus` ของ app-N ถูกดันขึ้นเป็น **`1.0`** (จาก `0.75` ข้างบน) เพราะ 1 Node.js process
+> ใช้ได้เต็ม 1 vCPU ตอนงานเยอะ ค่า `0.75` เดิม throttle ทุก instance ระหว่าง burst 1,000 reader ทั้งที่ host ยังมี core ว่าง
 
 ### 8.2 🧭 เพดานจริงอยู่ตรงไหน (จุดที่จะตันก่อน)
 
@@ -818,7 +823,7 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
    → เพิ่ม app instance = เพิ่มโหลดให้ redis ตัวเดียวนี้ตรงๆ
 3. **Disk 30 GB — log rotation** ✅ **แก้แล้ว (2026-08-28)**: ทุก service ใน `docker-compose.yml` มี `logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}` แล้ว
    และตัด duplicate logging ออกแล้ว (`pino-http autoLogging: false` — เหลือ **1 บรรทัด/request** ไม่ใช่ 3 เหมือนเดิม)
-4. **Row lock แถวเดียว** — 30 concurrent worker ทั้งคลัสเตอร์ `UPDATE products` ของ `p-1001` แถวเดียวกัน
+4. **Row lock แถวเดียว** — worker ทั้งคลัสเตอร์ (สูงสุด 6 concurrent ที่ค่า deploy ปัจจุบัน) `UPDATE products` ของ `p-1001` แถวเดียวกัน
    จำนวน worker ที่เพิ่มจึง **ไม่ช่วยให้ขายเร็วขึ้น** — มีแต่ค้างรอโดยกิน pool connection ไว้
 5. **single-flight เป็น per-process** (`products.service.ts` ใช้ `Map` ใน RAM)
    แคชหลุดทีไร → มี **6 query วิ่งเข้า replica พร้อมกัน** (ไม่ใช่ 1) — เพิ่ม instance = เพิ่มจำนวนนี้
@@ -836,7 +841,7 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 > เพราะเปิด `replication` + `defaultMode: 'slave'` ไว้ TypeORM จึงสร้าง **pool แยกต่อ master และต่อ slave**
 > → API อ่าน catalog ลง **slave pool** ส่วน worker ขอ `createQueryRunner('master')` ลง **master pool** — **ไม่เคยชนกัน**
 >
-> `WORKER_CONCURRENCY = 5` จึงไม่ได้มีที่มาจากการแย่ง pool (จะเป็น 8 เท่า poolSize ก็ยังปลอดภัย)
+> `WORKER_CONCURRENCY = 5` (ค่าตอนตัดสินใจตอนนั้น) จึงไม่ได้มีที่มาจากการแย่ง pool (จะเป็น 8 เท่า poolSize ก็ยังปลอดภัย) — ⚠️ **deploy จริงตอนนี้ (2026-08-31) ถูกลดเหลือ `1`** ด้วยเหตุผลอื่น (event loop ของ HTTP แย่ง CPU กับ worker บน primary 1 vCPU ไม่ใช่แย่ง pool ตามที่ย่อหน้านี้อธิบาย) ดู §8 แถว Worker concurrency
 > เพดานจริงของ write path คือ **row lock ของสินค้าแถวเดียว** ที่ทุก worker ยิงใส่ ซึ่ง serialize อยู่แล้วไม่ว่า concurrency จะเป็นเท่าไหร่
 >
 > ⚠️ **แต่ถ้าวันไหนตัด replica ทิ้ง** master กับ slave จะยุบเป็น pool เดียว แล้วคำเตือนเดิมจะ *กลายเป็นจริงขึ้นมา*

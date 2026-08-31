@@ -525,7 +525,7 @@ sequenceDiagram
         API-->>UA: ⚠️ 429 กำลังประมวลผล
     end
 
-    Note over W,PG: ประมวลผลแบบ async · concurrency 5/node (×6 = 30)
+    Note over W,PG: ประมวลผลแบบ async · concurrency 1/node (×6 = 6)
 
     Q->>W: job
     W->>PG: BEGIN (master connection)

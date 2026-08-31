@@ -37,7 +37,7 @@ flowchart TB
     K["k6 / client<br/>:8080"]
 
     subgraph EDGE["Edge"]
-        NG["nginx<br/>least_conn + keepalive 128"]
+        NG["nginx<br/>least_conn + keepalive 768"]
     end
 
     subgraph APPS["6 Node processes (เหมือนกันทุกตัว)"]
@@ -611,7 +611,7 @@ flowchart TD
 | `compensated:` TTL | 300 วิ | `redis.service.ts:83` | ต้องครอบ retry chain ของ job เดียว (~2 วิ) เท่านั้น |
 | debounce ล้างแคช | 1,000 ms | `redis.service.ts:86` | ต่ำไป = ล้างแคช 50 ครั้งรวดตอน burst |
 | `commandTimeout` | 1,000 ms | `redis.module.ts:33` | **ไม่มี = คำสั่งค้าง `catch` ไม่ทำงาน → 504** |
-| worker concurrency | 5 | `orders.processor.ts:40` | อ่านตอน decorate → `.env` ไม่มีผล |
+| worker concurrency | 5 (default ในโค้ด) · `docker-compose.yml` ทับเป็น **1** | `orders.processor.ts:40` | อ่านตอน decorate → `.env` ไม่มีผล |
 | pool size | 8 ต่อ pool | `database.config.ts:52` (`.env.example` เขียน 10 · `docker-compose.yml` ทับเป็น 8) | ที่ 6 instance เกิน ~13 จะชนเพดาน 80% ของ `max_connections=100` |
 | BullMQ attempts | 3, backoff exp 200 ms | `orders.service.ts:152-153` | เป็นตัวกำหนดว่า `isFinalAttempt` เมื่อไหร่ |
 | `removeOnComplete` | `{count: 5000}` | `orders.service.ts:154` | ต่ำไป → job เก่าหาย → dedup พัง |
