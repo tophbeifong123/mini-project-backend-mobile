@@ -63,9 +63,20 @@ podman compose version                                  # podman-compose (python
 | `STOCK_COMPENSATION_FAILURES` ฝั่ง worker ไม่เคยถูกยิง (`orders.processor.ts:126`) | **เจอ 2026-08-30** · `metrics.inc(STOCK_COMPENSATED)` บวก**ก่อน** `await compensateOnce(...)` และ `await` นั้นไม่มี `try/catch` · metric ตัวล้มเหลวถูกยิงจาก `orders.service.ts:261,280` เท่านั้น → **ชดเชยฝั่ง worker ล้มเหลว = ถูกนับเป็นสำเร็จ ตัวนับ leak ยังเป็นศูนย์** · แปลว่า **ค่าศูนย์ของ `stock_compensation_failures_total` เชื่อไม่ได้** ตัวจับจริงคือ `drift` ใน `/admin/insights` + §9.3 |
 | debounce ซ้อน 3 ชั้นทำให้ flush หลุด (`redis.service.ts:322-368`) | **เจอ 2026-08-30 · ความซับซ้อนเป็นตัว *สร้าง* บั๊ก** — leading branch + distributed throttle + trailing timer · ใช้กลไกเดียวไม่มีทางทิ้งงาน แต่ซ้อนกันแล้ว: บรรทัด 327 ใช้โควตา local → 328 ขอ throttle ไม่ได้ → 332 `return` **โดยไม่จอง trailing** = การล้างหายไปเฉย ๆ · เหลือ trailing timer อย่างเดียว −40 บรรทัดและบั๊กเกิดไม่ได้ · **ต้องขออนุญาตตาม §8 (นโยบาย cache) ก่อนแก้** · ผลกระทบจริงยังจำกัด (ไม่มี endpoint แก้ข้อมูลสินค้า · `remainingStock` ไม่ได้ถูกแคช) |
 | `MetricsService.flush()` กลืน error รายคำสั่ง (`metrics.service.ts:143-172`) | **เจอ 2026-08-30** · ioredis `pipeline.exec()` **resolve ไม่ reject** ตอน command error (loop เช็ค error เป็น cluster-only — `ioredis/built/pipeline.js:182`) · redis-data เต็มที่ 512mb `noeviction` → `HINCRBY` คืน OOM ทุกตัว → `catch` ไม่ทำงาน, buffer ถูกล้างไปแล้ว, `consecutiveFlushErrors` ยังเป็น 0 → **ตัวนับค้างเงียบในจังหวะที่ต้องการมันที่สุด** |
-| 🟠 **datastore เปิดทุก interface ไม่มีรหัสผ่าน** | **เจอ 2026-08-30 · สำคัญวันยิงข้ามกลุ่ม** · `docker-compose.yml:46,102,145,171` publish PG 5432/5433 + Redis ทั้งคู่โดยไม่ผูก interface · `redis-data.conf:10` = `protected-mode no` ไม่มี `requirepass` · ใครบน LAN ก็ `SET stock:flash_sale:p-1001 9999` **ข้ามการป้องกันทั้ง 4 ชั้นที่ source of truth** · แก้: ผูกกับ `127.0.0.1` (คำสั่ง §9.3 + `seed:redis` ยังทำงานจากโฮสต์ได้) — **§8 ต้องขออนุญาตก่อนแก้ `docker-compose.yml`** |
 | 🟠 **Bull-Board รหัส `admin`/`admin` hardcode** | **เจอ 2026-08-30** · ทั้ง 6 services เป็นสตริงตรง ๆ ไม่ใช่ `${VAR}` · `env.validation.ts:133,137` ตั้ง default `'admin'` ทำให้ `getOrThrow()` **ไม่มีวัน throw** · **แก้ `.env` ไม่มีผลกับ container ต้องแก้ที่ `docker-compose.yml`** · ✅ ตัว mount `/admin` เองแน่น — ทดสอบ URL หลบ middleware 11 แบบกับ Express 5.2.1 จริง ไม่มีแบบไหนเล็ดลอด |
 | `loadtest.js` threshold มีแค่ latency (`:81-84`) | **เจอ 2026-08-30** · ไม่มี threshold คุม `reads_bad_contract` / `orders_unexpected_status` / `orders_unauthorized_401` → backend ตอบ `price` เป็น string หรือ 500 สัก 30% ก็ยัง **exit 0 "thresholds passed"** · เป็น deliverable ที่กลุ่มอื่นจะเอาไปรัน ควรล้มเสียงดัง |
+
+### ✅ ปิดไปแล้ว (2026-08-31 — ก่อนขึ้น VM)
+
+| เดิม | แก้เป็นอะไร |
+| :--- | :--- |
+| 🟠 `docker-compose.yml:46,102,145,171` publish PG 5432/5433 + Redis ทั้งคู่โดยไม่ผูก interface — ใครบน LAN ก็เขียน datastore ได้ตรงๆ | ผูกกับ `127.0.0.1` ครบทั้ง 4 (`"127.0.0.1:5432:5432"` ฯลฯ) · **`nginx :8080` ไม่แตะ** เพราะกลุ่มอื่นต้องยิง k6 เข้ามา · ยืนยันด้วยการยิงจริง: จาก LAN IP → PG/Redis **BLOCKED ครบ 4**, nginx ยัง OPEN · เครื่องมือฝั่งโฮสต์ไม่กระทบ (ทุกตัวใช้ loopback อยู่แล้ว) — `pnpm run reset`, `psql -h localhost -p 5432/5433` ทดสอบแล้วผ่าน · ⏹️ **จงใจไม่ใส่ `requirepass`** เพราะจะลามไปแก้ `redis.module.ts` + BullMQ + env ทั้งหมด ทั้งที่ loopback ปิดช่องเดียวกันได้ด้วย 4 บรรทัด · ดู [`handoff_31_08_2026_bind-datastore-loopback.md`](handoff_log/handoff_31_08_2026_bind-datastore-loopback.md) |
+
+> 📌 **แก้คำอธิบายที่เคยเขียนผิดไว้ตรงนี้** — เดิมเขียนว่า `SET stock:flash_sale:p-1001 9999` "ข้ามการป้องกันทั้ง 4 ชั้น" ซึ่ง**ไม่แม่น**
+> การเขียน Redis ตรงๆ ข้ามได้แค่ **Tier 1** (gatekeeper) — **Tier 3** (`WHERE remaining_stock > 0`) และ **Tier 4** (`CHECK >= 0`) ยังกัน oversell อยู่
+> อาการจริงคือคนได้ `202` แล้ว job ตายเป็น `SoldOutError` = พังเชิงพฤติกรรม ไม่ใช่ขายเกิน
+> **ตัวที่ข้ามได้ทุกด่านจริงคือ Postgres** (รหัส `flashsale`/`flashsale` อยู่ใน `docker-compose.yml` ที่ push ขึ้น GitHub public) เพราะ Tier 3/4 อยู่ *ใน* Postgres เอง
+> ใครเข้าถึง Postgres ได้ ก็คือเข้าถึงตัวที่ทำหน้าที่ป้องกันเสียเอง
 
 ### ✅ ปิดไปแล้ว (2026-08-27 — ยิง k6 จริงครั้งแรก)
 

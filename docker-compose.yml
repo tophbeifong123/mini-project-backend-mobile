@@ -43,7 +43,13 @@ services:
       POSTGRES_REPLICATION_PASSWORD: replpass
       REPLICATION_SLOT_NAME: replica_1_slot
     ports:
-      - "5432:5432"
+    # ⚠️ ผูกกับ 127.0.0.1 เท่านั้น — ห้ามเปลี่ยนกลับเป็น "PORT:PORT" เปล่าๆ
+    # รหัส PG อยู่ในไฟล์นี้ตรงๆ และ redis ทั้งสองตัวไม่มี requirepass
+    # เปิดทุก interface = ใครบน LAN ก็เขียน datastore ได้ตรงๆ
+    #   Redis  -> ข้าม Tier 1 (gatekeeper) · Tier 3/4 ยังกัน oversell อยู่
+    #   PG     -> ข้ามได้ทุกด่านจริง เพราะ Tier 3/4 อยู่ใน Postgres เอง
+    # เครื่องมือฝั่งโฮสต์ (pnpm reset/seed, psql, redis-cli, cache-stats.sh) ใช้ localhost อยู่แล้ว จึงไม่กระทบ
+      - "127.0.0.1:5432:5432"
     volumes:
       - postgres_primary_data:/var/lib/postgresql/data
       - ./scripts/primary-init.sh:/docker-entrypoint-initdb.d/10-primary-init.sh:ro
@@ -99,7 +105,7 @@ services:
       PRIMARY_HOST: postgres-primary
       PRIMARY_PORT: 5432
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - postgres_replica_data:/var/lib/postgresql/data
       - ./scripts/replica-entrypoint.sh:/usr/local/bin/replica-entrypoint.sh:ro
@@ -142,7 +148,7 @@ services:
         max-size: "10m"
         max-file: "3"
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - ./redis/redis-cache.conf:/usr/local/etc/redis/redis.conf:ro
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
@@ -168,7 +174,7 @@ services:
         max-size: "10m"
         max-file: "3"
     ports:
-      - "6380:6379"
+      - "127.0.0.1:6380:6379"
     volumes:
       - ./redis/redis-data.conf:/usr/local/etc/redis/redis.conf:ro
       - redis_data_data:/data
