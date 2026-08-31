@@ -3,7 +3,8 @@
 High-throughput, low-latency backend สำหรับสถานการณ์ **Flash Sale** — รองรับ **1,000 concurrent readers** และ **write burst 500 คนแย่งสินค้า 50 ชิ้น** โดยการันตี **Zero Overselling** และ **1 ชิ้นต่อ 1 ผู้ใช้**
 
 > **สถานะปัจจุบัน**: 🛠️ **Implemented** — `src/` ครบทุก module, `docker-compose.yml` 1-click start, `loadtest.js` พร้อมยิง
-> `pnpm run build` / `pnpm run lint` / `pnpm run test` ผ่านทั้งหมด (32 tests) · **ยังไม่เคยรันบน container จริงและยังไม่เคยยิง k6** (ดู [handoff ล่าสุด](handoff_log/INDEX.md))
+> `pnpm run build` / `pnpm run lint` / `pnpm run test` ผ่านทั้งหมด (**49 tests**) · รันบน container จริงและยิง k6 มาแล้วหลายรอบ — **§9.3 Data Integrity ผ่านครบ 4 ข้อ** (`remaining_stock = 0` · orders 50/50 · Redis counter `"0"` · ไม่มีใครได้เกิน 1 ชิ้น)
+> ❌ **ที่ยังไม่เคยเกิดขึ้น**: ยิงข้ามกลุ่ม · e2e test · รายงาน PDF · ยังไม่เคย deploy บน VM 4-core เป้าหมาย (ตัวเลข perf ทุกตัวมาจาก dev Mac) — ดู [`CLAUDE.md` §0.1](CLAUDE.md) และ [handoff ล่าสุด](handoff_log/INDEX.md)
 
 ---
 

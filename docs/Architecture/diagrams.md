@@ -354,7 +354,7 @@ flowchart TD
 | PG `23505` (unique ซ้ำ) | ❌ | ❌ | `already_confirmed` → **`return`** | job นี้เคยสำเร็จแล้ว = **idempotency** ห้ามคืนสต็อก |
 | PG `23514` (check ติดลบ) | ✅ (เหมือน transient) | เฉพาะ attempt สุดท้าย | retry ก่อน แล้วค่อย `failed` | **โค้ดจริงไม่มี case แยกสำหรับ `23514`** ตกเข้า branch เดียวกับ transient error — **ตั้งใจปล่อยไว้ เพราะ `23514` เข้าไม่ถึงตั้งแต่แรก**: `chk_positive_stock (remaining_stock >= 0)` จะถูกละเมิดได้ก็ต่อเมื่อ `remaining_stock` เป็น 0 แล้วยังถูก -1 ต่อ แต่ UPDATE มี `WHERE remaining_stock > 0` กันไว้แล้ว (`orders.processor.ts:67`) ค่าต่ำสุดที่เป็นไปได้คือ 0 พอดี · `chk_stock_ceiling` ก็ละเมิดไม่ได้เพราะ path นี้มีแต่ลด ไม่เพิ่ม · **ตรวจยืนยันแล้ว 2026-08-29 — ไม่ต้องแก้โค้ด** ถ้าวันหนึ่ง `23514` โผล่ขึ้นมาจริง แปลว่ามีคนแก้ `WHERE` clause หรือมี writer ตัวอื่นนอก worker |
 | PG `40P01` (deadlock) | ✅ | เฉพาะ attempt สุดท้าย | retry | exponential backoff **+ jitter** · คืนตอน attempt 1 แล้ว attempt 2 สำเร็จ = Redis สูงกว่า DB ถาวร |
-| เชื่อมต่อหลุด / timeout | ✅ | เฉพาะ attempt สุดท้าย | retry | transient — เหตุผลเดียวกับแถวบน |
+| เชื่อมต่อหลุด / timeout | ✅ | เฉพาะ attempt สุดท้าย | retry | transient — เหตุผลเดียวกับแถวบน · 🔴 **ข้อยกเว้นที่รู้ตัวแล้ว**: ถ้าหลุดตอน `connect()`/`startTransaction()` ซึ่งอยู่ **นอก** `try` (`orders.processor.ts:62-64`, `try` เริ่ม `:67`) **จะไม่มีการชดเชยเลยแม้ attempt สุดท้าย** เพราะ error ไม่เคยเข้า `catch` ที่ถือ `isFinalAttempt → compensateOnce` — ดู `CLAUDE.md` §0.1 |
 | **side effect หลัง COMMIT ล้ม** | ❌ | ❌ **ห้ามคืนเด็ดขาด** | **CONFIRMED** | ⚠️ ของขายไปแล้วจริง ถ้าคืนสต็อกตรงนี้ = **oversell** |
 
 > แถวสุดท้ายคือบั๊กที่พบใน blueprint ฉบับเก่า — `markBought` / `invalidateCache` ถูกวางไว้ใน `try` เดียวกับ transaction ทำให้ Redis สะดุดหลัง commit แล้วระบบไปคืนสต็อกทั้งที่ order เกิดขึ้นแล้ว
@@ -454,6 +454,11 @@ stateDiagram-v2
 **Invariant ของ state machine**: ทุกเส้นทางที่ผ่าน `Reserved` ต้องจบที่ `Confirmed` หรือ `Compensated`
 **ยกเว้นทางเดียวคือ `SoldOutAtDb`** ซึ่งจงใจไม่คืน เพราะการมาถึงสถานะนั้นแปลว่า Redis สูงกว่า DB อยู่แล้ว
 การไม่คืนคือสิ่งที่ทำให้ counter ลู่ลงเข้าหาความจริง (ดู §6.2)
+
+🔴 **ข้อยกเว้นที่สองซึ่งเป็นบั๊กจริง ไม่ใช่เจตนา (พบ 2026-08-30 · ยังไม่แก้)** — ถ้า connection หลุดตอน `connect()`/`startTransaction()`
+(`orders.processor.ts:62-64` อยู่ *นอก* `try` ที่เริ่มบรรทัด 67) job จะเดินจาก `Reserved` ไป `Failed` **โดยไม่ผ่าน `Compensated`**
+เพราะ error ไม่เคยเข้า `catch` ที่ถือ `isFinalAttempt → compensateOnce` — ไดอะแกรมข้างบน**ยังไม่ได้วาดเส้นนี้**
+อาการ: counter ค้างที่ 1, orders 49/50, ตก §9.3 ข้อ 4 · ดู `CLAUDE.md` §0.1
 
 ถ้าเจอเส้นทาง**อื่น**ที่หลุดออกไปโดยไม่ผ่านสองสถานะนี้ แปลว่าสต็อกรั่ว และ `remainingStock` จะไม่ลงถึง 0
 

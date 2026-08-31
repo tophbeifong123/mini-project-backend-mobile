@@ -18,6 +18,11 @@ Cross-cutting invariants:
 
 "slide-errata" sections list code in the source PDFs that is broken or wrong. Do not reproduce it.
 
+## → ใช้ไปกี่ข้อจริง
+ตารางที่ map กฎทุกข้อในโฟลเดอร์นี้เข้ากับ `file:line` ของโค้ดจริง อยู่ที่
+[`../architecture_BP_Checklist.md`](../architecture_BP_Checklist.md) — 162 กฎ · APPLIED 102 · PARTIAL 14 · NOT-USED 15 · N/A 31
+และยืนยันว่า **ไม่ได้ลอก slide-errata มาสักข้อ (43/43)**
+
 ## applied in this project
 These notes are the rulebook behind [`docs/Architecture/architecture.md`](../../Architecture/architecture.md) and [`CLAUDE.md`](../../../CLAUDE.md).
 Flash Sale System maps to them as: B02 modular NestJS · B03 atomic decrement + UNIQUE constraint + pooling ·

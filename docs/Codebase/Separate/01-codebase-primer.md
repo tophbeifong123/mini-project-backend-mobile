@@ -91,7 +91,7 @@ flowchart LR
 
 ---
 
-## 3. 📁 แผนที่ไฟล์ (58 ไฟล์ใน `src/` — 53 `.ts` + 5 `.lua`)
+## 3. 📁 แผนที่ไฟล์ (59 ไฟล์ใน `src/` — 54 `.ts` + 5 `.lua`)
 
 | โฟลเดอร์ | ไฟล์ | หน้าที่ |
 | :--- | :--- | :--- |
@@ -114,6 +114,7 @@ flowchart LR
 | | `lua/*.lua` | 5 สคริปต์ atomic (`gatekeeper`, `release-lock`, `compensate`, `compensate-once`, `compensate-if-reserved`) |
 | **config/** | `database.config.ts` | replication master/slaves + poolSize |
 | | `env.validation.ts` | ตรวจ env ตอน boot, พังทันทีถ้าผิด |
+| **database_config/** | `database.module.ts` | `TypeOrmModule.forRootAsync()` — ผูก `database.config.ts` เข้า Nest (`@Global`) · **คนละโฟลเดอร์กับ `database/`** |
 | **database/** | `data-source.ts` | DataSource สำหรับ CLI migration (**master อย่างเดียว**) |
 | | `migrate-and-seed.ts` | สคริปต์ที่ container เรียกตอน boot |
 | | `migrations/…-InitSchema.ts` | DDL ทั้งหมด |
@@ -230,7 +231,7 @@ sequenceDiagram
 แคชจึงอยู่ได้เป็นนาทีโดยไม่ต้องล้างทุกครั้งที่มีคนซื้อ
 
 **② เรียก Redis 2 ครั้งแบบ serial ไม่ใช่ parallel**
-เพราะรายชื่อ `productIds` ที่จะเอาไป `MGET` มาจากผลของ `GET` รอบแรก (`products.service.ts:84-85`)
+เพราะรายชื่อ `productIds` ที่จะเอาไป `MGET` มาจากผลของ `GET` รอบแรก (`products.service.ts:95-96`)
 ต้นทุนจริงประมาณ 0.4–1 ms — ไม่ใช่จุดที่ควรไปปรับ
 
 **③ cache กับ stock ปฏิบัติต่อ error คนละแบบ**
@@ -238,15 +239,15 @@ sequenceDiagram
 | ล้มเหลว | เกิดอะไร | ที่ |
 | :--- | :--- | :--- |
 | `redis-cache` ล่ม | กลืน error → ถือว่า miss → ไปอ่าน DB | `redis.service.ts:273-278` |
-| `redis-data` ล่ม | **degrade** → ตอบ `fallbackRemainingStock` จากแคช + นับ + log ระดับ error | `products.service.ts:130-143` |
+| `redis-data` ล่ม | **degrade** → ตอบ `fallbackRemainingStock` จากแคช + นับ + log ระดับ error | `products.service.ts:148-167` |
 
 > ⚠️ **แก้จากที่เอกสารรุ่นก่อนเขียนไว้**: ตารางนี้เคยเขียนว่า `redis-data` ล่มแล้ว "โยน 503 ไม่ยอมตอบเลข"
 > ซึ่ง**ไม่ตรงกับโค้ดแล้ว** — เปลี่ยนเป็น degrade ตั้งแต่ [Q&A ข้อ 3](02-design-review-qa.md#3-read-path-ควร-503-หรือ-ตอบเลขเก่า)
-> ตอนนี้ `readStocks()` catch แล้วคืน `null` ทุกช่อง (`products.service.ts:142`) ให้ตัว merge ใช้ `fallbackRemainingStock`
-> พร้อมบวก `catalog_degraded_reads_total` (`products.service.ts:135`) — ตัวเลขนี้อ่านได้ที่ `/admin/insights`
+> ตอนนี้ `readStocks()` catch แล้วคืน `null` ทุกช่อง (`products.service.ts:165`) ให้ตัว merge ใช้ `fallbackRemainingStock`
+> พร้อมบวก `catalog_degraded_reads_total` (`products.service.ts:158`) — ตัวเลขนี้อ่านได้ที่ `/admin/insights`
 
 **④ นับ hit/miss ตรงนี้ที่เดียว**
-`this.metrics.inc(cached ? CATALOG_CACHE_HITS : CATALOG_CACHE_MISSES)` (`products.service.ts:78-80`)
+`this.metrics.inc(cached ? CATALOG_CACHE_HITS : CATALOG_CACHE_MISSES)` (`products.service.ts:89-91`)
 เป็น **synchronous ไม่มี I/O** จึงไม่เพิ่ม latency ให้ read path ที่กิน 99% ของโหลด (ดู §9)
 
 ---
@@ -414,16 +415,16 @@ PostgreSQL READ COMMITTED จะ **ประเมิน `WHERE` ใหม่** 
 | `GET /admin/metrics` | Prometheus exposition format (ยังไม่มี Prometheus ในสแตก แต่ `curl` อ่านได้) | `:53-161` |
 | `POST /admin/metrics/reset` | ล้างตัวนับก่อนยิง k6 รอบใหม่ — **ไม่แตะ order/stock** | `:164-169` |
 
-⚠️ **ทั้ง 4 route ถูกครอบด้วย Basic Auth ตัวเดียวกับ Bull-Board** — `main.ts:47` ใช้
-`app.use('/admin', bullBoard.getAuthMiddleware())` ก่อน `app.use(BULL_BOARD_BASE_PATH, …)` (`main.ts:48`)
+⚠️ **ทั้ง 4 route ถูกครอบด้วย Basic Auth ตัวเดียวกับ Bull-Board** — `main.ts:52` ใช้
+`app.use('/admin', bullBoard.getAuthMiddleware())` ก่อน `app.use(BULL_BOARD_BASE_PATH, …)` (`main.ts:53`)
 ครอบที่ prefix `/admin` ทีเดียวจึงคลุม `/admin/queues`, `/admin/insights`, `/admin/metrics` พร้อมกัน
 และ route ใหม่ที่เผลอเพิ่มใต้ `/admin` ทีหลังก็ถูกคลุมอัตโนมัติ
-`LoggingInterceptor` ก็ข้าม `/admin` ทั้ง prefix แล้ว (`logging.interceptor.ts:34`) ไม่งั้นหน้า insights
+`LoggingInterceptor` ก็ข้าม `/admin` ทั้ง prefix แล้ว (`logging.interceptor.ts:55`) ไม่งั้นหน้า insights
 ที่ poll ทุก 3 วิ จะปั๊ม log ทิ้งไว้เต็ม
 
 ### `MetricsService.inc()` — ใครเรียก จากตรงไหน
 
-`inc()` เป็น **synchronous ล้วน ไม่มี I/O** (`metrics.service.ts:85-87`) จึงเรียกจาก hot path ได้
+`inc()` เป็น **synchronous ล้วน ไม่มี I/O** (`metrics.service.ts:83-85`) จึงเรียกจาก hot path ได้
 โดยไม่เพิ่ม latency และไม่มีทาง throw ใส่ผู้เรียก (การวัดผลห้ามทำให้คำสั่งซื้อล้ม)
 
 | ผู้เรียก | บรรทัด | metric |
@@ -432,13 +433,13 @@ PostgreSQL READ COMMITTED จะ **ประเมิน `WHERE` ใหม่** 
 | | `:100` | `ORDERS_GATEKEEPER_ERRORS` |
 | | `:110` `:113` `:125` `:128` | `ORDERS_REJECTED_DUPLICATE` / `_IN_FLIGHT` / `_SOLD_OUT` / `_NO_COUNTER` |
 | | `:159` `:171` | `ORDERS_ENQUEUE_FAILURES` (throw / `job === null`) |
-| | `:192` `:198` | `ORDERS_JOB_UNVERIFIED` / `ORDERS_DEDUPED` |
-| | `:203` | `ORDERS_ACCEPTED` (202) |
-| | `:246` `:254` `:261` | `compensateIfReserved()` — สั่ง / คืนได้จริง / ล้มเหลว |
-| | `:275` `:278` `:280` | `compensate()` — สั่ง / คืนได้จริง / ล้มเหลว |
+| | `:198` `:204` | `ORDERS_JOB_UNVERIFIED` / `ORDERS_DEDUPED` |
+| | `:209` | `ORDERS_ACCEPTED` (202) |
+| | `:254` `:262` `:269` | `compensateIfReserved()` — สั่ง / คืนได้จริง / ล้มเหลว |
+| | `:283` `:286` `:288` | `compensate()` — สั่ง / คืนได้จริง / ล้มเหลว |
 | `orders.processor.ts` | `:95` `:116` `:124` `:126` `:162` `:169` `:192-196` | ดู §8 ข้อ ⑤ |
-| `products.service.ts` | `:78-80` | `CATALOG_CACHE_HITS` / `_MISSES` |
-| | `:135` | `CATALOG_DEGRADED_READS` |
+| `products.service.ts` | `:89-91` | `CATALOG_CACHE_HITS` / `_MISSES` |
+| | `:158` | `CATALOG_DEGRADED_READS` |
 
 **ทำไมต้อง buffer แล้วค่อย flush** (`metrics.service.ts:34-46`): ถ้า `HINCRBY` ทุกครั้งที่นับ
 ตอนยิง 1,500 rps จะเพิ่มภาระให้ `redis-data` อีก ~1,500 ops/s **บน connection เดียวกับที่ gatekeeper ใช้**
@@ -446,7 +447,7 @@ PostgreSQL READ COMMITTED จะ **ประเมิน `WHERE` ใหม่** 
 
 **ไม่ขัดกฎ stateless** (CLAUDE.md §5 ข้อ 1) เพราะแหล่งจริงคือ hash บน `redis-data`
 ตัวใน RAM เป็น write-behind buffer อายุ ≤ 1 วินาที · flush ปิดท้ายที่ `onModuleDestroy()`
-(`metrics.service.ts:73-79`) ดังนั้น SIGTERM ปกติไม่หาย **แต่ SIGKILL หายได้ ≤ 1 วินาทีสุดท้าย**
+(`metrics.service.ts:71-77`) ดังนั้น SIGTERM ปกติไม่หาย **แต่ SIGKILL หายได้ ≤ 1 วินาทีสุดท้าย**
 ถ้า flush ล้ม จะเอาของกลับเข้า buffer ไม่ทิ้ง (`:159-172`) และ log แค่ 1 ใน 30 ครั้งกัน log storm
 
 ### `IntegrityService.check()` — อ่านทั้ง Redis และ DB แล้วเทียบ
@@ -491,11 +492,11 @@ readRedis() × 2        → INFO ของ redis-cache และ redis-data (hit
 ### สิ่งที่ต้องระวัง
 
 - `INSTANCE_ID` มาจาก `docker-compose.yml` (`app-1` … `app-6`) ถ้าไม่ตั้ง จะ fallback เป็น `hostname()`
-  (`metrics.service.ts:62`) — ถ้าทั้ง 6 ตัวได้ค่าเดียวกัน field ใน `metrics:instances` จะทับกัน
+  (`metrics.service.ts:60`) — ถ้าทั้ง 6 ตัวได้ค่าเดียวกัน field ใน `metrics:instances` จะทับกัน
 - instance ที่ heartbeat เก่ากว่า 15 วินาที หน้าเว็บจะขึ้นว่า stale (เกณฑ์นี้ hardcode อยู่ในหน้าเว็บเอง `insights.page.ts:309`)
-- `metrics:counters` / `metrics:instances` อยู่บน **`redis-data`** (`redis.keys.ts:38` `:41`) ไม่ใช่ `redis-cache`
+- `metrics:counters` / `metrics:instances` อยู่บน **`redis-data`** (`redis.keys.ts:46` `:49`) ไม่ใช่ `redis-cache`
   เพราะ `allkeys-lru` จะ evict ตัวนับหายเงียบๆ
-- `RESET_CONFIRM=yes pnpm run reset` ล้าง 2 key นั้นให้ด้วยแล้ว (`database/reset.ts:79-82`)
+- `RESET_CONFIRM=yes pnpm run reset` ล้าง 2 key นั้นให้ด้วยแล้ว (`database/reset.ts:82-85`)
   ไม่งั้นตัวเลขในรายงานจะเป็นผลรวมของหลายรอบ
 
 ---
@@ -604,9 +605,9 @@ flowchart TD
 | pool size | 8 ต่อ pool | `database.config.ts:52` (`.env.example` เขียน 10 · `docker-compose.yml` ทับเป็น 8) | ที่ 6 instance เกิน ~13 จะชนเพดาน 80% ของ `max_connections=100` |
 | BullMQ attempts | 3, backoff exp 200 ms | `orders.service.ts:152-153` | เป็นตัวกำหนดว่า `isFinalAttempt` เมื่อไหร่ |
 | `removeOnComplete` | `{count: 5000}` | `orders.service.ts:154` | ต่ำไป → job เก่าหาย → dedup พัง |
-| nginx read timeout | 10 s | `nginx.conf:95` | p99 เกิน 10 วิ กลายเป็น 504 |
+| nginx read timeout | 10 s | `nginx.conf:94` | p99 เกิน 10 วิ กลายเป็น 504 |
 | metrics flush | 1,000 ms | `metrics.service.ts:18` | ต่ำไป = เครื่องมือวัดไปกวน `redis-data` ที่กำลังวัด |
-| instance ถือว่าตาย | 15,000 ms | `metrics.service.ts:20` | หน้า insights ขึ้น stale เร็ว/ช้าเกินจริง |
+| instance ถือว่าตาย | **15 วินาที** (เทียบเป็นวินาที ไม่ใช่ ms) | `insights.page.ts:309` | หน้า insights ขึ้น stale เร็ว/ช้าเกินจริง |
 | Bull-Board metrics | เก็บ 1 สัปดาห์ | `orders.processor.ts:43` | ไม่ตั้ง = แท็บ Metrics เป็นกราฟเปล่า |
 
 ### Lua return code → HTTP
