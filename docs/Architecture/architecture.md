@@ -799,7 +799,7 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 
 | ทรัพยากร | มีเท่าไหร่ | ใครกิน |
 | :--- | :--- | :--- |
-| vCPU | **4 core** | 6 Node process (app) + nginx `worker_processes auto` (→ 4) + postgres ×2 + redis ×2 = **11 container** |
+| vCPU | **4 core** | 6 Node process (app) + nginx `worker_processes 2` (ผูกกับ `cpus: 1.0`) + postgres ×2 + redis ×2 = **11 container** |
 | RAM | **6 GB** | redis จองไว้แล้ว 768 MB (256 + 512) · PG primary `shared_buffers=256MB` · PG replica default 128MB · ที่เหลือหาร 6 Node process |
 | Storage | **30 GB** | ดู §8.2 ข้อ 3 |
 
