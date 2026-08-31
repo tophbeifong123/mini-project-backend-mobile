@@ -35,7 +35,8 @@ container ขึ้นจริงและยิง k6 มาแล้ว — �
 | **ไม่มี e2e test** | `pnpm run test:e2e` exit non-zero ("no tests found") — มีแต่ unit test 49 ข้อ |
 | **ยังไม่ได้ทำรายงาน PDF** | diagram มีวัตถุดิบอยู่แล้วใน [`diagrams.md`](docs/Architecture/diagrams.md) แต่ยังไม่มีตัวรายงาน |
 | **ยังไม่ได้เก็บ dashboard** | Cache Hit/Miss (ใช้ `./scripts/cache-stats.sh`) และภาพ Bull-Board ตอน Completed = 50 |
-| **ยังไม่เคยยิงที่โหลดต่ำกว่าเพดาน** | ตัวเลข latency ที่มีตอนนี้มาจากการยิงเกินเพดานราว 2 เท่า ใช้เทียบกับกลุ่มเพื่อนตรงๆ ไม่ได้ — เพดานที่วัดได้คือ ~1,500 rps (ที่ 400 VUs: p95 237ms, error 0) — ⚠️ **วัดตอน 3 instance ยังไม่ได้วัดซ้ำหลังขยายเป็น 6** |
+| **ยังไม่เคยยิงที่โหลดต่ำกว่าเพดาน** | ตัวเลข latency ที่มีตอนนี้มาจากการยิงเกินเพดานราว 2 เท่า ใช้เทียบกับกลุ่มเพื่อนตรงๆ ไม่ได้ — เพดานที่วัดได้คือ ~1,500 rps (ที่ 400 VUs: p95 237ms, error 0) — ⚠️ **วัดตอน 3 instance ยังไม่ได้วัดซ้ำหลังขยายเป็น 6** · **2026-08-31**: ทำ closed-loop VU sweep เพิ่มบน dev Mac (config เก่า 8-instance) เจอ throughput พีคแถว 100 VUs (7,733 rps, p95 28ms) แล้ว**ยุบตัว**ตั้งแต่ ~200 VUs ขึ้นไป (400 VUs → 2,402 rps p95 469ms · 800 VUs → ~1,100 rps p95 1.78–17.5s มี 502) — แต่วัดบนเครื่อง dev ไม่ใช่ VM เป้าหมาย และ noise สูงมาก (7 รอบ 200 VUs เดียวกันได้ 700–5,406 rps ต่างกัน 7.7 เท่า จาก host load 35–56) จึงยัง**เอาไปเทียบกับกลุ่มเพื่อนตรงๆ ไม่ได้เหมือนเดิม** |
+| **config ที่ right-size แล้วยังไม่เคยยิงบน VM เป้าหมายจริง** | 2026-08-31 แก้ `docker-compose.yml` ให้ตรงกับ 4-core/6GB ตาม `architecture.md` §8.1 แล้ว (ลบ `app-7`/`app-8` ที่ดริฟต์ไปแบบไม่มีบันทึก, `cpus` app-N กลับเป็น `0.75` — รวมทั้งสแตก `cpus` 18.0→8.5, `mem_limit` 7,424→5,440 MB; VM เป้าหมายมี 6,144 MB ดังนั้นค่าเดิมเกิน RAM จริง 121%, ค่าใหม่ 88.5%) แต่ **ยิงทดสอบแค่บน dev Mac เท่านั้น** — หลังแก้ config ยิงซ้ำบนเครื่องเดิมกลับได้ผล**แย่กว่าก่อนแก้** (read p95 3,214ms / write p95 10,300ms, 5xx 1,308 ครั้ง จากเดิม 0) สมมติฐานคือ cgroup CPU ceiling ของ app tier (8×1.5=12.0 → 6×0.75=4.5) ไปบีบคอเครื่อง dev 8-core ซึ่ง**อาจไม่เกิดแบบเดียวกันบน VM 4-core จริง — ยังไม่ได้พิสูจน์** รายละเอียดเต็มดู [`handoff_log/handoff_31_08_2026_right-size-to-4core-vm.md`](handoff_log/handoff_31_08_2026_right-size-to-4core-vm.md) |
 
 ### ⚠️ ถ้าจะรันด้วย podman ต้องเช็คก่อน (บน `docker compose` ผ่านมาแล้ว)
 
@@ -102,7 +103,7 @@ podman compose version                                  # podman-compose (python
 | Runtime | Node.js `>= 20.x` (แนะนำ `v22.x`) | |
 | Package Manager | **`pnpm` เท่านั้น** | ห้าม `npm` / `yarn` เด็ดขาด |
 | Framework | NestJS `^11` (Express platform) | โครงสร้างแบบ **modular by domain** |
-| Load Balancer | Nginx alpine | `least_conn` + keepalive 128 → ≥ 3 instances (รันจริง **6**) |
+| Load Balancer | Nginx alpine | `least_conn` + keepalive 768 → ≥ 3 instances (รันจริง **6**) |
 | Database | PostgreSQL 16 (Primary `:5432` / Replica `:5433`) | TypeORM replication (read-write split) |
 | Cache | Redis 7 — **`redis-cache`** `allkeys-lru` | metadata cache เท่านั้น |
 | Stock + Queue | Redis 7 — **`redis-data`** `noeviction` + AOF | stock counter, lock, BullMQ |

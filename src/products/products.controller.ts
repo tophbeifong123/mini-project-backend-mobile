@@ -1,4 +1,4 @@
-import { Controller, Get, Query, ValidationPipe } from '@nestjs/common';
+import { Controller, Get, Query } from '@nestjs/common';
 
 import { ListProductsDto } from './dto/list-products.dto';
 import {
@@ -20,10 +20,11 @@ export class ProductsController {
   /** read-heavy path (CLAUDE.md §3) — 1,000 concurrent users */
   @Get()
   async listProducts(
-    // ประกาศ pipe ตรงนี้ด้วย เพื่อให้ค่า default ของ DTO ทำงานแน่นอน
-    // ไม่ว่า global ValidationPipe จะตั้ง transform ไว้หรือไม่
-    @Query(new ValidationPipe({ transform: true, whitelist: true }))
-    query: ListProductsDto,
+    // ⚠️ ห้ามประกาศ ValidationPipe ซ้ำตรงนี้ — global pipe ใน main.ts เป็น superset อยู่แล้ว
+    //    (transform + whitelist + enableImplicitConversion) และ pipe ระดับ param
+    //    ถูกเรียก "เพิ่ม" ไม่ใช่ "แทนที่" → class-transformer ทำงาน 2 รอบต่อ 1 คำขอ
+    //    บน endpoint ที่ร้อนที่สุดของระบบ (ถอดออก 2026-08-31)
+    @Query() query: ListProductsDto,
   ): Promise<ListProductsResponse> {
     const { data, meta } = await this.productsService.listProducts(
       query.page,

@@ -31,6 +31,13 @@ function buildOptions(
      * ตั้ง 1 วิ: นานกว่า p99 ปกติหลายสิบเท่า แต่สั้นกว่า timeout ของ nginx มาก
      */
     commandTimeout: 1_000,
+    /**
+     * รวมคำสั่งที่ถูกสั่งใน event-loop tick เดียวกันเป็น pipeline เดียว
+     * read path ยิง 2 คำสั่ง/คำขอ (cache GET + data MGET) ที่ ~800 rps/instance
+     * → เดิมคือ write() syscall ต่อคำสั่ง, ตอนนี้ batch ให้เหลือครั้งเดียวต่อ tick
+     * ไม่เปลี่ยน semantic ของคำสั่งใดๆ (multi/exec และ Lua ยังทำงานเหมือนเดิม)
+     */
+    enableAutoPipelining: true,
     enableReadyCheck: true,
     lazyConnect: false,
     // exponential backoff แบบมีเพดาน — ระหว่าง flash sale ห้าม hammer redis

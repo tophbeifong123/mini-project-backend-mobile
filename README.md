@@ -35,8 +35,11 @@ k6 (1,000 read VUs + 500 write VUs)
   Nginx :8080  ── least_conn + keepalive
         │
         ├──► app-1 ─┐
-        ├──► app-2 ─┼── NestJS (API + BullMQ worker)  ◄── JWT HS256 (stateless)
-        └──► app-3 ─┘
+        ├──► app-2 ─┤
+        ├──► app-3 ─┼── NestJS (API + BullMQ worker)  ◄── JWT HS256 (stateless)
+        ├──► app-4 ─┤
+        ├──► app-5 ─┤
+        └──► app-6 ─┘
                      │
         ┌────────────┴─────────────┐
         ▼                          ▼
@@ -78,13 +81,13 @@ k6 (1,000 read VUs + 500 write VUs)
 ### แบบ 1-click (ที่ใช้ตอนส่งงาน)
 
 ```bash
-podman compose up -d          # Nginx + app ×3 + PG primary/replica + redis ×2
+podman compose up -d          # Nginx + app ×6 + PG primary/replica + redis ×2
 podman compose ps             # รอจน healthy ครบ (~40-60 วิ ครั้งแรกเพราะต้อง build image)
 ```
 
 **ไม่ต้องรัน migration / seed เอง** — `scripts/app-entrypoint.sh` ทำให้แล้วใน `app-1`
-(migration → seed DB → seed Redis counter) ส่วน `app-2`/`app-3` จะรอจนกว่าทั้งสองอย่างเสร็จค่อยรับ traffic
-และ nginx จะรอจน app ทั้งสามตัวตอบ `/health/live` ได้ก่อน
+(migration → seed DB → seed Redis counter) ส่วน `app-2`-`app-6` จะรอจนกว่าทั้งสองอย่างเสร็จค่อยรับ traffic
+และ nginx จะรอจน app ทั้งหกตัวตอบ `/health/live` ได้ก่อน
 
 ```bash
 # ตรวจว่าระบบพร้อมจริง
