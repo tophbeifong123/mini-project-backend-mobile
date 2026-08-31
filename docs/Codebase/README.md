@@ -7,10 +7,6 @@
 | :--- | :--- |
 | เพิ่งเข้ามาใหม่ อยากรู้ว่าโค้ดเชื่อมกันยังไง | [`Separate/01-codebase-primer.md`](Separate/01-codebase-primer.md) |
 | อยากรู้ว่าดีไซน์ยังมีจุดอ่อนตรงไหน ใครเถียงอะไรกัน | [`Separate/02-design-review-qa.md`](Separate/02-design-review-qa.md) |
-| อ่านรวดเดียวจบ | [`All_in_one/codebase-guide.md`](All_in_one/codebase-guide.md) |
-
-> เนื้อหาในสองโฟลเดอร์ **เหมือนกันทุกตัวอักษร** ต่างกันแค่รวมไฟล์หรือแยกไฟล์
-> `All_in_one/` ถูก generate — แก้ที่ `Separate/` แล้วรัน `node scripts/build-all-in-one.mjs`
 
 ---
 
