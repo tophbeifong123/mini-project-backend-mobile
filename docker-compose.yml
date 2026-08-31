@@ -191,7 +191,10 @@ services:
     container_name: fs-app-1
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    # One Node.js process can use one vCPU when busy.  The previous 0.75 quota
+    # throttled every API instance during the 1,000-reader burst even when the
+    # host scheduler still had capacity on another core.
+    cpus: "1.0"
     logging:
       driver: "json-file"
       options:
@@ -199,6 +202,9 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
+      # Keep warnings/errors for diagnosis without serializing and writing one
+      # JSON log line for every successful read on the benchmark hot path.
+      LOG_LEVEL: warn
       NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-1
@@ -225,7 +231,10 @@ services:
       CATALOG_CACHE_TTL_BASE: "30"
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
-      WORKER_CONCURRENCY: "5"
+      # Six instances already provide six workers.  A concurrency of 5 per
+      # instance created 30 concurrent transactions against a 1-vCPU primary
+      # and starved the HTTP event loops during the write burst.
+      WORKER_CONCURRENCY: "1"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -257,7 +266,7 @@ services:
     container_name: fs-app-2
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    cpus: "1.0"
     logging:
       driver: "json-file"
       options:
@@ -265,6 +274,7 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
+      LOG_LEVEL: warn
       NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-2
@@ -289,7 +299,7 @@ services:
       CATALOG_CACHE_TTL_BASE: "30"
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
-      WORKER_CONCURRENCY: "5"
+      WORKER_CONCURRENCY: "1"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -320,7 +330,7 @@ services:
     container_name: fs-app-3
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    cpus: "1.0"
     logging:
       driver: "json-file"
       options:
@@ -328,6 +338,7 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
+      LOG_LEVEL: warn
       NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-3
@@ -352,7 +363,7 @@ services:
       CATALOG_CACHE_TTL_BASE: "30"
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
-      WORKER_CONCURRENCY: "5"
+      WORKER_CONCURRENCY: "1"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -383,7 +394,7 @@ services:
     container_name: fs-app-4
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    cpus: "1.0"
     logging:
       driver: "json-file"
       options:
@@ -391,6 +402,7 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
+      LOG_LEVEL: warn
       NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-4
@@ -415,7 +427,7 @@ services:
       CATALOG_CACHE_TTL_BASE: "30"
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
-      WORKER_CONCURRENCY: "5"
+      WORKER_CONCURRENCY: "1"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -446,7 +458,7 @@ services:
     container_name: fs-app-5
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    cpus: "1.0"
     logging:
       driver: "json-file"
       options:
@@ -454,6 +466,7 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
+      LOG_LEVEL: warn
       NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-5
@@ -478,7 +491,7 @@ services:
       CATALOG_CACHE_TTL_BASE: "30"
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
-      WORKER_CONCURRENCY: "5"
+      WORKER_CONCURRENCY: "1"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -509,7 +522,7 @@ services:
     container_name: fs-app-6
     restart: unless-stopped
     mem_limit: 512m
-    cpus: "0.75"
+    cpus: "1.0"
     logging:
       driver: "json-file"
       options:
@@ -517,6 +530,7 @@ services:
         max-file: "3"
     environment:
       NODE_ENV: production
+      LOG_LEVEL: warn
       NODE_OPTIONS: "--max-old-space-size=384"
       PORT: "3000"
       INSTANCE_ID: app-6
@@ -541,7 +555,7 @@ services:
       CATALOG_CACHE_TTL_BASE: "30"
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
-      WORKER_CONCURRENCY: "5"
+      WORKER_CONCURRENCY: "1"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -569,7 +583,9 @@ services:
     container_name: fs-nginx
     restart: unless-stopped
     mem_limit: 256m
-    cpus: "0.5"
+    # Nginx owns all 1,500 concurrent client connections and JSON access logs;
+    # a half-vCPU quota made the edge itself compete with upstream latency.
+    cpus: "1.0"
     logging:
       driver: "json-file"
       options:
