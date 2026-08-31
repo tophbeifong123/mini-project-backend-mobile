@@ -39,7 +39,7 @@ const USER_PREFIX = __ENV.USER_PREFIX || 'user-';
 const TOTAL_PRODUCTS = Number(__ENV.TOTAL_PRODUCTS || 20);
 
 // Tunables สำหรับระยะเวลาการทดสอบ
-const READ_DURATION = __ENV.READ_DURATION || '60s';
+const READ_DURATION = __ENV.READ_DURATION || '30s';
 const WRITE_MAX_DURATION = __ENV.WRITE_MAX_DURATION || '45s';
 const WRITE_ITERATIONS = Number(__ENV.WRITE_ITERATIONS || 3);
 

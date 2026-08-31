@@ -12,7 +12,9 @@
  *                  has to finish for everyone. Aborts the run if any != 200.
  *   2. read_load — timed, kept as short as still gives a stable p95; goal is
  *                  minimum duration + minimum failures. 1,000 concurrent VUs,
- *                  GET /api/v1/products?page=1&limit=10.
+ *                  GET /api/v1/products with page + limit rotated per request
+ *                  (limit in {5,10,20}); each response must echo the scope it
+ *                  was asked for and return exactly the rows in that window.
  *   3. write_load— timed the same way. 500 concurrent, POST /api/v1/orders for
  *                  p-1001 (stock 50); every Nth VU double/triple-fires
  *                  concurrently to exercise the duplicate-rights guard.
@@ -29,14 +31,18 @@ import { Counter, Rate, Trend } from 'k6/metrics';
 // ============================ Tunables (env-overridable) ====================
 const BASE_URL = __ENV.BASE_URL || 'http://localhost';
 const USER_COUNT = Number(__ENV.USER_COUNT || 500); // unique users / JWTs
-const USER_PREFIX = __ENV.USER_PREFIX || 'user-';
 const PRODUCT_ID = __ENV.PRODUCT_ID || 'p-1001'; // write contention target
 const REQ_TIMEOUT = __ENV.REQ_TIMEOUT || '10s'; // per-request HTTP timeout
+const TOTAL_PRODUCTS = Number(__ENV.TOTAL_PRODUCTS || 20); // catalogue size (spec §2.2 example: total 20)
+const READ_LIMITS = String(__ENV.READ_LIMITS || '5,10,20') // limit values the read phase rotates through
+  .split(',')
+  .map((n) => Number(n.trim()))
+  .filter((n) => n > 0);
 
 // -- read phase: minimise wall time while still hitting a true 1,000-VU plateau.
 // Ramp is gentle on purpose — a 5s slam to 1,000 VUs stampedes the api tier
 // before its caches/JIT warm and drags p95 well past 500ms.
-const READ_TARGET = Number(__ENV.READ_TARGET || 1500);
+const READ_TARGET = Number(__ENV.READ_TARGET || 1000);
 const READ_RAMP = __ENV.READ_RAMP || '10s';
 const READ_HOLD = __ENV.READ_HOLD || '18s';
 const READ_DOWN = __ENV.READ_DOWN || '2s';
@@ -61,24 +67,20 @@ const infraFail = new Rate('infra_failures'); // 5xx / timeout / unexpected 4xx 
 const ordersAccepted = new Counter('orders_accepted'); // HTTP 202
 const ordersSoldout = new Counter('orders_soldout'); // HTTP 409 "Product sold out"
 const ordersDuplicate = new Counter('orders_duplicate'); // HTTP 409 already-claimed
-const ordersThrottled = new Counter('orders_throttled_429'); // HTTP 429 in-flight lock
 const readCacheHitPct = new Trend('read_cache_hit_pct'); // sampled during read phase
 const writeQueueBacklog = new Trend('write_queue_backlog'); // waiting+active, sampled during write
-const edgeCacheHit = new Rate('edge_cache_hit'); // nginx X-Cache: HIT vs miss/expired
 const dataIntegrityOk = new Rate('data_integrity_ok'); // post-burst remainingStock == 0
 
 const REQ = { timeout: REQ_TIMEOUT };
 const JSON_HDR = { 'Content-Type': 'application/json' };
 
 // A response is an infra failure only if it is neither the read success (200)
-// nor an expected order outcome (202 accepted, 409 conflict, 429 in-flight lock).
+// nor an expected order outcome (202 accepted, 409 sold-out / duplicate).
 function isInfraFailure(res) {
   if (res.status === 0) return true; // timeout / connection error
-  if (res.status === 200 || res.status === 202 || res.status === 409 || res.status === 429) return false;
+  if (res.status === 200 || res.status === 202 || res.status === 409) return false;
   return true;
 }
-
-http.setResponseCallback(http.expectedStatuses(200, 202, 409, 429));
 
 // ============================ Options =====================================
 export const options = {
@@ -118,12 +120,12 @@ export const options = {
 export function setup() {
   const requests = [];
   for (let i = 1; i <= USER_COUNT; i++) {
-    requests.push(['POST', `${BASE_URL}/api/v1/auth/token`, JSON.stringify({ userId: `${USER_PREFIX}${i}` }), { headers: JSON_HDR, timeout: REQ_TIMEOUT }]);
+    requests.push(['POST', `${BASE_URL}/api/v1/auth/token`, JSON.stringify({ userId: `user-${i}` }), { headers: JSON_HDR, timeout: REQ_TIMEOUT }]);
   }
   const responses = http.batch(requests);
 
   const tokens = responses.map((res, idx) => {
-    const userId = `${USER_PREFIX}${idx + 1}`;
+    const userId = `user-${idx + 1}`;
     if (res.status !== 200) {
       throw new Error(`setup: auth/token for ${userId} returned ${res.status} (spec §2.1 requires 200) — body: ${res.body}`);
     }
@@ -132,31 +134,37 @@ export function setup() {
     return token;
   });
 
-  console.log(`setup: issued ${tokens.length} JWTs (${USER_PREFIX}1..${USER_PREFIX}${tokens.length})`);
+  console.log(`setup: issued ${tokens.length} JWTs (user-1..user-${tokens.length})`);
   return { tokens };
 }
 
 // ============================ 2. read phase ===============================
 export function readScenario() {
-  const res = http.get(`${BASE_URL}/api/v1/products?page=1&limit=10`, { ...REQ, tags: { name: 'products' } });
+  // Rotate page + limit (spec §3 note: "Load test มีการลองเปลี่ยน page, limit บ้าง").
+  // Varying the query also spreads cache keys, so read_cache_hit_pct reflects a
+  // realistic multi-key workload rather than a single hot key.
+  const limit = READ_LIMITS[Math.floor(Math.random() * READ_LIMITS.length)];
+  const maxPage = Math.max(1, Math.ceil(TOTAL_PRODUCTS / limit));
+  const page = 1 + Math.floor(Math.random() * maxPage);
+  const expectedRows = Math.min(limit, Math.max(0, TOTAL_PRODUCTS - (page - 1) * limit));
 
-  // nginx edge cache effectiveness (spec §3.1 cache hit ratio, L1/edge tier)
-  edgeCacheHit.add(res.headers['X-Cache'] === 'HIT');
+  const res = http.get(`${BASE_URL}/api/v1/products?page=${page}&limit=${limit}`, { ...REQ, tags: { name: 'products' } });
 
   check(res, {
     'read: status 200': (r) => r.status === 200,
-    'read: has meta': (r) => {
+    // spec §2.2 challenge: response must echo the exact scope it was asked for.
+    'read: meta echoes scope': (r) => {
       try {
         const j = r.json();
-        return !!j && !!j.meta && j.meta.page === 1 && j.meta.limit === 10;
+        return !!j && !!j.meta && j.meta.page === page && j.meta.limit === limit;
       } catch (e) {
         return false;
       }
     },
-    'read: data <= limit': (r) => {
+    'read: rows match page window': (r) => {
       try {
         const j = r.json();
-        return Array.isArray(j.data) && j.data.length <= 10;
+        return Array.isArray(j.data) && j.data.length <= limit && j.data.length === expectedRows;
       } catch (e) {
         return false;
       }
@@ -187,19 +195,12 @@ export function writeScenario(data) {
 }
 
 function tallyOrder(res) {
-  const ok = check(res, {
-    'write: status 202, 409, or 429': (r) =>
-      r.status === 202 || r.status === 409 || r.status === 429,
-  });
+  const ok = check(res, { 'write: status 202 or 409': (r) => r.status === 202 || r.status === 409 });
   infraFail.add(isInfraFailure(res));
   if (!ok) return;
 
   if (res.status === 202) {
     ordersAccepted.add(1);
-    return;
-  }
-  if (res.status === 429) {
-    ordersThrottled.add(1);
     return;
   }
   let msg = '';
@@ -208,7 +209,7 @@ function tallyOrder(res) {
   } catch (e) {
     /* keep '' */
   }
-  if (msg === 'Sold out' || msg === 'Product sold out') ordersSoldout.add(1);
+  if (msg === 'Product sold out') ordersSoldout.add(1);
   else ordersDuplicate.add(1);
 }
 
@@ -260,7 +261,7 @@ export function teardown() {
 
   // Data Integrity Proof (spec §3.4): once the queue is drained, the read API
   // must report remainingStock === 0 for the contended product — proves the
-  // edge + Redis cache was invalidated correctly and never served a stale count.
+  // Redis cache was invalidated correctly and never served a stale count.
   let integrityLine = '  remainingStock after drain : (not checked)';
   {
     const res = http.get(`${BASE_URL}/api/v1/products?page=1&limit=10`, REQ);
@@ -287,15 +288,22 @@ export function teardown() {
   const q = m.queue || {};
   const hit = c.cache_hit || 0;
   const miss = c.cache_miss || 0;
+  const dbBuild = c.db_build || 0; // misses that actually reached Postgres (rest were coalesced)
+  const waitHit = c.cache_wait_hit || 0; // misses parked on the L2 lock, served once the builder published
+  const waitTimeout = c.cache_wait_timeout || 0; // waited out WAIT_MAX_MS, built uncached
   const tot = hit + miss || 1;
   const pct = (n) => ((n / tot) * 100).toFixed(2);
+  const coalesced = miss > 0 ? (((miss - dbBuild) / miss) * 100).toFixed(2) : '0.00';
 
   const lines = [
     '',
     '================  CACHE CHECK (GET /api/v1/_metrics)  ================',
     `  Redis hit             : ${hit}  (${pct(hit)}%)`,
-    `  miss (Postgres build) : ${miss}  (${pct(miss)}%)`,
+    `  miss (cold key)       : ${miss}  (${pct(miss)}%)`,
     `  HIT / MISS ratio      : ${pct(hit)}%  /  ${pct(miss)}%`,
+    `  Postgres builds       : ${dbBuild}   (${coalesced}% of misses coalesced by L1+L2 single-flight)`,
+    `  parked on L2 lock     : ${waitHit}  served after builder published`,
+    `  L2 wait timeouts      : ${waitTimeout}  (built uncached to stay responsive)`,
     '',
     '================  QUEUE CHECK  ======================================',
     `  waiting=${q.waiting ?? '?'}  active=${q.active ?? '?'}  delayed=${q.delayed ?? '?'}`,
@@ -351,14 +359,12 @@ export function handleSummary(data) {
     `    requests ......... ${g('http_reqs', 'count')}   (${f2(g('http_reqs', 'rate'))}/s overall)`,
     `    p95 latency ...... ${f2(g(rd, 'p(95)'))} ms   (p99 ${f2(g(rd, 'p(99)'))} ms, max ${f2(g(rd, 'max'))} ms)`,
     `    checks .......... ${f2(g('checks{scenario:read_load}', 'rate') * 100)}% pass`,
-    `    edge cache hit ... ${f2(g('edge_cache_hit', 'rate') * 100)}% (nginx X-Cache)`,
-    `    origin cache hit . ${f2(g('read_cache_hit_pct', 'avg'))}% avg (Redis page cache, sampled)`,
+    `    cache hit ........ ${f2(g('read_cache_hit_pct', 'avg'))}% avg (Redis cache-aside, sampled)`,
     '',
     '  WRITE PHASE',
     `    orders accepted .. ${g('orders_accepted', 'count')}   (expect 50)`,
     `    409 sold out ..... ${g('orders_soldout', 'count')}`,
     `    409 duplicate .... ${g('orders_duplicate', 'count')}`,
-    `    429 in-flight .... ${g('orders_throttled_429', 'count')}`,
     `    p95 latency ...... ${f2(g(wd, 'p(95)'))} ms   (max ${f2(g(wd, 'max'))} ms)`,
     `    checks .......... ${f2(g('checks{scenario:write_load}', 'rate') * 100)}% pass`,
     `    queue backlog .... peak ${g('write_queue_backlog', 'max')} (waiting+active, sampled)`,
