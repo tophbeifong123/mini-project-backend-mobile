@@ -604,14 +604,14 @@ services:
       NODE_OPTIONS: "--max-old-space-size=160 --max-semi-space-size=16"
       INSTANCE_ID: orders-worker
 
-      JWT_SECRET: flash-sale-dev-secret-change-me
-      JWT_EXPIRES_IN: 15m
+      JWT_SECRET: ${JWT_SECRET:-flash-sale-dev-secret-change-me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
 
       DB_HOST: postgres-primary
       DB_PORT: "5432"
-      DB_USERNAME: flashsale
-      DB_PASSWORD: flashsale
-      DB_DATABASE: flashsale
+      DB_USERNAME: ${DB_USERNAME:-${POSTGRES_USER:-flashsale}}
+      DB_PASSWORD: ${DB_PASSWORD:-${POSTGRES_PASSWORD:-flashsale}}
+      DB_DATABASE: ${DB_DATABASE:-${POSTGRES_DB:-flashsale}}
       DB_REPLICA_HOST: postgres-replica
       DB_REPLICA_PORT: "5432"
       DB_POOL_SIZE: "8"
@@ -627,8 +627,8 @@ services:
       WORKER_CONCURRENCY: "1"
       ORDER_WORKER_ENABLED: "true"
 
-      BULL_BOARD_USER: admin
-      BULL_BOARD_PASSWORD: admin
+      BULL_BOARD_USER: ${BULL_BOARD_USER:-admin}
+      BULL_BOARD_PASSWORD: ${BULL_BOARD_PASSWORD:-admin}
     depends_on:
       postgres-primary:
         condition: service_healthy
