@@ -94,6 +94,21 @@ export class LoggingInterceptor implements NestInterceptor {
               ? (error as { status: number }).status
               : 500;
 
+          // 409/429 ของ order admission เป็น expected business outcome ตอน
+          // flash-sale burst ไม่ใช่ operational failure การเขียน warn ซ้ำเป็นพัน
+          // บรรทัดจะบล็อก stdout ของ container และเพิ่ม tail latency โดยไม่เพิ่ม
+          // signal: MetricsService นับผลลัพธ์เหล่านี้อยู่แล้ว และ nginx access log
+          // ยังคงบันทึกครบทุก request จำกัดเงื่อนไขไว้เฉพาะ endpoint นี้เพื่อไม่
+          // ซ่อน 409/429 ที่อาจผิดปกติจาก endpoint อื่น
+          const isExpectedOrderRejection =
+            method === 'POST' &&
+            (path === '/api/v1/orders' || path.startsWith('/api/v1/orders?')) &&
+            (statusCode === 409 || statusCode === 429);
+
+          if (isExpectedOrderRejection) {
+            return;
+          }
+
           this.logger.warn(
             {
               correlationId,

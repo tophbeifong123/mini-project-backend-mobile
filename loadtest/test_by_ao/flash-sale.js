@@ -33,35 +33,35 @@ import { textSummary } from 'https://jslib.k6.io/k6-summary/0.0.3/index.js';
 // CONFIG
 // ============================================================================
 
-const BASE_URL        = __ENV.BASE_URL || 'http://localhost';
-const TOTAL_USERS     = 500;                    // spec: user-1..user-500
-const TOTAL_PRODUCTS  = 20;                     // from products-seed.json
-const TARGET_PRODUCT  = 'p-1001';
-const TARGET_STOCK    = 50;                     // expected SUCCESS count
+const BASE_URL = __ENV.BASE_URL || 'http://localhost';
+const TOTAL_USERS = 500; // spec: user-1..user-500
+const TOTAL_PRODUCTS = 20; // from products-seed.json
+const TARGET_PRODUCT = 'p-1001';
+const TARGET_STOCK = 50; // expected SUCCESS count
 
 const WARMUP_DURATION = '5s';
-const LOAD_DURATION   = '30s';
-const WARMUP_VUS      = 200;
-const READ_VUS        = 1000;                   // spec
-const WRITE_VUS       = 500;                    // spec
-const BATCH_SIZE      = 50;                     // JWT fetch parallelism in setup
+const LOAD_DURATION = '30s';
+const WARMUP_VUS = 200;
+const READ_VUS = 1000; // spec
+const WRITE_VUS = 500; // spec
+const BATCH_SIZE = 50; // JWT fetch parallelism in setup
 
-const REQ_TIMEOUT     = '60s';
-const OVERFLOW_RATE   = 0.05;                   // 5% read overflow mix (edge cases)
-const LIMIT_OPTIONS   = [5, 10, 15, 20, 25, 50];
+const REQ_TIMEOUT = '60s';
+const OVERFLOW_RATE = 0.05; // 5% read overflow mix (edge cases)
+const LIMIT_OPTIONS = [5, 10, 15, 20, 25, 50];
 
 // Limits for the verdict (mirrors the threshold declarations below)
-const P95_LIMIT_MS    = 500;
-const INFRA_LIMIT     = 0.01;
+const P95_LIMIT_MS = 500;
+const INFRA_LIMIT = 0.01;
 
 // ============================================================================
 // STATUS TAXONOMY
 // ============================================================================
 
 const STATUS = Object.freeze({
-  OK:           200,
-  ACCEPTED:     202,
-  CONFLICT:     409,
+  OK: 200,
+  ACCEPTED: 202,
+  CONFLICT: 409,
   RATE_LIMITED: 429,
 });
 
@@ -71,16 +71,16 @@ const STATUS = Object.freeze({
 
 // Write-side counters — each 409 reason gets its own bucket so the report
 // can show WHY requests were rejected (sold_out vs already_purchased vs locked).
-const orderAccepted         = new Counter('order_accepted_total');
-const orderSoldOut          = new Counter('order_sold_out_total');
+const orderAccepted = new Counter('order_accepted_total');
+const orderSoldOut = new Counter('order_sold_out_total');
 const orderAlreadyPurchased = new Counter('order_already_purchased_total');
-const orderLocked           = new Counter('order_locked_total');
-const orderOtherConflict    = new Counter('order_other_conflict_total');
-const orderRateLimited      = new Counter('order_rate_limited_total');
+const orderLocked = new Counter('order_locked_total');
+const orderOtherConflict = new Counter('order_other_conflict_total');
+const orderRateLimited = new Counter('order_rate_limited_total');
 
 // Read-side counters
 const readTotal = new Counter('read_total');
-const readOk    = new Counter('read_ok_total');
+const readOk = new Counter('read_ok_total');
 
 // Infra failures: anything that isn't an expected business status
 // (5xx, timeouts, connection refused, unexpected 4xx). 429 and 409 are EXCLUDED.
@@ -102,9 +102,11 @@ function isExpectedRead(res) {
 
 /** A write response is "expected" iff 202, 409, or 429. Anything else is infra. */
 function isExpectedWrite(res) {
-  return res.status === STATUS.ACCEPTED
-      || res.status === STATUS.CONFLICT
-      || res.status === STATUS.RATE_LIMITED;
+  return (
+    res.status === STATUS.ACCEPTED ||
+    res.status === STATUS.CONFLICT ||
+    res.status === STATUS.RATE_LIMITED
+  );
 }
 
 /**
@@ -118,10 +120,12 @@ function isExpectedWrite(res) {
 function classifyConflict(res) {
   try {
     const msg = String(res.json('message') || '').toLowerCase();
-    if (msg.includes('sold out'))              return 'sold_out';
-    if (msg.includes('already purchased'))     return 'already_purchased';
+    if (msg.includes('sold out')) return 'sold_out';
+    if (msg.includes('already purchased')) return 'already_purchased';
     if (msg.includes('already have an order')) return 'locked';
-  } catch (_) { /* non-JSON body → other */ }
+  } catch (_) {
+    /* non-JSON body → other */
+  }
   return 'other';
 }
 
@@ -133,12 +137,15 @@ function classifyConflict(res) {
 function pickProductQuery() {
   if (Math.random() < OVERFLOW_RATE) {
     if (Math.random() < 0.5) {
-      return { page: Math.floor(Math.random() * 30) + 5, limit: pickRandom(LIMIT_OPTIONS) };
+      return {
+        page: Math.floor(Math.random() * 30) + 5,
+        limit: pickRandom(LIMIT_OPTIONS),
+      };
     }
     return { page: 1, limit: Math.floor(Math.random() * 50) + 51 }; // 51..100
   }
-  const limit  = pickRandom(LIMIT_OPTIONS);
-  const maxPg  = Math.ceil(TOTAL_PRODUCTS / limit);
+  const limit = pickRandom(LIMIT_OPTIONS);
+  const maxPg = Math.ceil(TOTAL_PRODUCTS / limit);
   return { page: Math.floor(Math.random() * maxPg) + 1, limit };
 }
 
@@ -196,9 +203,9 @@ function fetchCacheStats() {
     if (res.status !== STATUS.OK) return null;
     const j = res.json();
     return {
-      hits:     Number(j.hits     ?? 0),
-      misses:   Number(j.misses   ?? 0),
-      total:    Number(j.total    ?? 0),
+      hits: Number(j.hits ?? 0),
+      misses: Number(j.misses ?? 0),
+      total: Number(j.total ?? 0),
       hitRatio: Number(j.hitRatio ?? 0),
     };
   } catch (_) {
@@ -238,18 +245,18 @@ export const options = {
   },
   thresholds: {
     // Per-scenario latency — warmup is intentionally loose
-    'http_req_duration{scenario:read_warmup}':  ['p(95)<800'],
-    'http_req_duration{scenario:read_load}':    [`p(95)<${P95_LIMIT_MS}`],
-    'http_req_duration{scenario:write_load}':   [`p(95)<${P95_LIMIT_MS}`],
+    'http_req_duration{scenario:read_warmup}': ['p(95)<800'],
+    'http_req_duration{scenario:read_load}': [`p(95)<${P95_LIMIT_MS}`],
+    'http_req_duration{scenario:write_load}': [`p(95)<${P95_LIMIT_MS}`],
 
     // Infra failure rate (excludes 409 / 429 by construction)
-    'http_infra_failures':                       [`rate<${INFRA_LIMIT}`],
-    'http_infra_failures{scenario:read_load}':   [`rate<${INFRA_LIMIT}`],
-    'http_infra_failures{scenario:write_load}':  [`rate<${INFRA_LIMIT}`],
+    http_infra_failures: [`rate<${INFRA_LIMIT}`],
+    'http_infra_failures{scenario:read_load}': [`rate<${INFRA_LIMIT}`],
+    'http_infra_failures{scenario:write_load}': [`rate<${INFRA_LIMIT}`],
 
     // All check() assertions must pass
-    'checks{scenario:read_load}':                ['rate>0.99'],
-    'checks{scenario:write_load}':               ['rate>0.99'],
+    'checks{scenario:read_load}': ['rate>0.99'],
+    'checks{scenario:write_load}': ['rate>0.99'],
   },
   summaryTrendStats: ['avg', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
   // We don't set noConnectionReuse / noVUConnectionReuse — keep defaults.
@@ -260,7 +267,9 @@ export const options = {
 // ============================================================================
 
 export function setup() {
-  console.log(`[setup] fetching ${TOTAL_USERS} JWTs in batches of ${BATCH_SIZE}…`);
+  console.log(
+    `[setup] fetching ${TOTAL_USERS} JWTs in batches of ${BATCH_SIZE}…`,
+  );
   const tokens = new Array(TOTAL_USERS);
 
   for (let start = 0; start < TOTAL_USERS; start += BATCH_SIZE) {
@@ -268,21 +277,23 @@ export function setup() {
     for (let i = start; i < Math.min(start + BATCH_SIZE, TOTAL_USERS); i++) {
       batch.push({
         method: 'POST',
-        url:    `${BASE_URL}/api/v1/auth/token`,
-        body:   JSON.stringify({ userId: `user-${i + 1}` }),
+        url: `${BASE_URL}/api/v1/auth/token`,
+        body: JSON.stringify({ userId: `user-${i + 1}` }),
         params: {
           headers: { 'Content-Type': 'application/json' },
-          tags:    { name: 'auth_token_setup', expected_response: 'true' },
+          tags: { name: 'auth_token_setup', expected_response: 'true' },
         },
       });
     }
     const responses = http.batch(batch);
     for (let j = 0; j < responses.length; j++) {
-      const i  = start + j;
-      const r  = responses[j];
+      const i = start + j;
+      const r = responses[j];
       const ok = r.status === STATUS.OK && r.body && r.json().accessToken;
       if (!ok) {
-        throw new Error(`[setup] failed to fetch JWT for user-${i + 1}: status=${r.status}`);
+        throw new Error(
+          `[setup] failed to fetch JWT for user-${i + 1}: status=${r.status}`,
+        );
       }
       tokens[i] = r.json().accessToken;
     }
@@ -298,15 +309,20 @@ export function setup() {
       const key = `${page}:${limit}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      const r = http.get(`${BASE_URL}/api/v1/products?page=${page}&limit=${limit}`, {
-        tags: { name: 'cache_priming', expected_response: 'true' },
-      });
+      const r = http.get(
+        `${BASE_URL}/api/v1/products?page=${page}&limit=${limit}`,
+        {
+          tags: { name: 'cache_priming', expected_response: 'true' },
+        },
+      );
       if (r.status === STATUS.OK) primed++;
     }
   }
 
   const baseline = fetchCacheStats();
-  console.log(`[setup] tokens=${tokens.length} primed=${primed} baseline=${JSON.stringify(baseline)}`);
+  console.log(
+    `[setup] tokens=${tokens.length} primed=${primed} baseline=${JSON.stringify(baseline)}`,
+  );
 
   // `tokens` and `baseline` are passed to every scenario fn + teardown + handleSummary.
   return { tokens, baseline };
@@ -321,8 +337,8 @@ export function readScenario() {
   const res = http.get(
     `${BASE_URL}/api/v1/products?page=${page}&limit=${limit}`,
     buildParams({
-      name:  'products',
-      page:  String(page),
+      name: 'products',
+      page: String(page),
       limit: String(limit),
     }),
   );
@@ -331,9 +347,10 @@ export function readScenario() {
   if (isExpectedRead(res)) readOk.add(1);
 
   check(res, {
-    'read: status 200':              (r) => r.status === STATUS.OK,
-    'read: has data array':          (r) => Array.isArray(r.json('data')),
-    'read: meta.totalPages is num':  (r) => typeof r.json('meta.totalPages') === 'number',
+    'read: status 200': (r) => r.status === STATUS.OK,
+    'read: has data array': (r) => Array.isArray(r.json('data')),
+    'read: meta.totalPages is num': (r) =>
+      typeof r.json('meta.totalPages') === 'number',
   });
 
   httpInfraFailures.add(!isExpectedRead(res));
@@ -345,20 +362,20 @@ export function readScenario() {
 
 export function writeScenario(data) {
   const userIdIdx = pickStableUserIndex();
-  const token     = data.tokens[userIdIdx];
-  const userId    = `user-${userIdIdx + 1}`;
+  const token = data.tokens[userIdIdx];
+  const userId = `user-${userIdIdx + 1}`;
 
   const iterations = pickWriteIterations();
 
   for (let i = 0; i < iterations; i++) {
     const params = buildParams({
-      name:      'orders',
-      user_id:   userId,
+      name: 'orders',
+      user_id: userId,
       iteration: String(i + 1),
     });
     params.headers = {
-      'Content-Type':  'application/json',
-      'Authorization': `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
     };
 
     const res = http.post(
@@ -371,9 +388,10 @@ export function writeScenario(data) {
     httpInfraFailures.add(!expected);
 
     const ok = check(res, {
-      'write: status in {202, 409, 429}': (r) => r.status === STATUS.ACCEPTED
-                                              || r.status === STATUS.CONFLICT
-                                              || r.status === STATUS.RATE_LIMITED,
+      'write: status in {202, 409, 429}': (r) =>
+        r.status === STATUS.ACCEPTED ||
+        r.status === STATUS.CONFLICT ||
+        r.status === STATUS.RATE_LIMITED,
     });
     if (!ok) continue;
 
@@ -383,10 +401,10 @@ export function writeScenario(data) {
       orderRateLimited.add(1);
     } else if (res.status === STATUS.CONFLICT) {
       const reason = classifyConflict(res);
-      if      (reason === 'sold_out')          orderSoldOut.add(1);
+      if (reason === 'sold_out') orderSoldOut.add(1);
       else if (reason === 'already_purchased') orderAlreadyPurchased.add(1);
-      else if (reason === 'locked')            orderLocked.add(1);
-      else                                     orderOtherConflict.add(1);
+      else if (reason === 'locked') orderLocked.add(1);
+      else orderOtherConflict.add(1);
     }
   }
 }
@@ -410,7 +428,7 @@ export function teardown(data) {
 function metricValue(metric, path, fallback) {
   try {
     const v = metric && metric.values && metric.values[path];
-    return (v === undefined || v === null) ? fallback : v;
+    return v === undefined || v === null ? fallback : v;
   } catch (_) {
     return fallback;
   }
@@ -423,40 +441,67 @@ function subMetric(metrics, expr, path, fallback) {
 }
 
 function computeVerdict(data) {
-  const accepted  = metricValue(data.metrics.order_accepted_total, 'count', 0);
-  const infraRate = metricValue(data.metrics.http_infra_failures,   'rate',  0);
-  const p95Read   = subMetric(data.metrics, 'http_req_duration{scenario:read_load}',  'p(95)', Infinity);
-  const p95Write  = subMetric(data.metrics, 'http_req_duration{scenario:write_load}', 'p(95)', Infinity);
-  const p95Warmup = subMetric(data.metrics, 'http_req_duration{scenario:read_warmup}', 'p(95)', Infinity);
+  const accepted = metricValue(data.metrics.order_accepted_total, 'count', 0);
+  const infraRate = metricValue(data.metrics.http_infra_failures, 'rate', 0);
+  const p95Read = subMetric(
+    data.metrics,
+    'http_req_duration{scenario:read_load}',
+    'p(95)',
+    Infinity,
+  );
+  const p95Write = subMetric(
+    data.metrics,
+    'http_req_duration{scenario:write_load}',
+    'p(95)',
+    Infinity,
+  );
+  const p95Warmup = subMetric(
+    data.metrics,
+    'http_req_duration{scenario:read_warmup}',
+    'p(95)',
+    Infinity,
+  );
 
   const reasons = [];
-  if (accepted !== TARGET_STOCK) reasons.push(`accepted=${accepted} (expected ${TARGET_STOCK})`);
-  if (infraRate > INFRA_LIMIT)   reasons.push(`infra=${(infraRate * 100).toFixed(2)}% (limit ${(INFRA_LIMIT * 100).toFixed(0)}%)`);
-  if (p95Read  > P95_LIMIT_MS)   reasons.push(`read p95=${p95Read.toFixed(0)}ms (limit ${P95_LIMIT_MS}ms)`);
-  if (p95Write > P95_LIMIT_MS)   reasons.push(`write p95=${p95Write.toFixed(0)}ms (limit ${P95_LIMIT_MS}ms)`);
+  if (accepted !== TARGET_STOCK)
+    reasons.push(`accepted=${accepted} (expected ${TARGET_STOCK})`);
+  if (infraRate > INFRA_LIMIT)
+    reasons.push(
+      `infra=${(infraRate * 100).toFixed(2)}% (limit ${(INFRA_LIMIT * 100).toFixed(0)}%)`,
+    );
+  if (p95Read > P95_LIMIT_MS)
+    reasons.push(`read p95=${p95Read.toFixed(0)}ms (limit ${P95_LIMIT_MS}ms)`);
+  if (p95Write > P95_LIMIT_MS)
+    reasons.push(
+      `write p95=${p95Write.toFixed(0)}ms (limit ${P95_LIMIT_MS}ms)`,
+    );
 
   return {
-    pass:     reasons.length === 0,
+    pass: reasons.length === 0,
     reasons,
-    metrics:  { accepted, infraRate, p95Read, p95Write, p95Warmup },
+    metrics: { accepted, infraRate, p95Read, p95Write, p95Warmup },
   };
 }
 
-function pad(s, n) { return String(s).padEnd(n); }
-function padL(s, n) { return String(s).padStart(n); }
+function pad(s, n) {
+  return String(s).padEnd(n);
+}
+function padL(s, n) {
+  return String(s).padStart(n);
+}
 
 function buildBusinessBanner(data) {
   const v = computeVerdict(data);
   const m = data.metrics;
 
   const c = (k) => metricValue(m[k], 'count', 0);
-  const accepted  = c('order_accepted_total');
-  const soldOut   = c('order_sold_out_total');
+  const accepted = c('order_accepted_total');
+  const soldOut = c('order_sold_out_total');
   const purchased = c('order_already_purchased_total');
-  const locked    = c('order_locked_total');
-  const rateLim   = c('order_rate_limited_total');
-  const other     = c('order_other_conflict_total');
-  const infra     = metricValue(m.http_infra_failures, 'rate', 0);
+  const locked = c('order_locked_total');
+  const rateLim = c('order_rate_limited_total');
+  const other = c('order_other_conflict_total');
+  const infra = metricValue(m.http_infra_failures, 'rate', 0);
 
   const writeTotal = accepted + soldOut + purchased + locked + rateLim + other;
   const verdictIcon = v.pass ? '✅ PASS' : '❌ FAIL';
@@ -466,20 +511,34 @@ function buildBusinessBanner(data) {
   lines.push('============================================================');
   lines.push('  FLASH SALE LOAD TEST — BUSINESS VERDICT');
   lines.push('============================================================');
-  lines.push(`  orders accepted         (HTTP 202) : ${padL(accepted,  5)}    [expect ${TARGET_STOCK}]`);
-  lines.push(`  orders sold_out         (HTTP 409) : ${padL(soldOut,   5)}`);
+  lines.push(
+    `  orders accepted         (HTTP 202) : ${padL(accepted, 5)}    [expect ${TARGET_STOCK}]`,
+  );
+  lines.push(`  orders sold_out         (HTTP 409) : ${padL(soldOut, 5)}`);
   lines.push(`  orders already_purchased (HTTP 409): ${padL(purchased, 5)}`);
-  lines.push(`  orders locked           (HTTP 409) : ${padL(locked,    5)}`);
-  lines.push(`  orders rate_limited     (HTTP 429) : ${padL(rateLim,   5)}`);
-  lines.push(`  orders other_conflict   (HTTP 409) : ${padL(other,     5)}`);
+  lines.push(`  orders locked           (HTTP 409) : ${padL(locked, 5)}`);
+  lines.push(`  orders rate_limited     (HTTP 429) : ${padL(rateLim, 5)}`);
+  lines.push(`  orders other_conflict   (HTTP 409) : ${padL(other, 5)}`);
   lines.push(`  -------------------------------------------`);
   lines.push(`  write total                      : ${padL(writeTotal, 5)}`);
-  lines.push(`  read requests (200)              : ${padL(c('read_ok_total'), 5)}`);
-  lines.push(`  infra failure rate               : ${(infra * 100).toFixed(2).padStart(5)}%    [limit ${(INFRA_LIMIT * 100).toFixed(0)}%]`);
-  lines.push(`  ---------------------------------------------------------------`);
-  lines.push(`  read_load  p95                   : ${padL(v.metrics.p95Read.toFixed(0) + 'ms',  8)}    [limit ${P95_LIMIT_MS}ms]`);
-  lines.push(`  write_load p95                   : ${padL(v.metrics.p95Write.toFixed(0) + 'ms', 8)}    [limit ${P95_LIMIT_MS}ms]`);
-  lines.push(`  read_warmup p95 (excluded)       : ${padL(v.metrics.p95Warmup.toFixed(0) + 'ms', 8)}`);
+  lines.push(
+    `  read requests (200)              : ${padL(c('read_ok_total'), 5)}`,
+  );
+  lines.push(
+    `  infra failure rate               : ${(infra * 100).toFixed(2).padStart(5)}%    [limit ${(INFRA_LIMIT * 100).toFixed(0)}%]`,
+  );
+  lines.push(
+    `  ---------------------------------------------------------------`,
+  );
+  lines.push(
+    `  read_load  p95                   : ${padL(v.metrics.p95Read.toFixed(0) + 'ms', 8)}    [limit ${P95_LIMIT_MS}ms]`,
+  );
+  lines.push(
+    `  write_load p95                   : ${padL(v.metrics.p95Write.toFixed(0) + 'ms', 8)}    [limit ${P95_LIMIT_MS}ms]`,
+  );
+  lines.push(
+    `  read_warmup p95 (excluded)       : ${padL(v.metrics.p95Warmup.toFixed(0) + 'ms', 8)}`,
+  );
   lines.push('============================================================');
   lines.push(`  VERDICT: ${verdictIcon}`);
   if (!v.pass) {
@@ -503,8 +562,12 @@ export function handleSummary(data) {
   ].join('\n');
 
   return {
-    stdout: '\n' + banner + '\n\n' + textSummary(data, { indent: ' ', enableColors: true }),
-    'loadtest/results/summary.json':   JSON.stringify(data, null, 2),
-    'loadtest/results/business.txt':   businessTxt,
+    stdout:
+      '\n' +
+      banner +
+      '\n\n' +
+      textSummary(data, { indent: ' ', enableColors: true }),
+    'loadtest/results/summary.json': JSON.stringify(data, null, 2),
+    'loadtest/results/business.txt': businessTxt,
   };
 }

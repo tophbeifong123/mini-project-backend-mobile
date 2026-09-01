@@ -75,7 +75,9 @@ function integerEnv(name, fallback, minimum, maximum) {
   const raw = __ENV[name];
   const value = raw === undefined ? fallback : Number(raw);
   if (!Number.isInteger(value) || value < minimum || value > maximum) {
-    throw new Error(`${name} must be an integer between ${minimum} and ${maximum}.`);
+    throw new Error(
+      `${name} must be an integer between ${minimum} and ${maximum}.`,
+    );
   }
   return value;
 }
@@ -377,7 +379,9 @@ export function handleSummary(data) {
   lines.push('');
   lines.push('  AUTH SETUP');
   lines.push(`    requests                    : ${c('auth_setup_count')}`);
-  lines.push(`    failures                    : ${c('auth_setup_failures')}   (ต้อง = 0)`);
+  lines.push(
+    `    failures                    : ${c('auth_setup_failures')}   (ต้อง = 0)`,
+  );
   lines.push(
     `    request p95                : ${trend('auth_setup_request_duration', 'p(95)')} ms`,
   );
@@ -397,20 +401,26 @@ export function handleSummary(data) {
     `    avg latency                : ${trend('read_products_latency', 'avg')} ms`,
   );
   lines.push('');
-  lines.push(
-    '  WRITE PATH — POST /api/v1/orders',
-  );
+  lines.push('  WRITE PATH — POST /api/v1/orders');
   lines.push(`    202 accepted (เข้าคิว)      : ${accepted}`);
   lines.push(`    409 admission in progress  : ${conflict}`);
-  lines.push(`    503 queue unavailable      : ${unavailable}   (availability fail)`);
+  lines.push(
+    `    503 queue unavailable      : ${unavailable}   (availability fail)`,
+  );
   lines.push(`    all 5xx                    : ${serverErrors}   (ต้อง = 0)`);
   lines.push(`    401 unauthorized           : ${unauthorized}   (ต้อง = 0)`);
   lines.push(`    ⚠️ unexpected status        : ${unexpected}   (ต้อง = 0)`);
   lines.push(`    ────────────────────────────────────────────`);
   lines.push(`    total order requests       : ${totalOrders}`);
-  lines.push(`    contract-valid rate        : ${rate('orders_contract_valid')}`);
-  lines.push(`    successful-admission rate  : ${rate('orders_successful_admission')}`);
-  lines.push(`    infrastructure-error rate  : ${rate('orders_infrastructure_error')}`);
+  lines.push(
+    `    contract-valid rate        : ${rate('orders_contract_valid')}`,
+  );
+  lines.push(
+    `    successful-admission rate  : ${rate('orders_successful_admission')}`,
+  );
+  lines.push(
+    `    infrastructure-error rate  : ${rate('orders_infrastructure_error')}`,
+  );
   lines.push(
     `    p95 latency                : ${trend('place_order_latency', 'p(95)')} ms`,
   );

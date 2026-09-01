@@ -95,6 +95,15 @@ export class RedisService implements OnModuleInit {
   private lastCatalogFlushAt = 0;
   private pendingCatalogFlush?: NodeJS.Timeout;
 
+  /**
+   * รวม MGET ที่ขอชุด stock keys เดียวกันและกำลังรอ Redis อยู่เท่านั้น
+   * ลบทิ้งใน finally เสมอ จึงไม่ใช่ L1 cache และไม่เสิร์ฟ stock ข้าม request batch
+   */
+  private readonly stockReadsInFlight = new Map<
+    string,
+    Promise<(string | null)[]>
+  >();
+
   constructor(
     @Inject(REDIS_CACHE_CLIENT) private readonly cache: Redis,
     @Inject(REDIS_DATA_CLIENT) private readonly data: Redis,
@@ -262,7 +271,22 @@ export class RedisService implements OnModuleInit {
     if (productIds.length === 0) {
       return [];
     }
-    return this.data.mget(productIds.map((id) => RedisKeys.stock(id)));
+
+    const stockKeys = productIds.map((id) => RedisKeys.stock(id));
+    const flightKey = stockKeys.join('\u001f');
+    const existing = this.stockReadsInFlight.get(flightKey);
+    if (existing) {
+      return existing;
+    }
+
+    const promise = this.data.mget(stockKeys).finally(() => {
+      // ป้องกัน promise เก่าลบ flight ใหม่ หาก client settle/retry ในลำดับผิดคาด
+      if (this.stockReadsInFlight.get(flightKey) === promise) {
+        this.stockReadsInFlight.delete(flightKey);
+      }
+    });
+    this.stockReadsInFlight.set(flightKey, promise);
+    return promise;
   }
 
   /** cache = optimization เท่านั้น -> error ใดๆ แปลว่า "miss" แล้วให้ผู้เรียกไป DB ต่อ */

@@ -237,10 +237,10 @@ services:
       CATALOG_CACHE_TTL_BASE: "30"
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
-      # Six instances already provide six workers.  A concurrency of 5 per
-      # instance created 30 concurrent transactions against a 1-vCPU primary
-      # and starved the HTTP event loops during the write burst.
+      # API process ไม่สร้าง BullMQ consumer (ดู ORDER_WORKER_ENABLED)
+      # ค่า concurrency นี้จึงเป็น safety/default เท่านั้น; consumer จริงอยู่ orders-worker
       WORKER_CONCURRENCY: "1"
+      ORDER_WORKER_ENABLED: "false"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -305,6 +305,7 @@ services:
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
       WORKER_CONCURRENCY: "1"
+      ORDER_WORKER_ENABLED: "false"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -368,6 +369,7 @@ services:
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
       WORKER_CONCURRENCY: "1"
+      ORDER_WORKER_ENABLED: "false"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -431,6 +433,7 @@ services:
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
       WORKER_CONCURRENCY: "1"
+      ORDER_WORKER_ENABLED: "false"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -494,6 +497,7 @@ services:
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
       WORKER_CONCURRENCY: "1"
+      ORDER_WORKER_ENABLED: "false"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -557,6 +561,7 @@ services:
       CATALOG_CACHE_TTL_JITTER: "30"
       ORDER_LOCK_TTL_MS: "30000"
       WORKER_CONCURRENCY: "1"
+      ORDER_WORKER_ENABLED: "false"
 
       BULL_BOARD_USER: admin
       BULL_BOARD_PASSWORD: admin
@@ -575,6 +580,64 @@ services:
       timeout: 5s
       retries: 6
       start_period: 60s
+
+  # ===========================================================================
+  # BullMQ worker — process แยกจาก API เพื่อ isolate event loop ตอน write burst
+  # ไม่มี port และไม่อยู่ใน nginx upstream
+  # ===========================================================================
+  orders-worker:
+    image: flash-sale-backend:latest
+    container_name: fs-orders-worker
+    restart: unless-stopped
+    mem_limit: 256m
+    # 50 jobs ใช้ worker time รวม ~3.1s; 0.25 core + concurrency 1 เพียงพอ
+    # และกัน CPU ไว้ให้ API ที่ชนเพดาน 4 cores ระหว่าง 1,000-reader burst
+    cpus: "0.25"
+    command: ["node", "dist/worker.js"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      NODE_ENV: production
+      NODE_OPTIONS: "--max-old-space-size=160 --max-semi-space-size=16"
+      INSTANCE_ID: orders-worker
+
+      JWT_SECRET: flash-sale-dev-secret-change-me
+      JWT_EXPIRES_IN: 15m
+
+      DB_HOST: postgres-primary
+      DB_PORT: "5432"
+      DB_USERNAME: flashsale
+      DB_PASSWORD: flashsale
+      DB_DATABASE: flashsale
+      DB_REPLICA_HOST: postgres-replica
+      DB_REPLICA_PORT: "5432"
+      DB_POOL_SIZE: "8"
+
+      REDIS_CACHE_HOST: redis-cache
+      REDIS_CACHE_PORT: "6379"
+      REDIS_DATA_HOST: redis-data
+      REDIS_DATA_PORT: "6379"
+
+      CATALOG_CACHE_TTL_BASE: "30"
+      CATALOG_CACHE_TTL_JITTER: "30"
+      ORDER_LOCK_TTL_MS: "30000"
+      WORKER_CONCURRENCY: "1"
+      ORDER_WORKER_ENABLED: "true"
+
+      BULL_BOARD_USER: admin
+      BULL_BOARD_PASSWORD: admin
+    depends_on:
+      postgres-primary:
+        condition: service_healthy
+      postgres-replica:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-data:
+        condition: service_healthy
 
   # ===========================================================================
   # Nginx — จุดเดียวที่ k6 ยิงเข้ามา (least_conn + keepalive, ดู nginx.conf)

@@ -78,7 +78,8 @@ const JSON_HDR = { 'Content-Type': 'application/json' };
 // nor an expected order outcome (202 accepted, 409 sold-out / duplicate).
 function isInfraFailure(res) {
   if (res.status === 0) return true; // timeout / connection error
-  if (res.status === 200 || res.status === 202 || res.status === 409) return false;
+  if (res.status === 200 || res.status === 202 || res.status === 409)
+    return false;
   return true;
 }
 
@@ -120,21 +121,33 @@ export const options = {
 export function setup() {
   const requests = [];
   for (let i = 1; i <= USER_COUNT; i++) {
-    requests.push(['POST', `${BASE_URL}/api/v1/auth/token`, JSON.stringify({ userId: `user-${i}` }), { headers: JSON_HDR, timeout: REQ_TIMEOUT }]);
+    requests.push([
+      'POST',
+      `${BASE_URL}/api/v1/auth/token`,
+      JSON.stringify({ userId: `user-${i}` }),
+      { headers: JSON_HDR, timeout: REQ_TIMEOUT },
+    ]);
   }
   const responses = http.batch(requests);
 
   const tokens = responses.map((res, idx) => {
     const userId = `user-${idx + 1}`;
     if (res.status !== 200) {
-      throw new Error(`setup: auth/token for ${userId} returned ${res.status} (spec §2.1 requires 200) — body: ${res.body}`);
+      throw new Error(
+        `setup: auth/token for ${userId} returned ${res.status} (spec §2.1 requires 200) — body: ${res.body}`,
+      );
     }
     const token = res.json('accessToken');
-    if (!token) throw new Error(`setup: auth/token for ${userId} returned 200 but no accessToken`);
+    if (!token)
+      throw new Error(
+        `setup: auth/token for ${userId} returned 200 but no accessToken`,
+      );
     return token;
   });
 
-  console.log(`setup: issued ${tokens.length} JWTs (user-1..user-${tokens.length})`);
+  console.log(
+    `setup: issued ${tokens.length} JWTs (user-1..user-${tokens.length})`,
+  );
   return { tokens };
 }
 
@@ -146,9 +159,15 @@ export function readScenario() {
   const limit = READ_LIMITS[Math.floor(Math.random() * READ_LIMITS.length)];
   const maxPage = Math.max(1, Math.ceil(TOTAL_PRODUCTS / limit));
   const page = 1 + Math.floor(Math.random() * maxPage);
-  const expectedRows = Math.min(limit, Math.max(0, TOTAL_PRODUCTS - (page - 1) * limit));
+  const expectedRows = Math.min(
+    limit,
+    Math.max(0, TOTAL_PRODUCTS - (page - 1) * limit),
+  );
 
-  const res = http.get(`${BASE_URL}/api/v1/products?page=${page}&limit=${limit}`, { ...REQ, tags: { name: 'products' } });
+  const res = http.get(
+    `${BASE_URL}/api/v1/products?page=${page}&limit=${limit}`,
+    { ...REQ, tags: { name: 'products' } },
+  );
 
   check(res, {
     'read: status 200': (r) => r.status === 200,
@@ -156,7 +175,9 @@ export function readScenario() {
     'read: meta echoes scope': (r) => {
       try {
         const j = r.json();
-        return !!j && !!j.meta && j.meta.page === page && j.meta.limit === limit;
+        return (
+          !!j && !!j.meta && j.meta.page === page && j.meta.limit === limit
+        );
       } catch (e) {
         return false;
       }
@@ -164,7 +185,11 @@ export function readScenario() {
     'read: rows match page window': (r) => {
       try {
         const j = r.json();
-        return Array.isArray(j.data) && j.data.length <= limit && j.data.length === expectedRows;
+        return (
+          Array.isArray(j.data) &&
+          j.data.length <= limit &&
+          j.data.length === expectedRows
+        );
       } catch (e) {
         return false;
       }
@@ -179,23 +204,33 @@ export function readScenario() {
 // ============================ 3. write phase ==============================
 export function writeScenario(data) {
   const token = data.tokens[(__VU - 1) % data.tokens.length];
-  const params = { ...REQ, headers: { ...JSON_HDR, Authorization: `Bearer ${token}` }, tags: { name: 'orders' } };
+  const params = {
+    ...REQ,
+    headers: { ...JSON_HDR, Authorization: `Bearer ${token}` },
+    tags: { name: 'orders' },
+  };
   const body = JSON.stringify({ productId: PRODUCT_ID });
 
   if (__VU % DOUBLE_TAP_EVERY === 0) {
     // Double / triple tap: 2-3 identical requests fired CONCURRENTLY (http.batch)
     // so they actually race the SADD lock, not run one after another.
     const n = 2 + Math.floor(Math.random() * 2);
-    const burst = Array.from({ length: n }, () => ({ method: 'POST', url: `${BASE_URL}/api/v1/orders`, body, params }));
+    const burst = Array.from({ length: n }, () => ({
+      method: 'POST',
+      url: `${BASE_URL}/api/v1/orders`,
+      body,
+      params,
+    }));
     http.batch(burst).forEach(tallyOrder);
   } else {
     tallyOrder(http.post(`${BASE_URL}/api/v1/orders`, body, params));
   }
-
 }
 
 function tallyOrder(res) {
-  const ok = check(res, { 'write: status 202 or 409': (r) => r.status === 202 || r.status === 409 });
+  const ok = check(res, {
+    'write: status 202 or 409': (r) => r.status === 202 || r.status === 409,
+  });
   infraFail.add(isInfraFailure(res));
   if (!ok) return;
 
@@ -224,7 +259,9 @@ function sampleCache(phase) {
   if (!total) return;
   const hitPct = (hit / total) * 100;
   readCacheHitPct.add(hitPct);
-  console.log(`[${phase}] cache hit ${hitPct.toFixed(2)}%  (hit ${hit} / miss ${miss})`);
+  console.log(
+    `[${phase}] cache hit ${hitPct.toFixed(2)}%  (hit ${hit} / miss ${miss})`,
+  );
 }
 
 function fetchMetrics() {
@@ -293,7 +330,8 @@ export function teardown() {
   const waitTimeout = c.cache_wait_timeout || 0; // waited out WAIT_MAX_MS, built uncached
   const tot = hit + miss || 1;
   const pct = (n) => ((n / tot) * 100).toFixed(2);
-  const coalesced = miss > 0 ? (((miss - dbBuild) / miss) * 100).toFixed(2) : '0.00';
+  const coalesced =
+    miss > 0 ? (((miss - dbBuild) / miss) * 100).toFixed(2) : '0.00';
 
   const lines = [
     '',

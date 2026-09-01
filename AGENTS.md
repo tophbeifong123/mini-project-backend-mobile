@@ -5,8 +5,8 @@
 > เก็บไว้เฉพาะกฎที่ "พลาดแล้วพัง" เพื่อไม่ให้เนื้อหาสองไฟล์แตกกันเอง
 
 **โปรเจกต์**: Flash Sale System — NestJS + Nginx (6 instances) + PostgreSQL replication + Redis ×2 + BullMQ + JWT
-**สถานะ**: 🛠️ implemented — `src/` ครบ · `docker-compose.yml` 1-click start · `loadtest.js` พร้อม · build/lint/test ผ่าน (32 tests)
-**แต่ยังไม่เคยรันบน container และยังไม่เคยยิง k6** — ตัวเลข performance ในเอกสารทุกตัวยังเป็นค่าประมาณ
+**สถานะ**: ✅ implemented + verified — `src/` ครบ · `docker-compose.yml` 1-click start · build/lint/test ผ่าน (59 tests) · รัน container และยิง `loadtest.js` บน VM เป้าหมายแล้ว (2026-09-01)
+**ผลล่าสุดต้องอ่านจากหลักฐานการทดสอบจริง** — ดูสถานะและ median ของรอบล่าสุดใน `CLAUDE.md`; ห้ามนำตัวเลขประมาณการเก่ามาอ้างเป็นผล benchmark
 
 ## เอกสารที่ต้องอ่าน
 | ไฟล์ | คืออะไร |

@@ -1,6 +1,7 @@
 import { plainToInstance } from 'class-transformer';
 import {
   IsEnum,
+  IsIn,
   IsInt,
   IsNotEmpty,
   IsOptional,
@@ -126,6 +127,13 @@ export class EnvironmentVariables {
   @IsInt()
   @Min(1)
   WORKER_CONCURRENCY: number = 5;
+
+  /**
+   * API process ปิด consumer เพื่อไม่ให้ DB transaction/worker callback แย่ง
+   * event loop กับ HTTP; dedicated worker process เปิดไว้เพียงตัวเดียว
+   */
+  @IsIn(['true', 'false'])
+  ORDER_WORKER_ENABLED: string = 'true';
 
   // ---- Bull-Board (ต้องมี Basic Auth คลุม — CLAUDE.md §6) ----
   @IsString()

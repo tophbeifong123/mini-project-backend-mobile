@@ -68,7 +68,7 @@ flowchart TD
     end
 
     subgraph WorkerTier["⚙️ BullMQ Consumer"]
-        WORKER["Worker concurrency 1 / node<br/>6 nodes = 6 concurrent writes<br/>(≤ master pool 8 / instance)"]
+        WORKER["Dedicated orders-worker<br/>concurrency 1 · CPU 0.25 core<br/>(API 6 nodes ไม่มี consumer)"]
     end
 
     subgraph DatabaseTier["🗄️ PostgreSQL 16"]
@@ -379,7 +379,7 @@ export class Order {
 
 #### 3.1.6 จุดที่ write ทั้งหมดไปรวมกัน
 
-worker ทุกตัวใน 6 instance (รวม 6 concurrent — §8) `UPDATE` **แถวเดียวกัน** คือ `products` ของ `p-1001`
+dedicated worker (concurrency 1 — §8) `UPDATE` **แถวเดียวกัน** คือ `products` ของ `p-1001`
 → PostgreSQL จะ **serialize พวกมันที่ row lock ของแถวนั้น** ซึ่ง **ถูกต้องและตั้งใจ**: ของมี 50 ชิ้น = `UPDATE` สำเร็จ 50 ครั้ง ไม่ใช่ปริมาณที่ต้องกังวล
 ส่วน `INSERT INTO orders` ขอแค่ `KEY SHARE` บนแถว products (จาก FK) ซึ่ง **ไม่ชนกับ `FOR NO KEY UPDATE`** ที่ `UPDATE` ถือไว้ จึงไม่เกิด lock escalation
 
@@ -787,22 +787,22 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 
 | องค์ประกอบ | ค่า | เหตุผล / ที่มา |
 | :--- | :--- | :--- |
-| จำนวน instance | **6** (`app-1` … `app-6`) | `docker-compose.yml` — โจทย์บังคับ ≥ 3 |
+| จำนวน process | **6 API** (`app-1` … `app-6`) + **1 dedicated worker** | `docker-compose.yml` — โจทย์บังคับ API ≥ 3; worker ไม่มี HTTP listener |
 | `poolSize` ต่อ DataSource | **8** (`DB_POOL_SIZE`) | ตั้งที่ compose ทุก service · default ใน `env.validation.ts` คือ 10 แต่ไม่ถูกใช้ใน container |
-| Connections บน **primary** | **6 × 8 = 48** / 100 (48%) | master pool — เฉพาะ worker (`createQueryRunner('master')`) |
-| Connections บน **replica** | **6 × 8 = 48** / 100 (48%) | slave pool — catalog read (`defaultMode: 'slave'`) |
-| headroom ต่อเซิร์ฟเวอร์ | ✅ ยังใต้กฎ 80% | 48 ≤ 80 · เพดานที่พังคือ **10 instances** (10 × 8 = 80) |
-| **Worker concurrency** | **1 / instance** → รวม **6** | ค่า `docker-compose.yml` ปัจจุบัน — ลดจาก 5 (2026-08-31) เพราะ 5 × 6 = 30 concurrent transaction ชนกับ primary ที่มี 1 vCPU แล้วแย่ง CPU กับ HTTP event loop ตอน write burst · ≤ master pool 8 · อ่านจาก `process.env` ตอน decorate class แก้ใน `.env` ไม่มีผล |
-| Redis: `redis-cache` | 1 client / instance → **6** | แคชล้วน `allkeys-lru` · `maxmemory 256mb` |
-| Redis: `redis-data` | ≈ **36** (6 × 6) | ต่อ instance: ① client ทั่วไป/Lua ② BullMQ `Queue` (มี 3 ออบเจกต์ — Nest 11 ไม่ dedupe) ③ Worker 2 ตัว (client + blocking) · `maxmemory 512mb` `noeviction` + AOF |
+| Connections บน **primary** | สูงสุด **7 × 8 = 56** / 100 (56%) | แต่ transaction write เกิดที่ dedicated worker เท่านั้น; API ใช้ master เฉพาะเส้นทางที่กำหนด |
+| Connections บน **replica** | สูงสุด **7 × 8 = 56** / 100 (56%) | catalog miss อ่านผ่าน replica; ยังต่ำกว่ากฎ headroom 80% |
+| headroom ต่อเซิร์ฟเวอร์ | ✅ ยังใต้กฎ 80% | 56 ≤ 80 |
+| **Worker concurrency** | **1 รวมทั้งระบบ** | API ตั้ง `ORDER_WORKER_ENABLED=false`; `orders-worker` เปิด consumer concurrency 1 และจำกัด 0.25 core · อ่าน env ตอน decorate class |
+| Redis: `redis-cache` | 1 client / process → **7** | แคชล้วน `allkeys-lru` · `maxmemory 256mb` |
+| Redis: `redis-data` | วัดจริงประมาณ **37 clients** | API มี Queue/Lua clients; blocking worker connections อยู่เฉพาะ `orders-worker` · `maxmemory 512mb` `noeviction` + AOF |
 | Nginx | `worker_connections 10240`, `keepalive 768` | ต้องมาคู่กับ `proxy_http_version 1.1` (§2) |
 
 ### 8.1 🖥️ Deployment Target — Production VM
 
 | ทรัพยากร | มีเท่าไหร่ | ใครกิน |
 | :--- | :--- | :--- |
-| vCPU | **4 core** | 6 Node process (app) + nginx `worker_processes 2` (ผูกกับ `cpus: 1.0`) + postgres ×2 + redis ×2 = **11 container** |
-| RAM | **6 GB** | redis จองไว้แล้ว 768 MB (256 + 512) · PG primary `shared_buffers=256MB` · PG replica default 128MB · ที่เหลือหาร 6 Node process |
+| vCPU | **4 core** | 6 API + 1 worker + nginx + postgres ×2 + redis ×2 = **12 containers**; worker จำกัด 0.25 core |
+| RAM | **6 GB** | redis จองไว้แล้ว 768 MB · worker limit 256 MB · API limit 512 MB/ตัว; usage จริงยังต่ำกว่า limit |
 | Storage | **30 GB** | ดู §8.2 ข้อ 3 |
 
 > ✅ **แก้แล้ว (2026-08-28)** — เดิมไม่มี resource limit เลย ตอนนี้ `docker-compose.yml` มี `mem_limit`/`cpus`
@@ -823,8 +823,8 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
    → เพิ่ม app instance = เพิ่มโหลดให้ redis ตัวเดียวนี้ตรงๆ
 3. **Disk 30 GB — log rotation** ✅ **แก้แล้ว (2026-08-28)**: ทุก service ใน `docker-compose.yml` มี `logging: {driver: json-file, options: {max-size: "10m", max-file: "3"}}` แล้ว
    และตัด duplicate logging ออกแล้ว (`pino-http autoLogging: false` — เหลือ **1 บรรทัด/request** ไม่ใช่ 3 เหมือนเดิม)
-4. **Row lock แถวเดียว** — worker ทั้งคลัสเตอร์ (สูงสุด 6 concurrent ที่ค่า deploy ปัจจุบัน) `UPDATE products` ของ `p-1001` แถวเดียวกัน
-   จำนวน worker ที่เพิ่มจึง **ไม่ช่วยให้ขายเร็วขึ้น** — มีแต่ค้างรอโดยกิน pool connection ไว้
+4. **Row lock แถวเดียว** — dedicated worker concurrency 1 `UPDATE products` ของ `p-1001` ตามลำดับ
+   ลดการแย่ง row lock และแยก event loop ออกจาก API; 50 jobs ล่าสุดใช้ worker duration รวม ~1.35s
 5. **single-flight เป็น per-process** (`products.service.ts` ใช้ `Map` ใน RAM)
    แคชหลุดทีไร → มี **6 query วิ่งเข้า replica พร้อมกัน** (ไม่ใช่ 1) — เพิ่ม instance = เพิ่มจำนวนนี้
 6. ~~`invalidateCatalogCache()` debounce เป็น per-process~~ ✅ **แก้แล้ว (2026-08-28) — ไม่ใช่บั๊กอีกต่อไป**
@@ -841,7 +841,7 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 > เพราะเปิด `replication` + `defaultMode: 'slave'` ไว้ TypeORM จึงสร้าง **pool แยกต่อ master และต่อ slave**
 > → API อ่าน catalog ลง **slave pool** ส่วน worker ขอ `createQueryRunner('master')` ลง **master pool** — **ไม่เคยชนกัน**
 >
-> `WORKER_CONCURRENCY = 5` (ค่าตอนตัดสินใจตอนนั้น) จึงไม่ได้มีที่มาจากการแย่ง pool (จะเป็น 8 เท่า poolSize ก็ยังปลอดภัย) — ⚠️ **deploy จริงตอนนี้ (2026-08-31) ถูกลดเหลือ `1`** ด้วยเหตุผลอื่น (event loop ของ HTTP แย่ง CPU กับ worker บน primary 1 vCPU ไม่ใช่แย่ง pool ตามที่ย่อหน้านี้อธิบาย) ดู §8 แถว Worker concurrency
+> `WORKER_CONCURRENCY = 5` เป็น source fallback เท่านั้น — deploy จริง (2026-09-01) ใช้ dedicated `orders-worker` concurrency 1 และ API ทั้ง 6 ตั้ง `ORDER_WORKER_ENABLED=false` เพื่อไม่ให้ worker แย่ง HTTP event loop ดู §8 แถว Worker concurrency
 > เพดานจริงของ write path คือ **row lock ของสินค้าแถวเดียว** ที่ทุก worker ยิงใส่ ซึ่ง serialize อยู่แล้วไม่ว่า concurrency จะเป็นเท่าไหร่
 >
 > ⚠️ **แต่ถ้าวันไหนตัด replica ทิ้ง** master กับ slave จะยุบเป็น pool เดียว แล้วคำเตือนเดิมจะ *กลายเป็นจริงขึ้นมา*
