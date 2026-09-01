@@ -164,7 +164,7 @@ server {
 
 ```
 src/
-├─ main.ts                        # global ValidationPipe, graceful shutdown, Basic Auth ครอบ `/admin` ทั้ง prefix (`main.ts:47`)
+├─ main.ts                        # global ValidationPipe, graceful shutdown, Basic Auth ครอบ `/admin` ทั้ง prefix (`main.ts:52`)
 ├─ app.module.ts
 ├─ config/
 │  ├─ database.config.ts          # buildTypeOrmOptions() — replication (master/slaves) + pool sizing
@@ -458,7 +458,12 @@ GET /api/v1/products?page=1&limit=10
 - Worker ยังคงส่ง invalidate metadata หลังตัดสต็อกสำเร็จ (§6.3) เพื่อรองรับกรณีสินค้าเปลี่ยนสถานะ `isFlashSaleActive`
   — แต่ **debounce ไม่เกิน 1 ครั้ง/วินาที** (แก้ 2026-08-26): ของ 50 ชิ้นหมดใน window ~300 ms
   = ล้างทั้งแคช 50 ครั้งรวดตอนที่ reader 1,000 คนกำลังยิงอยู่พอดี ซึ่งไม่ใช่สิ่งที่โจทย์ข้อ 2.3 กฎ 4 ต้องการ
-  เป็น trailing debounce จึงไม่มีการล้างที่หายไปเฉยๆ
+  ⚠️ **เดิมบรรทัดนี้เขียนว่า "เป็น trailing debounce จึงไม่มีการล้างที่หายไปเฉยๆ" — ไม่จริง (แก้ 2026-08-31)**
+  กลไกจริงซ้อนกัน 3 ชั้น และมีทางที่ flush หายเงียบๆ: ถ้า `sinceLast >= CATALOG_FLUSH_MIN_INTERVAL_MS`
+  (ผ่านโควตา local) แต่ `tryAcquireFlushThrottle()` ขอ throttle แบบ distributed ไม่ได้เพราะ instance อื่นถืออยู่
+  โค้ดจะ `return` ทันที **โดยไม่จองรอบ trailing** → การล้างรอบนั้นหายไปเฉยๆ
+  (`redis.service.ts:322-334` · ดู `CLAUDE.md` §0.1 แถว "debounce ซ้อน 3 ชั้นทำให้ flush หลุด")
+  ผลกระทบจริงยังจำกัด เพราะไม่มี endpoint แก้ข้อมูลสินค้า และ `remainingStock` ไม่ได้ถูกแคช
 - ลำดับที่ถูก: **update DB → แล้วค่อย DEL cache** (ไม่ใช่ DEL ก่อน) และพึ่ง TTL เป็น safety net เสมอ *(B04)*
 - ❌ ห้ามใช้ `KEYS pattern` ในการล้างแคช — เป็น O(N) และบล็อก Redis ทั้งตัว ใช้ `SCAN` หรือ key ที่คำนวณตรงได้ *(B04 slide-errata #1)*
 
@@ -632,6 +637,13 @@ async createOrder(userId: string, productId: string) {
 
 > ⚠️ **กับดัก Read-Write Split**: `repository.findOne()` จะวิ่งไป **Replica** โดยอัตโนมัติ ซึ่งมี replication lag 10–100ms → worker อ่านเจอสต็อกเก่า → race condition ทันที
 > Worker **ต้อง** ใช้ `dataSource.createQueryRunner('master')` เท่านั้น
+
+> 🔴 **ความเสี่ยงที่รู้ตัวแล้วแต่ยังไม่แก้ (พบ 2026-08-30 · ยืนยันซ้ำ 2026-08-31)** — ในโค้ดตัวอย่างข้างล่าง (และในโค้ดจริง `orders.processor.ts:62-64`)
+> `connect()` กับ `startTransaction()` ถูกเรียก **นอก** `try` (ซึ่งเริ่มบรรทัด 67) แปลว่าถ้า primary สะดุดตรงสองบรรทัดนี้
+> ทั้ง `finally` ที่คืน runner และบล็อก `isFinalAttempt → compensateOnce` (`:125-133`) **ไม่ครอบเลย**
+> → สต็อกที่ `gatekeeper.lua` จองไว้หายถาวร (counter ค้างที่ 1, ออเดอร์ 49/50) = **ละเมิด `CLAUDE.md` §4 ข้อ 6 โดยตรง**
+> เป็น path เดียวในระบบที่หักสต็อกแล้วไม่มีทางชดเชย · แก้ = ย้าย 2 บรรทัดเข้าไปใน `try`
+> **ยังไม่แก้เพราะเป็น write path → `CLAUDE.md` §7 ข้อ 5 บังคับให้ยิง k6 ก่อน**
 
 > ตัวเลขข้างล่างคือ **source default** ของโค้ด (`Number(process.env.WORKER_CONCURRENCY) || 5`) — ค่าที่ deploy จริงตอนนี้คือ `WORKER_CONCURRENCY=1` ผ่าน env ใน `docker-compose.yml` (§8) ไม่ใช่ 5
 
@@ -865,7 +877,7 @@ TypeORM replication สร้าง pool **แยกต่อ master และ�
 
 > วัด **percentile ไม่ใช่ average** — p95/p99 คือคนที่โกรธที่สุดและมักเป็นคนที่ข้อมูลเยอะที่สุด *(B06)*
 > Bull-Board **ต้องมี Basic Auth คลุม** เพราะมันเปิดดู payload และกด retry/remove job ได้ *(B05 slide-errata #10)*
-> ตั้งแต่ 2026-08-30 Basic Auth ถูกครอบที่ **prefix `/admin` ทั้งก้อน** (`main.ts:47`) ไม่ใช่เฉพาะ `/admin/queues` — route ใหม่ใต้ `/admin` จึงถูกคลุมอัตโนมัติ
+> ตั้งแต่ 2026-08-30 Basic Auth ถูกครอบที่ **prefix `/admin` ทั้งก้อน** (`main.ts:52`) ไม่ใช่เฉพาะ `/admin/queues` — route ใหม่ใต้ `/admin` จึงถูกคลุมอัตโนมัติ
 
 ### 9.2 โครงสร้าง `loadtest.js` (k6)
 
@@ -933,7 +945,7 @@ GROUP BY user_id HAVING COUNT(*) > 1;
 | `GET /admin/metrics` | Prometheus exposition format (`text/plain; version=0.0.4`) | **ยังไม่มี Prometheus ในสแตกโดยเจตนา** (ตกลงกันว่าไม่เพิ่ม service) — เปิดไว้ให้ชี้ scrape มาได้ทีหลัง และ `curl` ดูดิบๆ ก็อ่านออก |
 | `POST /admin/metrics/reset` | ล้างตัวนับก่อนยิง k6 รอบใหม่ | ไม่แตะข้อมูลธุรกิจ (`orders` / `stock:*` ไม่เกี่ยว) — `observability.controller.ts:164-169` |
 
-ทุก route อยู่ใต้ `/admin` **เดียวกับ Bull-Board โดยเจตนา** — Basic Auth ครอบทีเดียวที่ prefix นั้น (`main.ts:47`) จะได้ไม่มีทางเผลอเปิดหน้าใดหน้าหนึ่งทิ้งไว้ และ route ใหม่ใต้ `/admin` ในอนาคตถูกคลุมอัตโนมัติ
+ทุก route อยู่ใต้ `/admin` **เดียวกับ Bull-Board โดยเจตนา** — Basic Auth ครอบทีเดียวที่ prefix นั้น (`main.ts:52`) จะได้ไม่มีทางเผลอเปิดหน้าใดหน้าหนึ่งทิ้งไว้ และ route ใหม่ใต้ `/admin` ในอนาคตถูกคลุมอัตโนมัติ
 
 #### 9.4.2 ตัวนับ: ทำไมต้อง write-behind ไม่ใช่ `HINCRBY` ตรงๆ
 
@@ -953,7 +965,7 @@ GROUP BY user_id HAVING COUNT(*) > 1;
 | :--- | :--- |
 | `orders.service.ts:74`, `203` และทุก `case` | ผลลัพธ์ทุกกิ่งของ write path: 202 · 409 ซื้อซ้ำ · 409 ของหมด · 429 กดรัว · 503 ไม่มี counter · 503 gatekeeper ล้ม · 503 enqueue ล้ม · 409 โดน dedup · "ยืนยัน job ไม่ได้จึงไม่คืนสต็อก" · การชดเชยทั้งสั่ง/สำเร็จ/ล้มเหลว |
 | `orders.processor.ts` | `confirmed` · `already_confirmed` (23505) · `sold_out` · transient failure · post-commit side effect ล้ม · ระยะเวลา job (sum + count) วัดจาก `job.processedOn` ที่ BullMQ ประทับให้ (`orders.processor.ts:190-196`) |
-| `products.service.ts:79`, `135` | cache hit / miss ต่อคำขอ และ **degraded read** (อ่าน stock counter ไม่ได้แล้วเสิร์ฟค่าจากแคช — §5 DO) |
+| `products.service.ts:89-91`, `158` | cache hit / miss ต่อคำขอ และ **degraded read** (อ่าน stock counter ไม่ได้แล้วเสิร์ฟค่าจากแคช — §5 DO) |
 
 **ราย instance** (hash `metrics:instances`, field = `INSTANCE_ID`): `pid`, uptime, `rssMb`, `heapUsedMb` และ **event loop delay p99/max ราย 1 วินาที** จาก `monitorEventLoopDelay`
 p99 ที่พุ่งคือสัญญาณเตือนล่วงหน้าของรูที่ `CLAUDE.md` §0.1 ระบุไว้: event loop ตันเกิน 30 วินาที → BullMQ ทิ้ง job ไป `failed` **โดยไม่เรียก handler** → `compensateOnce` ไม่ทำงาน → สต็อกหาย 1 ชิ้น

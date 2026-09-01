@@ -22,8 +22,8 @@ fi
 
 COMPOSE_CMD=("$DOCKER" "compose")
 
-: "${POSTGRES_USER:=app}"
-: "${POSTGRES_PASSWORD:=app123}"
+: "${POSTGRES_USER:=flashsale}"
+: "${POSTGRES_PASSWORD:=flashsale}"
 : "${POSTGRES_DB:=flashsale}"
 
 PSQL_CMD=(

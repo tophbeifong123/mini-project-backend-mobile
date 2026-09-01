@@ -133,6 +133,11 @@
   > ⚠️ **แก้ 2026-08-26** — ประโยคเดิมเขียนว่า *"โดยไม่ต้อง invalidate ตอนขายเลยแม้แต่ครั้งเดียว"* ซึ่ง **ขัดกับโค้ดจริง**:
   > `orders.processor.ts` เรียก `invalidateCatalogCache()` ทุกครั้งที่ขายสำเร็จ เพราะ**โจทย์ข้อ 2.3 กฎ 4 บังคับ**ให้ invalidate หลัง DB update
   > ตอนนี้ทำเป็น **debounce ≤ 1 ครั้ง/วินาที** (`redis.service.ts`) — ยังนับว่า invalidate เกิดจริงและถูกกระตุ้นด้วย DB update สำเร็จ
+  >
+  > ⚠️ **เพิ่ม 2026-08-31 — debounce ตัวนี้มีบั๊กที่รู้ตัวแล้วยังไม่ปิด**: กลไกซ้อนกัน 3 ชั้น (leading branch + distributed throttle + trailing timer)
+  > ถ้าผ่านโควตา local แล้วแต่ `tryAcquireFlushThrottle()` ขอ throttle ไม่ได้ (instance อื่นถืออยู่) โค้ดจะ `return` ทันที
+  > **โดยไม่จองรอบ trailing** → การล้างรอบนั้นหายไปเฉยๆ (`redis.service.ts:322-334`)
+  > ดู `CLAUDE.md` §0.1 แถว "debounce ซ้อน 3 ชั้นทำให้ flush หลุด" · ผลกระทบจริงยังจำกัด (ไม่มี endpoint แก้ข้อมูลสินค้า · `remainingStock` ไม่ได้ถูกแคช)
   > แต่ไม่ใช่ 50 ครั้งรวดใน window ~300 ms ตอนที่ reader 1,000 คนกำลังยิงอยู่
 - `remainingStock` สดระดับ real-time ทุก request ทุก instance ตรงกันเสมอ
 - คำถามที่อาจารย์ระบุไว้ตรงๆ (*"จัดการ remainingStock อย่างไร"*) ตอบได้ด้วยไดอะแกรมรูปเดียว
@@ -508,6 +513,7 @@ flowchart TB
 | **(a)** คืนสต็อกเฉพาะ attempt สุดท้าย | ✅ **ปิดแล้ว** | `orders.processor.ts:106` มี `isFinalAttempt` และ `:125-127` เรียก `compensateOnce()` ใต้ `if (isFinalAttempt)` จริง |
 | **(b)** ตรวจค่าที่ `queue.add()` คืนมา | ✅ **ปิดแล้ว แต่แก้คนละทางกับที่เขียนไว้ข้างล่าง** | `orders.service.ts:170-199` — ดูกล่องเตือนใต้โค้ดตัวอย่าง (b) |
 | **ยืนยันพฤติกรรม BullMQ ด้วยการรันจริง** | ❌ **ยังเปิดอยู่** | `test/` มีแต่ `jest-e2e.json` **ไม่มีไฟล์เทสต์สักไฟล์** — ตรงกับ `CLAUDE.md` §0.1 ที่ระบุว่ายังไม่มี e2e test |
+| 🔴 **(c) `connect()`/`startTransaction()` อยู่นอก `try`** *(เพิ่มเข้าบัญชี 2026-08-31)* | ❌ **ยังเปิดอยู่ — blocker จริงที่หนักที่สุดตอนนี้** | `orders.processor.ts:62-64` เรียกทั้งสองก่อน `try` (เริ่ม `:67`) → `finally` ที่คืน runner และ `isFinalAttempt → compensateOnce` (`:125-133`) ไม่ครอบ → primary สะดุดตรงนี้ = สต็อกหายถาวร **ละเมิด `CLAUDE.md` §4 ข้อ 6** · พบ 2026-08-30 แต่ §7 นี้ไม่เคยบันทึกไว้ ทั้งที่ทบทวนสถานะวันเดียวกัน · ยังไม่แก้เพราะเป็น write path (§7 ข้อ 5 ต้องยิง k6 ก่อน) |
 
 > 🆕 **มีของใหม่มาช่วยเรื่องนี้ (2026-08-30)** — ทั้งสองเส้นทางตอนนี้ **นับได้แล้ว** ไม่ต้องเดาจาก log:
 > `stock_compensated_total` / `stock_compensation_restored_total` / `stock_compensation_failures_total` (เส้นทาง a)

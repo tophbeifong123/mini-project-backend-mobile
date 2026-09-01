@@ -45,8 +45,8 @@ if [ -z "$NODE_CMD" ]; then
   exit 1
 fi
 
-: "${POSTGRES_USER:=app}"
-: "${POSTGRES_PASSWORD:=app123}"
+: "${POSTGRES_USER:=flashsale}"
+: "${POSTGRES_PASSWORD:=flashsale}"
 : "${POSTGRES_DB:=flashsale}"
 
 PSQL_CMD=(
