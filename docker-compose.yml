@@ -35,13 +35,13 @@ services:
         max-size: "10m"
         max-file: "3"
     environment:
-      POSTGRES_USER: flashsale
-      POSTGRES_PASSWORD: flashsale
-      POSTGRES_DB: flashsale
+      POSTGRES_USER: ${POSTGRES_USER:-flashsale}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-flashsale}
+      POSTGRES_DB: ${POSTGRES_DB:-flashsale}
       # อ่านโดย scripts/primary-init.sh (role + slot + pg_hba)
-      POSTGRES_REPLICATION_USER: replicator
-      POSTGRES_REPLICATION_PASSWORD: replpass
-      REPLICATION_SLOT_NAME: replica_1_slot
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER:-replicator}
+      POSTGRES_REPLICATION_PASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-replpass}
+      REPLICATION_SLOT_NAME: ${REPLICATION_SLOT_NAME:-replica_1_slot}
     ports:
     # ⚠️ ผูกกับ 127.0.0.1 เท่านั้น — ห้ามเปลี่ยนกลับเป็น "PORT:PORT" เปล่าๆ
     # รหัส PG อยู่ในไฟล์นี้ตรงๆ และ redis ทั้งสองตัวไม่มี requirepass
@@ -77,7 +77,7 @@ services:
       - -c
       - synchronous_commit=on
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U flashsale -d flashsale"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flashsale} -d ${POSTGRES_DB:-flashsale}"]
       interval: 5s
       timeout: 5s
       retries: 12
@@ -99,9 +99,9 @@ services:
         max-size: "10m"
         max-file: "3"
     environment:
-      PGPASSWORD: replpass
-      POSTGRES_REPLICATION_USER: replicator
-      REPLICATION_SLOT_NAME: replica_1_slot
+      PGPASSWORD: ${POSTGRES_REPLICATION_PASSWORD:-replpass}
+      POSTGRES_REPLICATION_USER: ${POSTGRES_REPLICATION_USER:-replicator}
+      REPLICATION_SLOT_NAME: ${REPLICATION_SLOT_NAME:-replica_1_slot}
       PRIMARY_HOST: postgres-primary
       PRIMARY_PORT: 5432
     ports:
@@ -127,7 +127,7 @@ services:
       # ต้องพร้อมใช้งาน "และ" อยู่ในโหมด recovery จริง (คือ streaming อยู่)
       test:
         - CMD-SHELL
-        - pg_isready -U flashsale -d flashsale && psql -U flashsale -d flashsale -tAc 'SELECT pg_is_in_recovery()' | grep -q t
+        - pg_isready -U ${POSTGRES_USER:-flashsale} -d ${POSTGRES_DB:-flashsale} && psql -U ${POSTGRES_USER:-flashsale} -d ${POSTGRES_DB:-flashsale} -tAc 'SELECT pg_is_in_recovery()' | grep -q t
       interval: 5s
       timeout: 5s
       retries: 24
@@ -217,14 +217,14 @@ services:
       # migration + seed DB + seed Redis stock ทำที่ instance นี้เท่านั้น
       RUN_MIGRATIONS: "true"
 
-      JWT_SECRET: flash-sale-dev-secret-change-me
-      JWT_EXPIRES_IN: 15m
+      JWT_SECRET: ${JWT_SECRET:-flash-sale-dev-secret-change-me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
 
       DB_HOST: postgres-primary
       DB_PORT: "5432"
-      DB_USERNAME: flashsale
-      DB_PASSWORD: flashsale
-      DB_DATABASE: flashsale
+      DB_USERNAME: ${DB_USERNAME:-${POSTGRES_USER:-flashsale}}
+      DB_PASSWORD: ${DB_PASSWORD:-${POSTGRES_PASSWORD:-flashsale}}
+      DB_DATABASE: ${DB_DATABASE:-${POSTGRES_DB:-flashsale}}
       DB_REPLICA_HOST: postgres-replica
       DB_REPLICA_PORT: "5432"
       DB_POOL_SIZE: "8"
@@ -242,8 +242,8 @@ services:
       # and starved the HTTP event loops during the write burst.
       WORKER_CONCURRENCY: "1"
 
-      BULL_BOARD_USER: admin
-      BULL_BOARD_PASSWORD: admin
+      BULL_BOARD_USER: ${BULL_BOARD_USER:-admin}
+      BULL_BOARD_PASSWORD: ${BULL_BOARD_PASSWORD:-admin}
     depends_on:
       postgres-primary:
         condition: service_healthy
@@ -284,14 +284,14 @@ services:
       PORT: "3000"
       INSTANCE_ID: app-2
 
-      JWT_SECRET: flash-sale-dev-secret-change-me
-      JWT_EXPIRES_IN: 15m
+      JWT_SECRET: ${JWT_SECRET:-flash-sale-dev-secret-change-me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
 
       DB_HOST: postgres-primary
       DB_PORT: "5432"
-      DB_USERNAME: flashsale
-      DB_PASSWORD: flashsale
-      DB_DATABASE: flashsale
+      DB_USERNAME: ${DB_USERNAME:-${POSTGRES_USER:-flashsale}}
+      DB_PASSWORD: ${DB_PASSWORD:-${POSTGRES_PASSWORD:-flashsale}}
+      DB_DATABASE: ${DB_DATABASE:-${POSTGRES_DB:-flashsale}}
       DB_REPLICA_HOST: postgres-replica
       DB_REPLICA_PORT: "5432"
       DB_POOL_SIZE: "8"
@@ -306,8 +306,8 @@ services:
       ORDER_LOCK_TTL_MS: "30000"
       WORKER_CONCURRENCY: "1"
 
-      BULL_BOARD_USER: admin
-      BULL_BOARD_PASSWORD: admin
+      BULL_BOARD_USER: ${BULL_BOARD_USER:-admin}
+      BULL_BOARD_PASSWORD: ${BULL_BOARD_PASSWORD:-admin}
     depends_on:
       postgres-primary:
         condition: service_healthy
@@ -347,14 +347,14 @@ services:
       PORT: "3000"
       INSTANCE_ID: app-3
 
-      JWT_SECRET: flash-sale-dev-secret-change-me
-      JWT_EXPIRES_IN: 15m
+      JWT_SECRET: ${JWT_SECRET:-flash-sale-dev-secret-change-me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
 
       DB_HOST: postgres-primary
       DB_PORT: "5432"
-      DB_USERNAME: flashsale
-      DB_PASSWORD: flashsale
-      DB_DATABASE: flashsale
+      DB_USERNAME: ${DB_USERNAME:-${POSTGRES_USER:-flashsale}}
+      DB_PASSWORD: ${DB_PASSWORD:-${POSTGRES_PASSWORD:-flashsale}}
+      DB_DATABASE: ${DB_DATABASE:-${POSTGRES_DB:-flashsale}}
       DB_REPLICA_HOST: postgres-replica
       DB_REPLICA_PORT: "5432"
       DB_POOL_SIZE: "8"
@@ -369,8 +369,8 @@ services:
       ORDER_LOCK_TTL_MS: "30000"
       WORKER_CONCURRENCY: "1"
 
-      BULL_BOARD_USER: admin
-      BULL_BOARD_PASSWORD: admin
+      BULL_BOARD_USER: ${BULL_BOARD_USER:-admin}
+      BULL_BOARD_PASSWORD: ${BULL_BOARD_PASSWORD:-admin}
     depends_on:
       postgres-primary:
         condition: service_healthy
@@ -410,14 +410,14 @@ services:
       PORT: "3000"
       INSTANCE_ID: app-4
 
-      JWT_SECRET: flash-sale-dev-secret-change-me
-      JWT_EXPIRES_IN: 15m
+      JWT_SECRET: ${JWT_SECRET:-flash-sale-dev-secret-change-me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
 
       DB_HOST: postgres-primary
       DB_PORT: "5432"
-      DB_USERNAME: flashsale
-      DB_PASSWORD: flashsale
-      DB_DATABASE: flashsale
+      DB_USERNAME: ${DB_USERNAME:-${POSTGRES_USER:-flashsale}}
+      DB_PASSWORD: ${DB_PASSWORD:-${POSTGRES_PASSWORD:-flashsale}}
+      DB_DATABASE: ${DB_DATABASE:-${POSTGRES_DB:-flashsale}}
       DB_REPLICA_HOST: postgres-replica
       DB_REPLICA_PORT: "5432"
       DB_POOL_SIZE: "8"
@@ -432,8 +432,8 @@ services:
       ORDER_LOCK_TTL_MS: "30000"
       WORKER_CONCURRENCY: "1"
 
-      BULL_BOARD_USER: admin
-      BULL_BOARD_PASSWORD: admin
+      BULL_BOARD_USER: ${BULL_BOARD_USER:-admin}
+      BULL_BOARD_PASSWORD: ${BULL_BOARD_PASSWORD:-admin}
     depends_on:
       postgres-primary:
         condition: service_healthy
@@ -473,14 +473,14 @@ services:
       PORT: "3000"
       INSTANCE_ID: app-5
 
-      JWT_SECRET: flash-sale-dev-secret-change-me
-      JWT_EXPIRES_IN: 15m
+      JWT_SECRET: ${JWT_SECRET:-flash-sale-dev-secret-change-me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
 
       DB_HOST: postgres-primary
       DB_PORT: "5432"
-      DB_USERNAME: flashsale
-      DB_PASSWORD: flashsale
-      DB_DATABASE: flashsale
+      DB_USERNAME: ${DB_USERNAME:-${POSTGRES_USER:-flashsale}}
+      DB_PASSWORD: ${DB_PASSWORD:-${POSTGRES_PASSWORD:-flashsale}}
+      DB_DATABASE: ${DB_DATABASE:-${POSTGRES_DB:-flashsale}}
       DB_REPLICA_HOST: postgres-replica
       DB_REPLICA_PORT: "5432"
       DB_POOL_SIZE: "8"
@@ -495,8 +495,8 @@ services:
       ORDER_LOCK_TTL_MS: "30000"
       WORKER_CONCURRENCY: "1"
 
-      BULL_BOARD_USER: admin
-      BULL_BOARD_PASSWORD: admin
+      BULL_BOARD_USER: ${BULL_BOARD_USER:-admin}
+      BULL_BOARD_PASSWORD: ${BULL_BOARD_PASSWORD:-admin}
     depends_on:
       postgres-primary:
         condition: service_healthy
@@ -536,14 +536,14 @@ services:
       PORT: "3000"
       INSTANCE_ID: app-6
 
-      JWT_SECRET: flash-sale-dev-secret-change-me
-      JWT_EXPIRES_IN: 15m
+      JWT_SECRET: ${JWT_SECRET:-flash-sale-dev-secret-change-me}
+      JWT_EXPIRES_IN: ${JWT_EXPIRES_IN:-15m}
 
       DB_HOST: postgres-primary
       DB_PORT: "5432"
-      DB_USERNAME: flashsale
-      DB_PASSWORD: flashsale
-      DB_DATABASE: flashsale
+      DB_USERNAME: ${DB_USERNAME:-${POSTGRES_USER:-flashsale}}
+      DB_PASSWORD: ${DB_PASSWORD:-${POSTGRES_PASSWORD:-flashsale}}
+      DB_DATABASE: ${DB_DATABASE:-${POSTGRES_DB:-flashsale}}
       DB_REPLICA_HOST: postgres-replica
       DB_REPLICA_PORT: "5432"
       DB_POOL_SIZE: "8"
@@ -558,8 +558,8 @@ services:
       ORDER_LOCK_TTL_MS: "30000"
       WORKER_CONCURRENCY: "1"
 
-      BULL_BOARD_USER: admin
-      BULL_BOARD_PASSWORD: admin
+      BULL_BOARD_USER: ${BULL_BOARD_USER:-admin}
+      BULL_BOARD_PASSWORD: ${BULL_BOARD_PASSWORD:-admin}
     depends_on:
       postgres-primary:
         condition: service_healthy
