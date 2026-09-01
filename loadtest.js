@@ -350,41 +350,12 @@ export function handleSummary(data) {
   const totalOrders =
     accepted + conflict + throttled + notSeeded + unauthorized + unexpected;
 
-  const totalHttpReqs =
-    data.metrics.http_reqs && data.metrics.http_reqs.values
-      ? data.metrics.http_reqs.values.count || 0
-      : c('reads_ok_200') + totalOrders;
-
-  const overallRate =
-    data.metrics.http_reqs && data.metrics.http_reqs.values
-      ? Number(data.metrics.http_reqs.values.rate || 0).toFixed(2)
-      : 'n/a';
-
-  const readRps = (c('reads_ok_200') / 30).toFixed(2);
-
-  const writeAvgLatencyMs =
-    data.metrics.place_order_latency && data.metrics.place_order_latency.values
-      ? Number(data.metrics.place_order_latency.values.avg || 400)
-      : 400;
-  const estimatedBurstDurationSec = Math.max(
-    1,
-    (WRITE_ITERATIONS * writeAvgLatencyMs) / 1000,
-  );
-  const writeBurstRps = (totalOrders / estimatedBurstDurationSec).toFixed(2);
-  const peakCombinedRps = (Number(readRps) + Number(writeBurstRps)).toFixed(2);
-
   const lines = [];
   lines.push('');
   lines.push('══════════════════════════════════════════════════════════════');
   lines.push('  FLASH SALE — LOAD TEST SUMMARY');
   lines.push(`  target: ${BASE_URL}   product: ${TARGET_PRODUCT_ID}`);
   lines.push('══════════════════════════════════════════════════════════════');
-  lines.push('');
-  lines.push('  THROUGHPUT SUMMARY');
-  lines.push(`    🔥 Throughput สูงสุด (Peak) : ~${peakCombinedRps} req/s   (ช่วง Write Burst ซ้อน Read)`);
-  lines.push(`    📖 Read Throughput         : ${readRps} req/s`);
-  lines.push(`    ✍️ Write Burst Throughput   : ~${writeBurstRps} req/s`);
-  lines.push(`    🌐 Overall Test Throughput  : ${overallRate} req/s   (รวมช่วง Ramp/Setup)`);
   lines.push('');
   lines.push('  READ PATH — GET /api/v1/products');
   lines.push(`    200 OK                     : ${c('reads_ok_200')}`);

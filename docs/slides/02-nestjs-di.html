@@ -1,0 +1,617 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>บทที่ 2 — NestJS &amp; Dependency Injection</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" aria-hidden="true" style="position:absolute"><defs>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-i"/></marker>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-r"/></marker>
+<marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-g"/></marker>
+<marker id="ara" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-a"/></marker>
+</defs></svg>
+
+<nav class="topnav"><div class="topnav-inner">
+  <a class="home" href="00-index.html">◆ สารบัญ</a>
+  <a href="01-architecture-docker.html">01 Docker</a>
+  <a class="here" href="02-nestjs-di.html">02 NestJS</a>
+  <a href="03-database.html">03 Database</a>
+  <a href="04-redis.html">04 Redis</a>
+  <a href="05-async-queue.html">05 Queue</a>
+  <a href="06-scaling.html">06 Scaling</a>
+</div></nav>
+
+<div class="wrap">
+<main>
+
+<div class="hero">
+  <div class="kicker">Backend 02</div>
+  <h1>NestJS &amp; Architecture for Testability</h1>
+  <p>บทนี้ตอบคำถามเดียว: <strong>ทำยังไงให้โค้ดที่โตขึ้นเรื่อย ๆ ยังแก้ได้ ทดสอบได้ และไม่พันกันจนแตะไม่ได้</strong></p>
+</div>
+
+<div class="chips">
+  <span class="chip">Module / Controller / Provider <span class="g">(กล่องรวมของ / รับ request / ที่อยู่ของ logic จริง)</span></span>
+  <span class="chip">Dependency Injection <span class="g">(ให้ framework ส่งของที่คลาสต้องใช้เข้ามาให้ แทนที่คลาสจะ new เอง)</span></span>
+  <span class="chip">Provider Scope <span class="g">(อายุของ instance: ตัวเดียวทั้งแอป หรือสร้างใหม่ทุก request)</span></span>
+  <span class="chip">DTO + ValidationPipe <span class="g">(คลาสกำหนดว่า request ต้องส่งอะไรมา + ตัวตรวจให้อัตโนมัติ)</span></span>
+  <span class="chip">Custom Provider <span class="g">(บอก DI เองว่า token นี้ให้ส่งของชิ้นไหนมา)</span></span>
+  <span class="chip">Unit Testing <span class="g">(เทสทีละชิ้นโดยไม่ต้องพึ่ง DB จริง)</span></span>
+</div>
+
+<h2 id="s0">0. จุดที่เรื่องเดินมาถึง</h2>
+
+<p>บทที่แล้วเราแพ็ก Flash Sale API ลง container <span class="g">(กล่องที่ห่อแอปกับสภาพแวดล้อมไว้ด้วยกัน ยกไปรันที่ไหนก็เหมือนเดิม)</span> ได้แล้ว ตอนนี้ระบบเริ่มโต มี user, product, order, payment, email แล้วทุกอย่างเริ่มพันกัน</p>
+
+<pre><code>// สิ่งที่จะเกิดถ้าไม่วางโครงสร้างอะไรเลย
+class OrderController {
+  async create(req) {
+    const db = new Database(process.env.DB_URL);   // ผูกกับ DB จริงตายตัว
+    const mailer = new SendGrid(process.env.KEY);  // ผูกกับ SendGrid จริงตายตัว
+    if (!req.body.productId) return res.status(400)...  // validate เอง
+    // business logic 200 บรรทัด ปนกับเรื่อง HTTP อยู่ตรงนี้
+  }
+}</code></pre>
+
+<p>โค้ดแบบนี้มีปัญหา 2 ข้อที่จะกัดเราไปตลอดโปรเจกต์:</p>
+
+<ul>
+<li><strong>ทดสอบไม่ได้</strong> — จะเทสทีต้องมี DB จริงและ SendGrid จริง (แปลว่าเทสทีนึงส่งอีเมลจริงด้วย)</li>
+<li><strong>เอาไปใช้ซ้ำไม่ได้</strong> — logic ผูกติดกับ HTTP request ทั้งที่เดี๋ยวบท 05 เราจะต้องเรียก logic ก้อนเดียวกันนี้จาก queue worker <span class="g">(โปรเซสหลังบ้านที่คอยหยิบงานจากคิวมาทำ ไม่ได้มาจาก HTTP)</span> ซึ่งไม่มี request</li>
+</ul>
+
+<div class="box base"><span class="lab">อ่านบทนี้จบแล้วต้องได้อะไร</span>
+<p>ต้องอธิบายได้ว่า <em>"DI แก้ปัญหาอะไร"</em> <span class="g">(Dependency Injection — ให้ framework ส่งของที่คลาสต้องใช้เข้ามาให้ แทนที่คลาสจะสร้างเอง)</span> โดยไม่พูดคำว่า "มันคือ design pattern" (ตอบแบบนั้นไม่ได้คะแนน) และต้องอธิบายได้ว่า <em>"ทำไม service ต้อง stateless"</em> <span class="g">(stateless = ไม่เก็บข้อมูลผู้ใช้ไว้ในตัวเอง ทุก instance จึงรับ request แทนกันได้)</span> ซึ่งข้อหลังนี่โยงยาวไปถึงบท 04 และ 06 ทั้งบท</p></div>
+
+
+<h2 id="s1">1. ปูพื้นฐาน: NestJS คืออะไร ทำไมไม่ใช้ Express เปล่า ๆ</h2>
+
+<p>Express คือ library บาง ๆ ที่จัดการเรื่อง HTTP ให้ — รับ request, จับคู่ route, ส่ง response แค่นั้น มัน<strong>ไม่บอกอะไรเลย</strong>ว่าเราควรจัดโครงสร้างโค้ดยังไง ซึ่งดีมากถ้าเขียน API 3 endpoint แต่พอทีม 5 คนช่วยกันเขียน 200 endpoint ทุกคนจะจัดโครงคนละแบบ แล้วอ่านโค้ดกันไม่รู้เรื่อง</p>
+
+<p>NestJS คือ framework <span class="g">(โครงสำเร็จรูปที่กำหนดว่าโค้ดต้องวางยังไง ต่างจาก library ที่เราเรียกใช้เอง)</span> ที่ครอบ Express (หรือ Fastify) <span class="g">(Fastify = ตัวจัดการ HTTP อีกตัว เร็วกว่า Express)</span> แล้วเพิ่มของมา 3 อย่าง:</p>
+
+<ol>
+<li><strong>โครงสร้างที่ตายตัว (opinionated)</strong> — Module / Controller / Provider ทุกคนในทีมเขียนเหมือนกันหมด</li>
+<li><strong>DI container ในตัว</strong> — ทำให้การเขียนโค้ดที่เทสได้กลายเป็นเรื่องปกติ ไม่ใช่ของแถม</li>
+<li><strong>TypeScript-first</strong> — type ไล่ตั้งแต่ DTO <span class="g">(คลาสที่กำหนดว่า request ต้องส่งอะไรมาบ้าง ใช้ตรวจข้อมูลขาเข้า)</span> ยันชั้น repository</li>
+</ol>
+
+<div class="box trap"><span class="lab">ระวังสับสน: "container" สองตัวนี้คนละเรื่องกัน</span>
+<p><strong>Docker container</strong> (บท 01) = กล่องที่ห่อแอปกับสภาพแวดล้อมไว้ด้วยกันเพื่อเอาไปรันที่ไหนก็ได้</p>
+<p><strong>DI container</strong> (บทนี้) = โค้ดส่วนหนึ่งของ NestJS ที่ทำหน้าที่ "จำไว้ว่ามี object อะไรบ้าง แล้วสร้างและแจกจ่ายให้ class ที่ต้องการ"</p>
+<p>สองตัวนี้ไม่เกี่ยวกันเลย แค่บังเอิญใช้คำเดียวกันเพราะทั้งคู่แปลว่า "ภาชนะที่บรรจุของ"</p></div>
+
+<h3 id="s1-1">1.1 สี่ชั้นของ NestJS ที่ต้องแยกให้ออก</h3>
+
+<div class="tbl"><table>
+<tr><th>ชั้น</th><th>หน้าที่</th><th>ห้ามทำอะไร</th></tr>
+<tr><td><strong>Module</strong></td><td>จัดกลุ่มของที่เกี่ยวข้องกันไว้ด้วยกัน มี <code>imports / controllers / providers / exports</code></td><td>—</td></tr>
+<tr><td><strong>Controller</strong></td><td>เรื่อง HTTP อย่างเดียว: รับ request → ดึง param → เรียก service → คืนค่า</td><td><strong>ห้ามมี business logic <span class="g">(กฎทางธุรกิจ เช่น สั่งเกิน 10 ชิ้นไม่ได้ ไม่ใช่เรื่อง HTTP)</span> ห้ามแตะ DB</strong></td></tr>
+<tr><td><strong>Service (Provider)</strong> <span class="g">(Provider = ของที่ลงทะเบียนไว้ให้ container สร้างและแจกจ่าย ส่วนใหญ่คือ service)</span></td><td>business logic ทั้งหมด, โยน HTTP exception</td><td><strong>ห้ามเก็บ state ของผู้ใช้</strong></td></tr>
+<tr><td><strong>Repository</strong></td><td>คุยกับ database</td><td>ไม่ควรมี business rule</td></tr>
+</table></div>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 250" role="img" aria-label="ลำดับชั้นของ NestJS จาก Controller ไป Service ไป Repository ไป Database">
+  <rect x="18" y="52" width="96" height="52" rx="7" class="bx"/>
+  <text x="66" y="76" text-anchor="middle" class="t-b">Client</text>
+  <text x="66" y="93" text-anchor="middle" class="t-xs">มือถือ / เว็บ</text>
+
+  <path d="M118,78 L146,78" class="ln" marker-end="url(#ar)"/>
+  <text x="132" y="68" text-anchor="middle" class="t-xs">HTTP</text>
+
+  <rect x="150" y="52" width="118" height="52" rx="7" class="bx-a"/>
+  <text x="209" y="76" text-anchor="middle" class="t-b">Controller</text>
+  <text x="209" y="93" text-anchor="middle" class="t-xs">ชั้น HTTP</text>
+
+  <path d="M272,78 L300,78" class="ln" marker-end="url(#ar)"/>
+  <rect x="304" y="52" width="118" height="52" rx="7" class="bx-a"/>
+  <text x="363" y="76" text-anchor="middle" class="t-b">Service</text>
+  <text x="363" y="93" text-anchor="middle" class="t-xs">business logic</text>
+
+  <path d="M426,78 L454,78" class="ln" marker-end="url(#ar)"/>
+  <rect x="458" y="52" width="118" height="52" rx="7" class="bx-a"/>
+  <text x="517" y="76" text-anchor="middle" class="t-b">Repository</text>
+  <text x="517" y="93" text-anchor="middle" class="t-xs">คุยกับ DB</text>
+
+  <path d="M580,78 L608,78" class="ln" marker-end="url(#ar)"/>
+  <rect x="612" y="52" width="70" height="52" rx="7" class="bx-p"/>
+  <text x="647" y="82" text-anchor="middle" class="t-b">DB</text>
+
+  <text x="18" y="28" class="t-sm">ทางเดียว ไม่ย้อนกลับ ไม่ข้ามชั้น</text>
+
+  <line x1="150" y1="120" x2="682" y2="120" class="ln-d"/>
+  <text x="209" y="142" text-anchor="middle" class="t-xs t-g">✓ ดึง param</text>
+  <text x="209" y="158" text-anchor="middle" class="t-xs t-g">✓ แปลงเป็น DTO</text>
+  <text x="209" y="174" text-anchor="middle" class="t-xs t-g">✓ คืน response</text>
+  <text x="209" y="196" text-anchor="middle" class="t-xs t-r">✗ business logic</text>
+  <text x="209" y="212" text-anchor="middle" class="t-xs t-r">✗ เรียก DB ตรง</text>
+
+  <text x="363" y="142" text-anchor="middle" class="t-xs t-g">✓ กฎทางธุรกิจ</text>
+  <text x="363" y="158" text-anchor="middle" class="t-xs t-g">✓ transaction</text>
+  <text x="363" y="174" text-anchor="middle" class="t-xs t-g">✓ โยน exception</text>
+  <text x="363" y="196" text-anchor="middle" class="t-xs t-r">✗ เก็บ state ผู้ใช้</text>
+  <text x="363" y="212" text-anchor="middle" class="t-xs t-r">✗ รู้จัก req/res</text>
+
+  <text x="517" y="142" text-anchor="middle" class="t-xs t-g">✓ query</text>
+  <text x="517" y="158" text-anchor="middle" class="t-xs t-g">✓ map entity</text>
+  <text x="517" y="196" text-anchor="middle" class="t-xs t-r">✗ กฎทางธุรกิจ</text>
+
+  <text x="350" y="240" text-anchor="middle" class="t-sm">ที่ต้องแยกแบบนี้เพราะ Service เป็นชั้นเดียวที่ queue worker (บท 05) จะเรียกใช้ได้ — worker ไม่มี HTTP request ให้ใช้</text>
+</svg>
+<figcaption>แต่ละชั้นรู้จักแค่ชั้นถัดไป — Service ไม่รู้ด้วยซ้ำว่ามันถูกเรียกมาจาก HTTP หรือจาก queue</figcaption>
+</figure>
+
+<h3 id="s1-2">1.2 ทำไม controller ต้องบาง</h3>
+
+<p>คำตอบที่คนชอบตอบคือ "เพื่อความสะอาด" ซึ่งได้คะแนนน้อยมาก เพราะไม่ได้บอกว่าได้อะไร คำตอบที่ดีมี 2 ข้อ:</p>
+
+<ol>
+<li><strong>ทดสอบได้โดยไม่ต้องยิง HTTP</strong> — ถ้า logic อยู่ใน service เราเรียก <code>service.createOrder(...)</code> ตรง ๆ ในเทสได้เลย ไม่ต้องปั้น request object ปลอมขึ้นมา</li>
+<li><strong>เรียกซ้ำจากทางเข้าอื่นได้</strong> — logic ก้อนเดียวกันจะถูกเรียกจาก queue worker (บท 05), CLI, cron หรือ GraphQL resolver ในอนาคต ถ้ามันฝังอยู่ใน controller ก็ต้อง copy-paste ซึ่งแปลว่าแก้บั๊กทีต้องแก้หลายที่</li>
+</ol>
+
+<h3 id="s1-3">1.3 แบ่งโฟลเดอร์ตาม domain <span class="g">(ก้อนงานตามเรื่อง เช่น users, orders)</span> ไม่ใช่ตาม layer <span class="g">(ชั้นทางเทคนิค เช่น controllers, services)</span></h3>
+
+<pre><code>❌ แบ่งตาม layer                ✅ แบ่งตาม domain
+src/                            src/
+  controllers/                    users/
+    user.controller.ts              user.controller.ts
+    order.controller.ts             user.service.ts
+  services/                         user.module.ts
+    user.service.ts               orders/
+    order.service.ts                order.controller.ts
+  repositories/                     order.service.ts
+    ...                             order.module.ts</code></pre>
+
+<p>เหตุผล: เวลาแก้ feature "order" ไฟล์ที่เกี่ยวข้องอยู่ในโฟลเดอร์เดียวกันหมด ไม่ต้องกระโดดข้าม 3 โฟลเดอร์ และวันที่ต้องแตกเป็น microservice <span class="g">(แยกแอปเป็นบริการเล็ก ๆ deploy คนละตัว)</span> ก็แค่ลากโฟลเดอร์ <code>orders/</code> ออกไปทั้งก้อน (นี่คือ modular monolith <span class="g">(แอปก้อนเดียวแต่ข้างในแบ่งโมดูลชัด พร้อมแตกออกทีหลัง)</span> จากบท 01 ในระดับโค้ดจริง)</p>
+
+<div class="box trap"><span class="lab">กับดัก: <code>exports</code></span>
+<p>Provider เป็น <strong>module-scoped</strong> โดยปริยาย — module อื่นเรียกใช้ไม่ได้จนกว่าจะใส่ชื่อไว้ใน <code>exports</code> พอเจอ error "Nest can't resolve dependencies" คนมักแก้ด้วยการ export ทุกอย่างออกไปหมด ซึ่งทำลาย encapsulation <span class="g">(การซ่อนของภายในโมดูลไม่ให้ข้างนอกเข้ามายุ่ง)</span> จนกลายเป็นก้อนโคลนใหญ่ ๆ ให้ export เท่าที่จำเป็นจริง ๆ เท่านั้น</p></div>
+
+
+<h2 id="s2">2. Dependency Injection — ใจกลางของบทนี้</h2>
+
+<h3 id="s2-1">2.1 เข้าใจปัญหาก่อน อย่าเพิ่งดู syntax</h3>
+
+<pre><code>// ไม่มี DI
+class UserService {
+  private db = new PostgresDatabase(process.env.DB_URL);   // ← ตัวปัญหาอยู่ตรงนี้
+  private mailer = new SendGridMailer(process.env.KEY);
+}</code></pre>
+
+<p>บรรทัดที่ <code>new</code> นี่แหละ ทำให้เกิดปัญหา 3 อย่างพร้อมกัน:</p>
+
+<ol>
+<li><strong>เทสไม่ได้</strong> — ทุกครั้งที่เทส <code>UserService</code> มันจะต่อ PostgreSQL จริงและส่งอีเมลจริง</li>
+<li><strong>สลับของไม่ได้</strong> — จะเปลี่ยน SendGrid เป็น SES ต้องไล่แก้ทุก class ที่ <code>new</code> มัน</li>
+<li><strong>มองไม่เห็นว่า class นี้พึ่งอะไรบ้าง</strong> — ต้องไล่อ่านทั้ง class ถึงจะรู้</li>
+</ol>
+
+<p>DI แก้ด้วยหลักการเดียว: <strong>อย่าสร้าง dependency เอง ให้รับเข้ามาทาง constructor</strong> <span class="g">(วิธีนี้เรียก constructor injection · dependency = ของที่คลาสต้องใช้ เช่น db, mailer)</span> แล้วให้ container เป็นคนหามาให้</p>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 270" role="img" aria-label="เปรียบเทียบโค้ดที่สร้าง dependency เองกับโค้ดที่รับผ่าน Dependency Injection">
+  <text x="165" y="18" text-anchor="middle" class="t-b t-r">❌ ไม่มี DI — สร้างเอง</text>
+  <text x="530" y="18" text-anchor="middle" class="t-b t-g">✅ มี DI — รับเข้ามา</text>
+
+  <!-- left -->
+  <rect x="60" y="34" width="210" height="58" rx="7" class="bx-a"/>
+  <text x="165" y="58" text-anchor="middle" class="t-b">UserService</text>
+  <text x="165" y="78" text-anchor="middle" class="t-mono">new PostgresDatabase()</text>
+
+  <path d="M120,96 L100,132" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M210,96 L230,132" class="ln-r" marker-end="url(#arr)"/>
+
+  <rect x="26" y="136" width="140" height="42" rx="6" class="bx-p"/>
+  <text x="96" y="153" text-anchor="middle" class="t-sm">PostgreSQL จริง</text>
+  <text x="96" y="169" text-anchor="middle" class="t-xs t-r">เทสก็ต่อของจริง</text>
+
+  <rect x="176" y="136" width="140" height="42" rx="6" class="bx-p"/>
+  <text x="246" y="153" text-anchor="middle" class="t-sm">SendGrid จริง</text>
+  <text x="246" y="169" text-anchor="middle" class="t-xs t-r">เทสก็ส่งอีเมลจริง</text>
+
+  <rect x="26" y="196" width="290" height="56" rx="6" class="bx-r"/>
+  <text x="171" y="216" text-anchor="middle" class="t-xs t-r">• เทสไม่ได้ถ้าไม่มีของจริง</text>
+  <text x="171" y="232" text-anchor="middle" class="t-xs t-r">• เปลี่ยน SendGrid → SES ต้องไล่แก้ทุก class</text>
+  <text x="171" y="246" text-anchor="middle" class="t-xs t-r">• ไม่รู้ว่า class พึ่งอะไรจนกว่าจะอ่านหมด</text>
+
+  <!-- right -->
+  <rect x="400" y="34" width="260" height="34" rx="6" class="bx"/>
+  <text x="530" y="56" text-anchor="middle" class="t-b">DI Container ของ NestJS</text>
+
+  <path d="M530,72 L530,96" class="ln-g" marker-end="url(#arg)"/>
+  <text x="600" y="88" text-anchor="middle" class="t-xs t-g">ฉีดให้ตอนสร้าง</text>
+
+  <rect x="425" y="100" width="210" height="58" rx="7" class="bx-a"/>
+  <text x="530" y="122" text-anchor="middle" class="t-b">UserService</text>
+  <text x="530" y="142" text-anchor="middle" class="t-mono">constructor(db, mailer)</text>
+
+  <path d="M470,162 L440,190" class="ln-d"/>
+  <path d="M590,162 L620,190" class="ln-d"/>
+  <rect x="378" y="192" width="130" height="40" rx="6" class="bx-p"/>
+  <text x="443" y="209" text-anchor="middle" class="t-sm">ของจริง (prod)</text>
+  <text x="443" y="225" text-anchor="middle" class="t-xs">Postgres / SendGrid</text>
+  <rect x="546" y="192" width="130" height="40" rx="6" class="bx-g"/>
+  <text x="611" y="209" text-anchor="middle" class="t-sm">mock (ตอนเทส)</text>
+  <text x="611" y="225" text-anchor="middle" class="t-xs">สลับได้โดยไม่แก้ service</text>
+
+  <text x="530" y="252" text-anchor="middle" class="t-xs t-g">UserService ไม่รู้และไม่สนใจว่าได้ตัวไหนมา — ขอแค่หน้าตา (type) ตรงกัน</text>
+</svg>
+<figcaption>หัวใจของ DI คือ service ไม่ผูกกับ <em>ของชิ้นใดชิ้นหนึ่ง</em> แต่ผูกกับ <em>หน้าตาของของ</em> ใครมีหน้าตาตรงก็เสียบแทนกันได้</figcaption>
+</figure>
+
+<pre><code>@Injectable()
+export class UserService {
+  constructor(
+    private readonly userRepo: Repository&lt;User&gt;,   // ← รับเข้ามา ไม่ new เอง
+    private readonly mailer: MailerService,
+  ) {}
+}</code></pre>
+
+<div class="box why"><span class="lab">ประโยคที่เอาไปตอบข้อสอบได้เลย</span>
+<p>DI คือการย้ายความรับผิดชอบในการ "หาและสร้าง dependency" ออกจาก class ไปให้ container ทำให้ class ไม่ผูกกับ <em>implementation</em> <span class="g">(ตัวที่ลงมือทำงานจริง เช่น SendGridMailer ไม่ใช่แค่หน้าตา)</span> ตัวใดตัวหนึ่ง ผลตรง ๆ คือ <strong>mock ได้ทันทีตอนเทส</strong> <span class="g">(mock = ของปลอมที่สวมแทนของจริงตอนเทส เช่น DB ปลอม)</span> และ <strong>สลับ implementation ตาม environment ได้</strong> โดยไม่ต้องแตะโค้ดที่เรียกใช้เลย</p></div>
+
+<h3 id="s2-2">2.2 DI ทำงานได้ยังไง (และทำไม interface ใช้ไม่ได้)</h3>
+
+<p>NestJS รู้ว่าจะฉีดอะไรเข้าไป เพราะ TypeScript ปล่อยข้อมูล type ของ constructor parameter ออกมาตอน compile (ฟีเจอร์ชื่อ <code>emitDecoratorMetadata</code>) <span class="g">(สวิตช์ TypeScript ที่ฝัง type ไว้ให้ decorator หรือป้าย @ อ่านได้ตอนรัน)</span> แล้ว container เอา type นั้นไปใช้เป็น <strong>token</strong> เพื่อค้นหาว่าต้องเอา provider ตัวไหนมาให้</p>
+
+<p>พูดง่าย ๆ คือ type ทำหน้าที่เป็น "ชื่อ" ที่ container ใช้ค้นของในกล่อง</p>
+
+<div class="box trap"><span class="lab">กับดักอันดับหนึ่งของมือใหม่ NestJS</span>
+<p><strong><code>interface</code> ใช้เป็น DI token ไม่ได้</strong> <span class="g">(interface = ตัวประกาศหน้าตาว่า object ต้องมี method อะไรบ้าง · DI token = ชื่อที่ container ใช้ค้นของ)</span> เพราะ interface ของ TypeScript <em>หายไปตอน compile</em> (เรียกว่า type erasure) พอถึง runtime <span class="g">(ตอนโปรแกรมรันอยู่จริง ต่างจาก compile ที่ยังแปลงโค้ดอยู่)</span> ก็ไม่เหลืออะไรให้ container เอาไปค้นหา</p>
+<p>ทางแก้: ใช้ <strong>abstract class</strong> <span class="g">(คลาสแม่ที่ประกาศหน้าตา method ไว้ให้ลูกไปเขียนต่อ ห้าม new ตรง ๆ)</span> ซึ่งยังเหลืออยู่ตอน runtime หรือประกาศ token เป็น <code>Symbol</code> <span class="g">(ค่าที่ JS การันตีว่าไม่ซ้ำกับใคร ใช้เป็นชื่อ token ได้)</span> / ค่าคงที่ที่ export ออกมา แล้วใช้ <code>@Inject(TOKEN)</code></p></div>
+
+<h3 id="s2-3">2.3 Custom Provider <span class="g">(บอก container เองว่าจะสร้างหรือหาของตัวนี้มาให้ยังไง)</span> 3 แบบ</h3>
+
+<div class="tbl"><table>
+<tr><th>แบบ</th><th>ใช้ตอนไหน</th><th>ทำไม</th></tr>
+<tr><td><code>useValue</code></td><td>ค่าคงที่, config object, mock ในเทส</td><td>ไม่ต้องสร้างอะไร เอาค่านี้ไปใช้เลย</td></tr>
+<tr><td><code>useClass</code></td><td>สลับ implementation ตาม environment</td><td>เปลี่ยน <code>SendGridMailer</code> → <code>SesMailer</code> โดยโค้ดที่เรียกใช้ไม่รู้เรื่องเลย</td></tr>
+<tr><td><code>useFactory</code> + <code>inject</code></td><td>ของที่ต้อง <code>await</code> ตอนสร้าง เช่น DB, Redis <span class="g">(ที่เก็บข้อมูลในหน่วยความจำ เร็วมาก ใช้เก็บของที่ต้องแชร์กันไว้ตรงกลาง)</span></td><td>connection ถูกเชื่อมต่อเสร็จ <em>ก่อน</em> แอปเริ่มรับ traffic แทนที่จะไปพังกลางทาง</td></tr>
+</table></div>
+
+<pre><code>{
+  provide: 'REDIS_CLIENT',
+  useFactory: async (config: ConfigService) =&gt; {
+    const client = new Redis(config.get('REDIS_URL'));
+    await client.ping();          // เชื่อมต่อให้เสร็จก่อน
+    return client;
+  },
+  inject: [ConfigService],
+}</code></pre>
+
+<p><strong>เรื่อง token:</strong> ใช้ class เป็น token เป็นค่าเริ่มต้น เพราะ type-safe, auto-complete ได้ และ refactor แล้วชื่อตามไปเอง ถ้าจำเป็นต้องใช้ token ที่ไม่ใช่ class ให้ใช้ <code>Symbol</code> หรือค่าคงที่ที่ export — <strong>อย่าใช้ string ดิบ ๆ</strong> เพราะพิมพ์ผิดแล้วไปพังตอน runtime และ token ชนกันข้าม module ได้</p>
+
+
+<h2 id="s3">3. Provider Scope <span class="g">(อายุของ provider ว่าถูกสร้างใหม่บ่อยแค่ไหน)</span> — จุดที่คนเข้าใจผิดมากที่สุด</h2>
+
+<div class="tbl"><table>
+<tr><th>Scope</th><th>สร้างเมื่อไร</th><th>ควรใช้</th></tr>
+<tr><td><code>DEFAULT</code></td><td>ครั้งเดียวตอนแอปเริ่ม (singleton) <span class="g">(singleton = มีตัวเดียวทั้งแอป ใครขอก็ได้ตัวเดิม)</span></td><td><strong>เกือบทุกกรณี</strong></td></tr>
+<tr><td><code>REQUEST</code></td><td>สร้างใหม่ทุก HTTP request</td><td>แทบไม่ต้องใช้ — ดูด้านล่าง</td></tr>
+<tr><td><code>TRANSIENT</code></td><td>สร้างใหม่ทุกครั้งที่ถูก inject</td><td>กรณีพิเศษมาก ๆ</td></tr>
+</table></div>
+
+<div class="box errata"><span class="lab">⚠ สไลด์เขียนผิด — ข้อนี้น่าจะออกสอบ</span>
+<p>สไลด์เขียนว่า provider เป็น <strong>"Singleton — one instance per module"</strong> ซึ่ง<strong>ผิด</strong></p>
+<p>ความจริงคือมันเป็น <strong>singleton ต่อ application (ต่อ DI container)</strong> ถ้า module A กับ module B ต่างก็ import module ที่ export <code>UserService</code> ทั้งคู่จะได้ <strong>instance เดียวกันตัวเดิม</strong> <span class="g">(instance = object ตัวจริงที่ถูกสร้างขึ้นมา 1 ตัว)</span> ไม่ใช่คนละตัว</p>
+<p>ทำไมเรื่องนี้สำคัญ: ถ้าเชื่อตามสไลด์ นายจะคิดว่าเก็บ state <span class="g">(ข้อมูลที่ค้างอยู่ในตัว object ข้ามหลาย request)</span> ใน service ได้เพราะ "แต่ละ module มีของตัวเอง" ซึ่งเป็นความเข้าใจผิดที่นำไปสู่บั๊กข้อมูลรั่วข้าม request โดยตรง</p></div>
+
+<h3 id="s3-1">3.1 Singleton + state = บั๊กที่ร้ายที่สุดในบทนี้</h3>
+
+<pre><code>@Injectable()
+export class ProductService {
+  private cache = new Map();        // ⚠️ อันตราย
+  private currentUser: User;        // ☠️ หายนะ
+}</code></pre>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 250" role="img" aria-label="ผู้ใช้สองคนใช้ service instance เดียวกันทำให้ข้อมูลรั่วข้ามกัน">
+  <rect x="20" y="40" width="120" height="44" rx="7" class="bx"/>
+  <text x="80" y="60" text-anchor="middle" class="t-sm">Request A</text>
+  <text x="80" y="76" text-anchor="middle" class="t-xs">สมชาย</text>
+
+  <rect x="20" y="150" width="120" height="44" rx="7" class="bx"/>
+  <text x="80" y="170" text-anchor="middle" class="t-sm">Request B</text>
+  <text x="80" y="186" text-anchor="middle" class="t-xs">สมหญิง</text>
+
+  <path d="M144,62 L236,105" class="ln" marker-end="url(#ar)"/>
+  <path d="M144,172 L236,130" class="ln" marker-end="url(#ar)"/>
+
+  <rect x="240" y="88" width="200" height="62" rx="8" class="bx-r"/>
+  <text x="340" y="110" text-anchor="middle" class="t-b">ProductService</text>
+  <text x="340" y="128" text-anchor="middle" class="t-xs">instance เดียว ใช้ร่วมกันทุก request</text>
+  <text x="340" y="143" text-anchor="middle" class="t-mono t-r">currentUser = ?</text>
+
+  <text x="470" y="70" class="t-xs">① A เข้ามา → <tspan class="t-mono">currentUser = สมชาย</tspan></text>
+  <text x="470" y="92" class="t-xs">② B เข้ามาแทรก → <tspan class="t-mono">currentUser = สมหญิง</tspan></text>
+  <text x="470" y="114" class="t-xs t-r">③ A อ่านค่าต่อ → ได้ "สมหญิง"</text>
+  <text x="470" y="140" class="t-xs t-r t-b">สมชายเห็นข้อมูลของสมหญิง</text>
+
+  <line x1="20" y1="176" x2="20" y2="176" class="ln-t"/>
+  <rect x="240" y="182" width="440" height="52" rx="7" class="bx-w"/>
+  <text x="460" y="202" text-anchor="middle" class="t-xs">นี่ไม่ใช่เรื่อง "โค้ดไม่สะอาด" แต่เป็น <tspan class="t-b">ช่องโหว่ความปลอดภัย</tspan> (data leak ข้าม tenant)</text>
+  <text x="460" y="222" text-anchor="middle" class="t-xs">ทางแก้มีทางเดียว: service ต้อง stateless — state ที่ต้องแชร์ไปอยู่ Redis (บท 04)</text>
+</svg>
+<figcaption>เพราะทุก request ใช้ instance เดียวกัน การเก็บข้อมูลของผู้ใช้ไว้ใน field ของ service คือการเอาข้อมูลไปวางไว้ในที่สาธารณะ</figcaption>
+</figure>
+
+<div class="box link-box"><span class="lab">🔗 นี่คือจุดที่บท 02, 04 และ 06 มาเจอกัน</span>
+<p>ต่อให้ <code>private cache = new Map()</code> <span class="g">(cache = ที่พักข้อมูลที่ดึงมาแล้ว ไว้ตอบซ้ำได้เร็ว ๆ)</span> ไม่มีข้อมูลผู้ใช้ปนเลย มันก็ยังใช้ไม่ได้ในระบบจริง เพราะพอเรา scale เป็น 3 instance (บท 06) แต่ละ instance จะมี Map ของตัวเอง <strong>ไม่ sync กัน</strong> ผู้ใช้คนหนึ่งเห็นราคาเก่า อีกคนเห็นราคาใหม่ แล้วแต่ว่า load balancer <span class="g">(ตัวกระจาย request ไปยัง instance ต่าง ๆ)</span> ส่งไปเครื่องไหน</p>
+<p>ทางแก้ทางเดียวคือย้าย state ออกไปไว้ที่กลาง = <strong>Redis (บท 04)</strong></p>
+<p>สรุปเป็นกฎเดียว: <strong>service ต้อง stateless — state ที่ต้องแชร์ไปอยู่ Redis</strong> กฎนี้จะโผล่ซ้ำในบท 04, 05 และ 06</p></div>
+
+<h3 id="s3-2">3.2 Scope bubbling — ทำไมห้ามใช้ REQUEST scope พร่ำเพรื่อ</h3>
+
+<p>ถ้า <code>ServiceA</code> เป็น REQUEST scope แล้ว <code>ServiceB</code> inject มันเข้ามา → <code>ServiceB</code> จะกลายเป็น REQUEST ตามไปด้วยโดยอัตโนมัติ และถ้า controller inject <code>ServiceB</code> อีกที controller ก็กลายเป็น REQUEST ตามอีก มัน "ลาม" ขึ้นข้างบนไปเรื่อย ๆ</p>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 220" role="img" aria-label="scope bubbling ทำให้ provider ทั้งสายกลายเป็น REQUEST scope">
+  <text x="20" y="20" class="t-sm">ก่อน: ทุกตัวเป็น DEFAULT — สร้างครั้งเดียวตอน boot</text>
+  <rect x="20" y="30" width="130" height="38" rx="6" class="bx"/>
+  <text x="85" y="54" text-anchor="middle" class="t-sm">Controller</text>
+  <path d="M154,49 L182,49" class="ln" marker-end="url(#ar)"/>
+  <rect x="186" y="30" width="130" height="38" rx="6" class="bx"/>
+  <text x="251" y="54" text-anchor="middle" class="t-sm">ServiceB</text>
+  <path d="M320,49 L348,49" class="ln" marker-end="url(#ar)"/>
+  <rect x="352" y="30" width="130" height="38" rx="6" class="bx"/>
+  <text x="417" y="54" text-anchor="middle" class="t-sm">ServiceA</text>
+  <text x="500" y="54" class="t-xs t-g">รวม 3 object ตลอดอายุแอป</text>
+
+  <text x="20" y="108" class="t-sm">หลัง: เปลี่ยน ServiceA ตัวเดียวเป็น REQUEST</text>
+  <rect x="20" y="118" width="130" height="38" rx="6" class="bx-r"/>
+  <text x="85" y="137" text-anchor="middle" class="t-sm">Controller</text>
+  <text x="85" y="151" text-anchor="middle" class="t-xs t-r">→ REQUEST</text>
+  <path d="M154,137 L182,137" class="ln-r" marker-end="url(#arr)"/>
+  <rect x="186" y="118" width="130" height="38" rx="6" class="bx-r"/>
+  <text x="251" y="137" text-anchor="middle" class="t-sm">ServiceB</text>
+  <text x="251" y="151" text-anchor="middle" class="t-xs t-r">→ REQUEST</text>
+  <path d="M320,137 L348,137" class="ln-r" marker-end="url(#arr)"/>
+  <rect x="352" y="118" width="130" height="38" rx="6" class="bx-r"/>
+  <text x="417" y="137" text-anchor="middle" class="t-sm">ServiceA</text>
+  <text x="417" y="151" text-anchor="middle" class="t-xs t-r">REQUEST</text>
+  <text x="500" y="132" class="t-xs t-r">สร้างใหม่ 3 object</text>
+  <text x="500" y="148" class="t-xs t-r">ทุก request ที่เข้ามา</text>
+
+  <path d="M417,162 L417,176 L85,176 L85,162" class="ln-r"/>
+  <text x="251" y="192" text-anchor="middle" class="t-xs t-r">scope ลามย้อนขึ้นไปทั้งสาย ← ทิศทางตรงข้ามกับลูกศร dependency</text>
+  <text x="350" y="212" text-anchor="middle" class="t-xs">อาการ: latency สูงขึ้นทั้งระบบ แต่หาสาเหตุยากเพราะต้นเหตุอยู่ห่างจากอาการหลายชั้น</text>
+</svg>
+<figcaption>ประกาศ REQUEST scope ที่ provider ตัวเดียวลึก ๆ แต่ผลกระทบเด้งขึ้นไปถึง controller</figcaption>
+</figure>
+
+<p><strong>แล้วถ้าอยากได้ข้อมูลของ request ปัจจุบันจริง ๆ ล่ะ</strong> (เช่น userId หรือ correlation id <span class="g">(รหัสประจำ 1 request ไว้ไล่ log ต่อกันได้)</span>) ให้ใช้ <code>AsyncLocalStorage</code> <span class="g">(ที่เก็บข้อมูลติดไปกับ request ตลอดสาย async โดยไม่ต้องส่งต่อเป็นพารามิเตอร์)</span> ผ่านไลบรารี <code>nestjs-cls</code> ซึ่งให้ request context ได้โดยที่ provider ทุกตัวยังเป็น DEFAULT scope เหมือนเดิม</p>
+
+<h3 id="s3-3">3.3 Circular dependency</h3>
+
+<p>module A import B และ B import A → NestJS โยน error ที่อ่านยาก คนส่วนใหญ่แก้ด้วย <code>forwardRef()</code> <span class="g">(บอก Nest ให้ค่อยไปหา dependency ตัวนั้นทีหลัง จะได้ไม่วนตาย)</span> แล้วจบ</p>
+
+<div class="box trap"><span class="lab">คำตอบที่ได้คะแนนเต็ม</span>
+<p><code>forwardRef()</code> <strong>รักษาอาการ ไม่ได้รักษาโรค</strong> — การมี circular dependency คือสัญญาณว่า <em>ขอบเขตของโมดูลถูกวางผิด</em> สองโมดูลที่ต้องพึ่งกันไปกลับ แปลว่ามันมีความรับผิดชอบร่วมกันบางอย่างที่ยังไม่ถูกดึงออกมา</p>
+<p>วิธีแก้ที่ถูกคือดึงส่วนที่ทั้งคู่ใช้ร่วมกันออกมาเป็น shared module แล้วให้ทั้ง A และ B import จากตรงนั้นแทน ทำให้ dependency กลายเป็นทิศทางเดียว</p></div>
+
+
+<h2 id="s4">4. DTO &amp; ValidationPipe <span class="g">(ด่านตรวจ request ตาม DTO ก่อนถึง controller)</span></h2>
+
+<p>DTO (Data Transfer Object) คือ class ที่บอกว่า request body ควรมีหน้าตายังไง ใช้คู่กับ <code>class-validator</code> <span class="g">(ไลบรารีที่ให้แปะกฎ เช่น @IsInt @IsUUID ไว้บน field ของ DTO)</span> แล้ว NestJS จะตรวจให้อัตโนมัติก่อนเข้า controller</p>
+
+<pre><code>export class CreateOrderDto {
+  @IsUUID()      productId: string;
+  @IsInt() @Min(1) @Max(10)  quantity: number;
+}
+
+// main.ts
+app.useGlobalPipes(new ValidationPipe({
+  whitelist: true,
+  forbidNonWhitelisted: true,
+  transform: true,
+}));</code></pre>
+
+<div class="tbl"><table>
+<tr><th>Option</th><th>ทำอะไร</th><th>ทำไมสำคัญ</th></tr>
+<tr><td><code>whitelist: true</code></td><td>ตัด property ที่ไม่ได้ประกาศใน DTO ทิ้ง</td><td><strong>กัน mass assignment</strong> — ผู้ใช้ส่ง <code>{"quantity":1, "role":"admin", "price":0}</code> แนบมาด้วย ถ้าไม่ตัดทิ้งแล้วเผลอ <code>save(body)</code> ตรง ๆ ก็เท่ากับเราเพิ่งแจกสิทธิ์ admin ไปฟรี ๆ นี่เป็นช่องโหว่ระดับ OWASP <span class="g">(รายการช่องโหว่ความปลอดภัยมาตรฐานที่วงการยึดถือ)</span></td></tr>
+<tr><td><code>forbidNonWhitelisted: true</code></td><td>ตอบ 400 แทนที่จะเงียบ ๆ ตัดทิ้ง</td><td>client รู้ตัวว่าส่งผิด และเราจับบั๊กได้เร็ว แทนที่จะมานั่งงงว่า "ทำไมค่าที่ส่งไปหายไป"</td></tr>
+<tr><td><code>transform: true</code></td><td>แปลง payload เป็น instance ของ DTO class จริง</td><td>ทำให้ type ที่ประกาศไว้ <strong>ตรงกับของจริงตอน runtime</strong> — ไม่งั้น <code>quantity: number</code> อาจได้ string <code>"3"</code> มาจาก query param <span class="g">(ค่าที่ต่อท้าย URL หลังเครื่องหมาย ? ซึ่งเป็น string เสมอ)</span> แล้ว <code>quantity + 1</code> จะได้ <code>"31"</code> แทนที่จะเป็น <code>4</code></td></tr>
+</table></div>
+
+<h3 id="s4-1">4.1 Error handling: โยน exception อย่า return null</h3>
+
+<pre><code>// ❌
+async findOne(id: string) {
+  return this.repo.findOne({ where: { id } });   // คืน null → controller ต้องเดาเอง
+}
+
+// ✅
+async findOne(id: string) {
+  const user = await this.repo.findOne({ where: { id } });
+  if (!user) throw new NotFoundException(`User ${id} not found`);
+  return user;
+}</code></pre>
+
+<p>เหตุผล: ได้ HTTP status ที่ถูกต้องอัตโนมัติ, error format เหมือนกันทั้งระบบ, และ controller ไม่ต้องมานั่งเดาว่า <code>null</code> แปลว่า "ไม่มี" หรือ "พัง"</p>
+
+
+<h2 id="s5">5. Unit Testing <span class="g">(เทสทีละหน่วยเล็ก ๆ โดยแทนของรอบข้างด้วยของปลอม)</span></h2>
+
+<pre><code>describe('UserService', () =&gt; {
+  let service: UserService;
+  let repo: jest.Mocked&lt;Repository&lt;User&gt;&gt;;   // ← มี type ไม่ใช่ any
+
+  beforeEach(async () =&gt; {
+    const module = await Test.createTestingModule({
+      providers: [
+        UserService,
+        { provide: getRepositoryToken(User), useValue: createMockRepo() },
+      ],
+    }).compile();
+    service = module.get(UserService);
+    repo = module.get(getRepositoryToken(User));
+  });
+
+  it('should throw NotFoundException when user not found', async () =&gt; {
+    repo.findOne.mockResolvedValue(null);                    // Arrange
+    await expect(service.findOne('x'))                       // Act
+      .rejects.toThrow(NotFoundException);                   // Assert
+  });
+});</code></pre>
+
+<p>สังเกตว่าเราส่ง mock เข้าไปแทน repository จริงได้เลย โดยไม่ต้องแตะโค้ดของ <code>UserService</code> — นี่คือผลตอบแทนของ DI ที่จับต้องได้จริง</p>
+
+<div class="tbl"><table>
+<tr><th>กฎ</th><th>เหตุผล</th></tr>
+<tr><td>1 test = 1 unit, mock dependency ทั้งหมด</td><td>เทสแดงแล้วรู้ทันทีว่าพังที่ไหน ไม่ต้องไล่ข้าม 3 ชั้น</td></tr>
+<tr><td>ตั้งชื่อเทสเป็น<strong>พฤติกรรม</strong> ไม่ใช่ <code>should work</code></td><td>ตอน CI <span class="g">(ระบบที่รันเทสอัตโนมัติทุกครั้งที่ push โค้ด)</span> แดงตอนตี 2 ชื่อเทสคือ bug report บรรทัดเดียว</td></tr>
+<tr><td>AAA (Arrange–Act–Assert)</td><td>อ่านปุ๊บรู้ว่ากำลังทดสอบอะไร ลดภาระตอน review</td></tr>
+<tr><td>mock ต้องมี type: <code>jest.Mocked&lt;Repository&lt;T&gt;&gt;</code></td><td>ถ้าใช้ <code>any</code> พอ signature ของจริงเปลี่ยน <strong>เทสจะยังเขียวทั้งที่โค้ดจริงพัง</strong> — เทสที่โกหกแย่กว่าไม่มีเทส</td></tr>
+</table></div>
+
+<h3 id="s5-1">5.1 Controller test ควรเทสแค่ไหน</h3>
+
+<p>เทสแค่ 3 อย่าง: <strong>เรียก service ถูกตัวไหม / ส่ง param ถูกไหม / คืนค่าที่ได้กลับไปไหม</strong></p>
+
+<p>ไม่ต้องเทส: HTTP mechanics (หน้าที่ framework), validation (หน้าที่ pipe), business logic (เทสที่ service ไปแล้ว) — เทสซ้ำคือจ่ายค่าดูแลโดยไม่ได้ความมั่นใจเพิ่ม</p>
+
+<h3 id="s5-2">5.2 ขีดจำกัดของ unit test</h3>
+
+<div class="box trap"><span class="lab">ข้อจำกัดที่ต้องพูดถึงในข้อสอบ</span>
+<p>Unit test ที่ mock repository ทั้งหมด <strong>พิสูจน์ไม่ได้ว่า SQL ที่เขียนถูกต้อง</strong> เพราะ repository ตัวจริงไม่เคยถูกเรียกเลย เราอาจได้เทสเขียว 100% ในขณะที่ query พังใน production</p>
+<p>ดังนั้นต้องมี <strong>integration test</strong> คู่กันเสมอ (ใช้ DB จริง ช้ากว่าในระดับวินาที) ครอบ happy path <span class="g">(เส้นทางปกติที่ทุกอย่างสำเร็จ ไม่มี error)</span> ของแต่ละ feature</p></div>
+
+<div class="box errata"><span class="lab">⚠ สไลด์บทนี้</span>
+<ol>
+<li>สไลด์บอก provider เป็น "singleton per module" — <strong>ผิด</strong> เป็น singleton ต่อ application/DI container</li>
+<li>ตัวอย่าง mock ประกาศ <code>let mockRepo: any</code> — เสีย type safety ให้ใช้ <code>jest.Mocked&lt;Repository&lt;User&gt;&gt;</code> แทน</li>
+<li>สไลด์ยกตัวอย่าง <code>private cache = new Map()</code> ว่า "shared across all requests" ซึ่งถูกในทางเทคนิค แต่เป็นตัวอย่างที่อันตรายมาก และในระบบหลาย instance มันยังไม่ sync กันด้วย</li>
+<li><code>jest.spyOn</code> <span class="g">(สั่งดักแทน method ตัวจริงชั่วคราวตอนเทส)</span> บน method ของ class ที่กำลังทดสอบเอง = กำลังทดสอบ mock ไม่ใช่โค้ดจริง</li>
+<li>สไลด์ไม่ได้พูดเลยว่า <code>interface</code> ใช้เป็น DI token ไม่ได้ ทั้งที่เป็นกับดักอันดับต้น ๆ</li>
+</ol></div>
+
+
+<h2 id="s6">6. Performance: อย่าปรับผิดที่</h2>
+
+<div class="box why"><span class="lab">ประโยคสำคัญ</span>
+<p><strong>framework overhead แทบไม่เคยเป็น bottleneck <span class="g">(จุดคอขวดที่ทำให้ทั้งระบบช้า)</span> จริง</strong> — ในแอปจริงเวลาส่วนใหญ่หมดไปกับ DB query และการเรียกบริการภายนอก ถ้าจะปรับ performance ให้ไปแก้ query กับ index <span class="g">(โครงสร้างช่วยให้ DB ค้นเจอเร็ว ไม่ต้องไล่ทั้งตาราง)</span> (บท 03) และ cache (บท 04) ก่อนเสมอ</p></div>
+
+<ul>
+<li>พิจารณา <code>@nestjs/platform-fastify</code> เฉพาะเมื่อ workload เป็น I/O <span class="g">(งานที่มัวแต่รออ่าน/เขียนดิสก์หรือเน็ต ไม่ใช่งานคำนวณ)</span> ล้วนและ RPS <span class="g">(จำนวน request ต่อวินาที)</span> สูงจริง ๆ (และต้องเช็คว่า middleware <span class="g">(โค้ดที่แทรกทำงานก่อน request จะถึง controller เช่น log, auth)</span> ที่ใช้อยู่รองรับ)</li>
+<li>อย่ายิง DB ใน custom validator — validation ควรเป็น pure <span class="g">(ตัดสินจากค่าที่รับมาอย่างเดียว ไม่ไปแตะ DB หรือยิง API)</span> ไม่มี side effect</li>
+<li>ระวัง global interceptor <span class="g">(ตัวห่อรอบการเรียก ทำงานทั้งก่อนและหลัง เช่น log, แปลง response)</span> ที่ serialize หนัก ๆ เช่น <code>JSON.parse(JSON.stringify())</code> เพราะมันทำงานทุก request</li>
+</ul>
+
+
+<h2 id="s7">7. 🔗 บทนี้ต่อกับบทอื่นตรงไหน</h2>
+
+<div class="box link-box"><span class="lab">เส้นเชื่อม</span>
+<ul>
+<li><strong>← บท 01:</strong> Module ตาม domain = modular monolith ที่บท 01 สั่งไว้ / <code>useFactory</code> แบบ async สำหรับ connection ก็คือหลัก "validate config ตอน boot แล้ว fail fast" <span class="g">(ตั้งค่าผิดให้แอปดับตั้งแต่ตอนเริ่ม ดีกว่าไปพังตอนมีคนใช้)</span></li>
+<li><strong>→ บท 03:</strong> ชั้น Repository ในบทนี้คือประตูเข้าสู่ TypeORM <span class="g">(ORM ของ Node — ตัวแปลงระหว่าง object ในโค้ดกับตารางใน DB)</span> ทั้งบท และหลัก "โยน exception ไม่ return null" จะขยายเป็นการ map PostgreSQL error code เช่น 23505 → 409 ในบท 03</li>
+<li><strong>→ บท 04:</strong> "service ต้อง stateless" คือเหตุผลที่ cache ต้องอยู่ที่ Redis ไม่ใช่ <code>Map</code> ในหน่วยความจำ</li>
+<li><strong>→ บท 05:</strong> "controller บาง logic อยู่ service" คือเงื่อนไขที่ทำให้ queue worker เรียก business logic เดิมซ้ำได้โดยไม่ต้อง copy โค้ด</li>
+<li><strong>→ บท 06:</strong> stateless service คือเงื่อนไขบังคับของ horizontal scaling <span class="g">(เพิ่มจำนวนเครื่องหรือ instance แทนการอัปเครื่องเดิมให้แรงขึ้น)</span> / logging interceptor ที่แนบ correlation id ในบทนี้ คือรากฐานของ observability <span class="g">(มองเห็นว่าข้างในระบบเกิดอะไรขึ้น ผ่าน log / metric / trace)</span> ในบท 06</li>
+</ul></div>
+
+
+<h2 id="s8">8. 📝 คลังคำตอบอัตนัย</h2>
+
+<details class="qa"><summary>Dependency Injection คืออะไร แก้ปัญหาอะไร และช่วยเรื่อง testability อย่างไร</summary>
+<div class="ans">
+<div class="skel">โครง: ปัญหาเดิม → หลักการ → ประโยชน์ 3 ข้อ → ตัวอย่างเทส</div>
+<p>ปัญหาเดิมคือ class สร้าง dependency ของตัวเองด้วย <code>new</code> เช่น <code>private db = new PostgresDatabase(...)</code> ทำให้ class ผูกติดกับ implementation นั้นอย่างถาวร</p>
+<p>DI คือการย้ายความรับผิดชอบในการหาและสร้าง dependency ออกจาก class ไปให้ <strong>container</strong> โดย class รับ dependency ผ่าน constructor เท่านั้น</p>
+<p>ประโยชน์ข้อแรกคือ <strong>testability</strong> — ตอนเทสเราส่ง mock เข้าไปแทนของจริงได้ทันที ผ่าน <code>Test.createTestingModule({ providers: [Real, { provide: Dep, useValue: mock }] })</code> <span class="g">(ตัวช่วยของ Nest ที่ปั้น DI container จำลองไว้ใช้ในเทส)</span> โดยไม่ต้อง monkey-patch <span class="g">(แอบไปแก้ไส้ในของ object หรือโมดูลตอนรัน)</span> และไม่ต้องใช้ database จริง ข้อที่สองคือ <strong>สลับ implementation ได้</strong> เช่นเปลี่ยนจาก SendGrid เป็น SES ด้วย <code>useClass</code> โดยโค้ดที่เรียกใช้ไม่ต้องแก้เลย ข้อที่สามคือ <strong>อ่านง่าย</strong> เพราะ dependency ทั้งหมดของ class มองเห็นได้จาก constructor signature จุดเดียว</p>
+<p>ข้อควรระวังคือ dependency graph มองไม่เห็นด้วยตาเปล่า ต้องพึ่ง error ตอน runtime และหากเลือก scope ผิดจะจ่ายค่า performance โดยไม่รู้ตัว</p>
+</div></details>
+
+<details class="qa"><summary>ทำไม service ใน NestJS ต้อง stateless จงอธิบายผลที่เกิดขึ้นถ้าไม่ทำตาม</summary>
+<div class="ans">
+<div class="skel">โครง: กลไก singleton → ผลเสีย 2 ระดับ (ข้ามผู้ใช้ / ข้าม instance) → ทางแก้ → โยงบท 06</div>
+<p>เพราะ provider ใน NestJS เป็น <strong>singleton ต่อ application</strong> โดยปริยาย นั่นคือทุก request ที่เข้ามาใช้ instance เดียวกันทั้งหมด</p>
+<p>ผลเสียระดับที่หนึ่ง หากเก็บข้อมูลเฉพาะผู้ใช้ไว้ใน field ของ service เช่น <code>private currentUser</code> ผู้ใช้คนที่สองจะเห็นข้อมูลของคนแรก ซึ่งเป็น <strong>data leak ข้าม request หรือข้าม tenant</strong> <span class="g">(tenant = ลูกค้าหรือองค์กรคนละรายที่ใช้ระบบเดียวกัน)</span> ถือเป็นช่องโหว่ด้านความปลอดภัย ไม่ใช่เพียงบั๊กเรื่องความสะอาดของโค้ด</p>
+<p>ผลเสียระดับที่สองสำคัญกว่าและมักตอบไม่ถึง เมื่อ scale เป็นหลาย instance ตามบท 06 แต่ละ instance มีหน่วยความจำของตัวเอง state ที่เก็บไว้ใน <code>Map</code> จึง<strong>ไม่ sync กัน</strong> ผู้ใช้จะเห็นข้อมูลไม่ตรงกันขึ้นกับว่า load balancer ส่ง request ไปยัง instance ใด และข้อมูลจะหายไปทุกครั้งที่ restart ซึ่งเกิดขึ้นทุกครั้งที่ deploy</p>
+<p>ทางแก้คือย้าย state ที่ต้องแชร์ออกไปไว้ที่เก็บกลาง คือ <strong>Redis</strong> ตามบท 04 และหากต้องการ context เฉพาะ request เช่น userId หรือ correlation id ให้ใช้ <code>AsyncLocalStorage</code> แทนการเปลี่ยน provider เป็น REQUEST scope</p>
+</div></details>
+
+<details class="qa"><summary>REQUEST scope คืออะไร ทำไมจึงควรหลีกเลี่ยง</summary>
+<div class="ans">
+<div class="skel">โครง: นิยาม → กลไก bubbling → ผลกระทบ → ทางเลือก</div>
+<p>REQUEST scope ทำให้ NestJS สร้าง instance ใหม่ของ provider นั้นทุก HTTP request แทนที่จะใช้ singleton ตัวเดิม</p>
+<p>ปัญหาคือปรากฏการณ์ <strong>scope bubbling</strong> กล่าวคือ scope จะแพร่ขึ้นด้านบนตามสายของการ inject หาก provider ที่เป็น REQUEST ถูก inject เข้าไปใน service ตัวอื่น service นั้นจะกลายเป็น REQUEST ตามไปด้วย และหาก controller inject service นั้นอีกทอด controller ก็กลายเป็น REQUEST เช่นกัน ผลคือ <strong>ทั้งสายโซ่ถูกสร้างใหม่ทุก request</strong></p>
+<p>ผลกระทบคือ performance ลดลงอย่างมีนัยสำคัญและวินิจฉัยได้ยาก เนื่องจากสาเหตุซึ่งคือการประกาศ scope ที่ provider ตัวเดียวในระดับลึก อยู่ห่างจากอาการซึ่งคือ latency <span class="g">(เวลาที่ 1 request ใช้ตอบกลับ)</span> ที่สูงขึ้นทั้งระบบหลายชั้น</p>
+<p>ทางเลือกที่ควรใช้แทนคือ <code>AsyncLocalStorage</code> ผ่านไลบรารี <code>nestjs-cls</code> ซึ่งให้ request-scoped context เช่น userId หรือ correlation id ได้ โดยที่ provider ทั้งหมดยังคงเป็น DEFAULT scope</p>
+</div></details>
+
+<details class="qa"><summary>อธิบายว่า <code>whitelist</code>, <code>forbidNonWhitelisted</code> และ <code>transform</code> ใน ValidationPipe ทำอะไร และทำไมจึงจำเป็น</summary>
+<div class="ans">
+<div class="skel">โครง: อธิบายทีละตัวพร้อมผลถ้าไม่ใส่ → เน้นว่า whitelist เป็นเรื่อง security</div>
+<p><strong><code>whitelist: true</code></strong> ตัด property ที่ไม่ได้ประกาศไว้ใน DTO ออกจาก payload ความจำเป็นคือการป้องกัน <strong>mass assignment</strong> หากผู้ใช้แนบ <code>{"role":"admin"}</code> หรือ <code>{"price":0}</code> มากับ request แล้วโค้ดเผลอส่ง body ทั้งก้อนเข้า <code>save()</code> ผู้ใช้จะยกระดับสิทธิ์ตนเองหรือแก้ราคาสินค้าได้ ซึ่งเป็นช่องโหว่ระดับ OWASP ไม่ใช่เพียงเรื่องความสะอาดของโค้ด</p>
+<p><strong><code>forbidNonWhitelisted: true</code></strong> ทำให้ระบบตอบ 400 พร้อมระบุว่า field ใดเกินมา แทนที่จะตัดทิ้งอย่างเงียบ ๆ ประโยชน์คือฝั่ง client ทราบทันทีว่าส่งข้อมูลผิด และทีมพัฒนาตรวจพบข้อผิดพลาดได้เร็ว แทนที่จะต้องสืบหาสาเหตุว่าเหตุใดค่าที่ส่งไปจึงหายไป</p>
+<p><strong><code>transform: true</code></strong> แปลง plain object ให้กลายเป็น instance ของ DTO class จริง ทำให้ type ที่ประกาศไว้ตรงกับค่าที่ได้จริงตอน runtime หากไม่ใส่ ค่าที่มาจาก query parameter หรือ JSON อาจเป็น string ทั้งที่ประกาศเป็น <code>number</code> ส่งผลให้การคำนวณผิดพลาด เช่น <code>quantity + 1</code> ให้ผลเป็น <code>"31"</code> แทน <code>4</code> และ decorator อย่าง <code>@Type(() =&gt; Number)</code> จะไม่ทำงาน</p>
+</div></details>
+
+<details class="qa"><summary>ทำไม controller ไม่ควรมี business logic</summary>
+<div class="ans">
+<div class="skel">โครง: หน้าที่จริงของ controller → เหตุผล 2 ข้อ (testability / reusability) → โยงบท 05</div>
+<p>หน้าที่ของ controller คือชั้น HTTP เท่านั้น ได้แก่รับ request, ดึง parameter, ส่งต่อให้ service และคืน response</p>
+<p>เหตุผลข้อแรกคือ <strong>testability</strong> เมื่อ logic อยู่ใน service เราสามารถเรียก <code>service.method()</code> ได้โดยตรงในเทส โดยไม่ต้องสร้าง request หรือ response object จำลอง และไม่ต้องยิง HTTP จริง ทำให้เทสเร็วและเปราะน้อยลง</p>
+<p>เหตุผลข้อที่สองสำคัญกว่าและมักตอบไม่ถึงคือ <strong>reusability</strong> business logic ชุดเดียวกันจะต้องถูกเรียกจากทางเข้าอื่นในอนาคต เช่น queue worker ที่ประมวลผล job ตามบท 05, CLI, cron job หรือ GraphQL resolver ซึ่งทางเข้าเหล่านี้ไม่มี HTTP request หาก logic ฝังอยู่ใน controller ที่ผูกกับ HTTP ก็จำเป็นต้องคัดลอกโค้ดไปวางซ้ำ ซึ่งหมายความว่าการแก้บั๊กหนึ่งครั้งต้องแก้หลายจุด</p>
+<p>ผลพลอยได้คือ service ที่แยกออกมากลายเป็นจุดเดียวที่โยน HTTP exception เช่น <code>NotFoundException</code> ทำให้รูปแบบ error ทั้งระบบสม่ำเสมอ</p>
+</div></details>
+
+<details class="qa"><summary>Unit test กับ Integration test ต่างกันอย่างไร และทำไมมี unit test อย่างเดียวไม่พอ</summary>
+<div class="ans">
+<div class="skel">โครง: นิยาม/คุณสมบัติทั้งสอง → ข้อจำกัดของ unit → สรุปว่าต้องมีคู่กัน</div>
+<p>Unit test ทดสอบหน่วยเดียวโดย mock dependency ทั้งหมด รันเร็วในระดับมิลลิวินาที และเมื่อล้มเหลวจะระบุได้แม่นยำว่าพังที่จุดใด ส่วน integration test ทดสอบหลายส่วนทำงานร่วมกันโดยใช้ของจริง เช่น database จริง จึงช้ากว่าในระดับวินาที</p>
+<p>ข้อจำกัดสำคัญของ unit test คือ เมื่อ mock repository ออกไปทั้งหมด <strong>repository ตัวจริงจะไม่เคยถูกเรียกเลย</strong> จึงพิสูจน์ไม่ได้ว่า query ที่เขียนไว้ถูกต้อง เราอาจได้ผลเทสเขียวครบทุกข้อในขณะที่ SQL ผิดหรือ relation ไม่ถูกต้องใน production</p>
+<p>นอกจากนี้ unit test ยังยืนยันไม่ได้ว่า migration <span class="g">(ไฟล์เวอร์ชันของโครงสร้างตาราง DB ที่รันไล่ตามลำดับ)</span> ใช้งานได้จริง โดยเฉพาะเมื่อ test setup ใช้ <code>synchronize: true</code> ซึ่งข้ามการรัน migration ไปเลย ตามที่กล่าวถึงในบท 03</p>
+<p>ดังนั้นทั้งสองแบบต้องมีคู่กัน โดย unit test ครอบทุก branch ของ business logic เพื่อให้ได้ feedback ที่เร็วและแม่นยำ ส่วน integration test ครอบ happy path ของแต่ละ feature เพื่อยืนยันว่าชิ้นส่วนต่าง ๆ ทำงานร่วมกันได้จริง</p>
+</div></details>
+
+<details class="qa"><summary>เจอ error "Nest can't resolve dependencies" จาก circular dependency ควรแก้อย่างไร</summary>
+<div class="ans">
+<div class="skel">โครง: สาเหตุ → ทางแก้เฉพาะหน้า → ทำไมไม่ควรหยุดแค่นั้น → ทางแก้จริง</div>
+<p>สาเหตุคือ module A import module B ในขณะที่ B ก็ import A ทำให้ container ไม่สามารถหา instance ที่พร้อมใช้งานได้ในขณะสร้าง dependency graph</p>
+<p>ทางแก้เฉพาะหน้าคือใช้ <code>forwardRef()</code> ทั้งสองฝั่ง ซึ่งบอกให้ NestJS resolve dependency นั้นภายหลัง</p>
+<p>อย่างไรก็ตามไม่ควรหยุดเพียงเท่านี้ เพราะ <strong>circular dependency เป็นอาการ ไม่ใช่ตัวโรค</strong> มันเป็นสัญญาณว่าขอบเขตของโมดูลถูกวางไว้ผิด การที่สองโมดูลต้องพึ่งพากันไปมาแสดงว่ามีความรับผิดชอบร่วมกันบางอย่างที่ยังไม่ถูกแยกออกมา</p>
+<p>วิธีแก้ที่ถูกต้องคือดึงส่วนที่ทั้งคู่ใช้ร่วมกันออกมาเป็น <strong>shared module</strong> แล้วให้ทั้ง A และ B import จากโมดูลนั้นแทน ซึ่งทำให้ dependency กลายเป็นทิศทางเดียว และสอดคล้องกับหลักการแบ่งโมดูลตาม domain ที่จะเป็นประโยชน์เมื่อต้องแตกเป็น microservice ในอนาคต</p>
+</div></details>
+
+
+<h2 id="s9">9. ✅ เช็คตัวเองก่อนปิดบท</h2>
+
+<ul>
+<li>อธิบาย DI ได้โดย<strong>เริ่มจากปัญหา</strong> ไม่ใช่เริ่มจากคำว่า "design pattern"</li>
+<li>รู้ว่า provider เป็น singleton ต่อ <strong>application</strong> ไม่ใช่ต่อ module (สไลด์เขียนผิด)</li>
+<li>อธิบาย scope bubbling ได้ และรู้ว่าใช้อะไรแทน REQUEST scope</li>
+<li>ตอบได้ว่าทำไม <code>whitelist: true</code> เป็นเรื่อง security ไม่ใช่แค่ความเรียบร้อย</li>
+<li>บอกได้ว่า unit test พิสูจน์อะไร<em>ไม่ได้</em></li>
+<li>ลากเส้นได้ว่า "service stateless" → Redis (บท 04) → horizontal scaling (บท 06)</li>
+</ul>
+
+<div class="pager">
+  <a href="01-architecture-docker.html">← บทที่ 1</a>
+  <a href="03-database.html">บทที่ 3 — Database →</a>
+</div>
+
+</main>
+
+<aside class="toc">
+<h4>ในบทนี้</h4>
+<a href="#s0">0. จุดที่เรื่องเดินมาถึง</a>
+<a href="#s1">1. ปูพื้นฐาน: NestJS คืออะไร</a>
+<a href="#s2">2. Dependency Injection</a>
+<a href="#s3">3. Provider Scope ⚠️</a>
+<a href="#s4">4. DTO &amp; ValidationPipe</a>
+<a href="#s5">5. Unit Testing</a>
+<a href="#s6">6. Performance</a>
+<a href="#s7">7. 🔗 เชื่อมกับบทอื่น</a>
+<a href="#s8">8. 📝 คลังคำตอบอัตนัย</a>
+<a href="#s9">9. ✅ เช็คตัวเอง</a>
+</aside>
+</div>
+</body>
+</html>

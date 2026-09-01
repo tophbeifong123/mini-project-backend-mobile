@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>สารบัญ — Backend Architecture Course</title>
+<link rel="stylesheet" href="style.css">
+<style>
+.grid-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 1.25rem;
+  margin: 2rem 0;
+}
+.chapter-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border-light);
+  border-radius: 12px;
+  padding: 1.5rem;
+  box-shadow: var(--shadow-sm);
+  text-decoration: none;
+  color: inherit;
+  display: flex;
+  flex-direction: column;
+  transition: all 0.2s ease-in-out;
+}
+.chapter-card:hover {
+  border-color: var(--primary);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+.chapter-num {
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  color: var(--primary);
+  text-transform: uppercase;
+  margin-bottom: 0.5rem;
+}
+.chapter-title {
+  font-family: var(--font-heading);
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text-main);
+  margin: 0 0 0.5rem;
+}
+.chapter-desc {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+  margin: 0;
+  flex: 1;
+}
+.chapter-tag {
+  margin-top: 1rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--primary);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+</style>
+</head>
+<body>
+
+<nav class="topnav"><div class="topnav-inner">
+  <a class="here" href="00-index.html">◆ สารบัญ</a>
+  <a href="01-architecture-docker.html">01 Docker</a>
+  <a href="02-nestjs-di.html">02 NestJS</a>
+  <a href="03-database.html">03 Database</a>
+  <a href="04-redis.html">04 Redis</a>
+  <a href="05-async-queue.html">05 Queue</a>
+  <a href="06-scaling.html">06 Scaling</a>
+</div></nav>
+
+<div class="wrap">
+<main>
+
+<div class="hero">
+  <div class="kicker">Backend Engineering</div>
+  <h1>คู่มือสถาปัตยกรรมระบบ &amp; Flash Sale System</h1>
+  <p>รวบรวมเนื้อหา 6 บท ตั้งแต่พื้นฐาน Container จนถึงการ Scale ระบบระดับ Production พร้อมวิเคราะห์จุดบกพร่องและจุดที่ข้อสอบมักเน้น</p>
+</div>
+
+<div class="grid-cards">
+  <a class="chapter-card" href="01-architecture-docker.html">
+    <div class="chapter-num">บทที่ 01</div>
+    <div class="chapter-title">Architecture &amp; Docker</div>
+    <div class="chapter-desc">การเลือกสถาปัตยกรรม, Container vs VM, Image Layer Cache, Multi-stage Build และ Secrets Management</div>
+    <div class="chapter-tag">เปิดอ่านบทที่ 01 →</div>
+  </a>
+
+  <a class="chapter-card" href="02-nestjs-di.html">
+    <div class="chapter-num">บทที่ 02</div>
+    <div class="chapter-title">NestJS &amp; DI Structure</div>
+    <div class="chapter-desc">โครงสร้างโมดูล, Dependency Injection Lifecycle &amp; Scopes, DTO Validation และ Unit Testing</div>
+    <div class="chapter-tag">เปิดอ่านบทที่ 02 →</div>
+  </a>
+
+  <a class="chapter-card" href="03-database.html">
+    <div class="chapter-num">บทที่ 03</div>
+    <div class="chapter-title">Database &amp; Concurrency</div>
+    <div class="chapter-desc">TypeORM, Migrations, Pessimistic vs Optimistic Locking, Atomic Operations และ Connection Pooling</div>
+    <div class="chapter-tag">เปิดอ่านบทที่ 03 →</div>
+  </a>
+
+  <a class="chapter-card" href="04-redis.html">
+    <div class="chapter-num">บทที่ 04</div>
+    <div class="chapter-title">Redis &amp; Caching Strategies</div>
+    <div class="chapter-desc">Cache-Aside Pattern, Stampede/Avalanche Prevention, TTL Jitter, Distributed Locks และ Lua Scripting</div>
+    <div class="chapter-tag">เปิดอ่านบทที่ 04 →</div>
+  </a>
+
+  <a class="chapter-card" href="05-async-queue.html">
+    <div class="chapter-num">บทที่ 05</div>
+    <div class="chapter-title">Async Queue &amp; BullMQ</div>
+    <div class="chapter-desc">Pub/Sub vs Message Queue, BullMQ Jobs, Idempotency Token, Retry Policies และ Dead Letter Queue</div>
+    <div class="chapter-tag">เปิดอ่านบทที่ 05 →</div>
+  </a>
+
+  <a class="chapter-card" href="06-scaling.html">
+    <div class="chapter-num">บทที่ 06</div>
+    <div class="chapter-title">Scaling &amp; High Availability</div>
+    <div class="chapter-desc">Stateless Architecture, Nginx Load Balancing, PostgreSQL Replication, Health Checks และ Load Testing</div>
+    <div class="chapter-tag">เปิดอ่านบทที่ 06 →</div>
+  </a>
+</div>
+
+</main>
+</div>
+
+</body>
+</html>

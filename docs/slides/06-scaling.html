@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>บทที่ 6 — Scaling, Load Balancing &amp; Observability</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" aria-hidden="true" style="position:absolute"><defs>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-i"/></marker>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-r"/></marker>
+<marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-g"/></marker>
+<marker id="ara" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-a"/></marker>
+</defs></svg>
+
+<nav class="topnav"><div class="topnav-inner">
+  <a class="home" href="00-index.html">◆ สารบัญ</a>
+  <a href="01-architecture-docker.html">01 Docker</a>
+  <a href="02-nestjs-di.html">02 NestJS</a>
+  <a href="03-database.html">03 Database</a>
+  <a href="04-redis.html">04 Redis</a>
+  <a href="05-async-queue.html">05 Queue</a>
+  <a class="here" href="06-scaling.html">06 Scaling</a>
+</div></nav>
+
+<div class="wrap">
+<main>
+
+<div class="hero">
+  <div class="kicker">Backend 06</div>
+  <h1>Scaling, Load Balancing &amp; Observability</h1>
+  <p>บทนี้ตอบคำถามเดียว: <strong>เครื่องเดียวเอาไม่อยู่แล้ว จะเพิ่มเครื่องยังไงให้ระบบเร็วขึ้นจริง แทนที่จะพังหนักกว่าเดิม</strong></p>
+</div>
+
+<div class="chips">
+  <span class="chip">Stateless <span class="g">(ไม่เก็บข้อมูลผู้ใช้ไว้ในตัวเอง ทุก instance รับ request แทนกันได้)</span></span>
+  <span class="chip">Nginx Load Balancing <span class="g">(ตัวกลางที่กระจาย request ไปหลายเครื่อง)</span></span>
+  <span class="chip">PostgreSQL Replication <span class="g">(ก๊อป DB ไว้อีกตัว ให้ช่วยรับ read และกันตาย)</span></span>
+  <span class="chip">Health Check <span class="g">(ถามเป็นระยะว่ายังไหวอยู่ไหม)</span></span>
+  <span class="chip">Graceful Shutdown <span class="g">(ปิดแบบรอ request ที่ค้างอยู่ให้จบก่อน)</span></span>
+  <span class="chip">Logging / Metrics <span class="g">(บันทึกเหตุการณ์ / ตัวเลขวัดสุขภาพระบบ)</span></span>
+  <span class="chip">p95 / p99 <span class="g">(ช้ากว่านี้แค่ 5% / 1% ของ request ทั้งหมด)</span></span>
+  <span class="chip">Load Testing <span class="g">(ยิงโหลดจำลองดูว่าพังที่เท่าไหร่)</span></span>
+</div>
+
+<h2 id="s0">0. จุดที่เรื่องเดินมาถึง (บทสรุปของทั้งวิชา)</h2>
+
+<p>ตอนนี้ Flash Sale ของเราอยู่ใน container แล้ว (01), โครงสร้างโค้ดดี (02), ข้อมูลถูกต้อง (03), DB ไม่ตาย (04), งานหนักย้ายไปคิวแล้ว (05)</p>
+
+<p>แต่ traffic โตจนเครื่องเดียวรับไม่ไหว เราเลยเพิ่มเป็น 3 เครื่อง แล้ว<strong>ทุกอย่างพังพร้อมกัน</strong></p>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 300" role="img" aria-label="เปรียบเทียบสถาปัตยกรรมเครื่องเดียวกับหลายเครื่องพร้อม load balancer และ replication">
+  <text x="130" y="18" text-anchor="middle" class="t-b">ก่อน — เครื่องเดียว</text>
+  <text x="470" y="18" text-anchor="middle" class="t-b">หลัง — scale ออก</text>
+
+  <rect x="80" y="34" width="100" height="30" rx="6" class="bx"/>
+  <text x="130" y="54" text-anchor="middle" class="t-sm">Client</text>
+  <path d="M130,68 L130,88" class="ln" marker-end="url(#ar)"/>
+  <rect x="70" y="92" width="120" height="40" rx="6" class="bx-a"/>
+  <text x="130" y="117" text-anchor="middle" class="t-sm">App (1 instance)</text>
+  <path d="M130,136 L130,156" class="ln" marker-end="url(#ar)"/>
+  <rect x="70" y="160" width="120" height="36" rx="6" class="bx-p"/>
+  <text x="130" y="183" text-anchor="middle" class="t-sm">PostgreSQL</text>
+  <text x="130" y="222" text-anchor="middle" class="t-xs">state เก็บใน memory ก็ยังทำงานได้</text>
+  <text x="130" y="238" text-anchor="middle" class="t-xs">เพราะมีเครื่องเดียว ไม่มีใครให้ไม่ตรงกัน</text>
+
+  <line x1="250" y1="28" x2="250" y2="290" class="ln-t"/>
+
+  <rect x="420" y="34" width="100" height="30" rx="6" class="bx"/>
+  <text x="470" y="54" text-anchor="middle" class="t-sm">Client</text>
+  <path d="M470,68 L470,84" class="ln" marker-end="url(#ar)"/>
+  <rect x="400" y="88" width="140" height="30" rx="6" class="bx-w"/>
+  <text x="470" y="108" text-anchor="middle" class="t-sm">Nginx (LB)</text>
+
+  <path d="M440,122 L346,150" class="ln" marker-end="url(#ar)"/>
+  <path d="M470,122 L470,150" class="ln" marker-end="url(#ar)"/>
+  <path d="M500,122 L594,150" class="ln" marker-end="url(#ar)"/>
+
+  <rect x="300" y="154" width="92" height="34" rx="6" class="bx-a"/>
+  <text x="346" y="176" text-anchor="middle" class="t-xs">App 1</text>
+  <rect x="424" y="154" width="92" height="34" rx="6" class="bx-a"/>
+  <text x="470" y="176" text-anchor="middle" class="t-xs">App 2</text>
+  <rect x="548" y="154" width="92" height="34" rx="6" class="bx-a"/>
+  <text x="594" y="176" text-anchor="middle" class="t-xs">App 3</text>
+
+  <path d="M346,192 L400,214" class="ln-g" marker-end="url(#arg)"/>
+  <path d="M470,192 L470,214" class="ln-g" marker-end="url(#arg)"/>
+  <path d="M594,192 L540,214" class="ln-g" marker-end="url(#arg)"/>
+  <rect x="398" y="218" width="144" height="30" rx="6" class="bx-g"/>
+  <text x="470" y="238" text-anchor="middle" class="t-xs">Redis (session + cache + คิว)</text>
+
+  <path d="M310,192 L300,258" class="ln" marker-end="url(#ar)"/>
+  <rect x="264" y="262" width="86" height="30" rx="6" class="bx-p"/>
+  <text x="307" y="282" text-anchor="middle" class="t-xs">Primary</text>
+  <rect x="360" y="262" width="80" height="30" rx="6" class="bx-p"/>
+  <text x="400" y="282" text-anchor="middle" class="t-xs">Replica</text>
+  <rect x="450" y="262" width="80" height="30" rx="6" class="bx-p"/>
+  <text x="490" y="282" text-anchor="middle" class="t-xs">Replica</text>
+  <path d="M350,277 L356,277" class="ln-d"/>
+  <path d="M440,277 L446,277" class="ln-d"/>
+
+  <text x="600" y="272" text-anchor="middle" class="t-xs t-r">state ใน memory</text>
+  <text x="600" y="288" text-anchor="middle" class="t-xs t-r">ใช้ไม่ได้แล้ว</text>
+</svg>
+<figcaption>ทุกกล่องที่เพิ่มเข้ามาทางขวา มาพร้อมกฎใหม่ที่ต้องทำตาม — บทนี้คือรายการกฎเหล่านั้น</figcaption>
+</figure>
+
+<div class="tbl"><table>
+<tr><th>อาการ</th><th>สาเหตุ</th><th>อยู่ในหัวข้อ</th></tr>
+<tr><td>ผู้ใช้ล็อกอินแล้วหลุดแบบสุ่ม</td><td>session อยู่ใน memory ของ instance เดียว <span class="g">(instance = ตัวสำเนาของแอปที่กำลังรันอยู่จริง 1 ตัว)</span></td><td>§1 Stateless</td></tr>
+<tr><td><code>FATAL: too many connections</code></td><td>3 instance × pool 50 = 150 connection</td><td>§1.4 สูตร pool</td></tr>
+<tr><td>ผู้ใช้ได้อีเมล 3 ฉบับ</td><td>pub/sub <span class="g">(ประกาศข้อความทีเดียว ทุกตัวที่ subscribe อยู่ได้ยินหมด)</span> subscriber รันทุก instance</td><td>บท 05</td></tr>
+<tr><td>ผู้ใช้เห็นราคาไม่ตรงกัน</td><td><code>Map</code> ใน service ไม่ sync กัน</td><td>บท 02 + 04</td></tr>
+<tr><td>ทุกครั้งที่ deploy มี 502 <span class="g">(Bad Gateway — ตัวกลางต่อ backend ไม่ติด)</span></td><td>ไม่มี graceful shutdown <span class="g">(ปิด process แบบรอ request ที่ค้างอยู่ให้เสร็จก่อน)</span></td><td>§1.3</td></tr>
+<tr><td>สร้าง user แล้วกดดูทันที เจอ 404</td><td>อ่านจาก replica <span class="g">(สำเนา DB ที่ก๊อปตาม primary ไว้ให้อ่านอย่างเดียว)</span> ที่ยัง lag อยู่</td><td>§3.2</td></tr>
+</table></div>
+
+<div class="box base"><span class="lab">ประโยคที่คุมทั้งบท</span>
+<p><strong>Horizontal scaling ไม่ได้แก้ปัญหา มันขยายปัญหาที่มีอยู่แล้วให้ใหญ่ขึ้น</strong> <span class="g">(horizontal = เพิ่มจำนวนเครื่อง ต่างจาก vertical ที่อัปเครื่องเดิมให้แรงขึ้น)</span> — สิ่งที่เคยทำงานได้เพราะ "มีเครื่องเดียว" จะพังทันทีที่มีสองเครื่อง</p></div>
+
+
+<h2 id="s1">1. Stateless <span class="g">(ไม่เก็บข้อมูลผู้ใช้ไว้ในตัวเอง ทุกเครื่องจึงรับงานแทนกันได้)</span> — เงื่อนไขบังคับที่ต้องมาก่อนทุกอย่าง</h2>
+
+<h3 id="s1-1">1.1 ทำไม state ใน memory ถึงใช้ไม่ได้</h3>
+
+<p>Load balancer <span class="g">(ตัวกลางที่กระจาย request ไปยัง instance หลายตัว)</span> ส่ง request ไปเครื่องไหนก็ได้ — request แรกไปเครื่อง A request ถัดไปอาจไปเครื่อง B ถ้า A จำอะไรไว้ใน memory แล้ว B ไม่รู้เรื่อง ระบบก็พัง แถมข้อมูลทั้งหมดหายทุกครั้งที่ restart ซึ่งเกิดขึ้นทุก deploy</p>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 230" role="img" aria-label="ผู้ใช้หลุดจากระบบเพราะ session ถูกเก็บไว้ใน memory ของ instance เดียว">
+  <text x="14" y="18" class="t-b t-r">❌ session อยู่ใน memory ของ instance</text>
+  <rect x="20" y="34" width="86" height="32" rx="6" class="bx"/>
+  <text x="63" y="55" text-anchor="middle" class="t-xs">ผู้ใช้ login</text>
+  <path d="M110,50 L146,50" class="ln" marker-end="url(#ar)"/>
+  <rect x="150" y="34" width="76" height="32" rx="6" class="bx-w"/>
+  <text x="188" y="55" text-anchor="middle" class="t-xs">Nginx</text>
+  <path d="M230,50 L266,50" class="ln" marker-end="url(#ar)"/>
+  <rect x="270" y="34" width="96" height="32" rx="6" class="bx-a"/>
+  <text x="318" y="55" text-anchor="middle" class="t-xs">App 1</text>
+  <rect x="380" y="34" width="150" height="32" rx="6" class="bx-g"/>
+  <text x="455" y="55" text-anchor="middle" class="t-xs">เก็บ session ไว้ใน RAM ✓</text>
+
+  <rect x="20" y="86" width="86" height="32" rx="6" class="bx"/>
+  <text x="63" y="107" text-anchor="middle" class="t-xs">กดหน้าถัดไป</text>
+  <path d="M110,102 L146,102" class="ln" marker-end="url(#ar)"/>
+  <rect x="150" y="86" width="76" height="32" rx="6" class="bx-w"/>
+  <text x="188" y="107" text-anchor="middle" class="t-xs">Nginx</text>
+  <path d="M230,102 L266,102" class="ln-r" marker-end="url(#arr)"/>
+  <rect x="270" y="86" width="96" height="32" rx="6" class="bx-r"/>
+  <text x="318" y="107" text-anchor="middle" class="t-xs">App 2</text>
+  <rect x="380" y="86" width="220" height="32" rx="6" class="bx-r"/>
+  <text x="490" y="107" text-anchor="middle" class="t-xs t-r">ไม่รู้จัก session นี้ → เด้งออก 401</text>
+
+  <text x="14" y="152" class="t-b t-g">✅ session อยู่ที่ Redis</text>
+  <rect x="150" y="166" width="76" height="32" rx="6" class="bx-w"/>
+  <text x="188" y="187" text-anchor="middle" class="t-xs">Nginx</text>
+  <rect x="270" y="166" width="60" height="32" rx="6" class="bx-a"/>
+  <text x="300" y="187" text-anchor="middle" class="t-xs">App 1</text>
+  <rect x="340" y="166" width="60" height="32" rx="6" class="bx-a"/>
+  <text x="370" y="187" text-anchor="middle" class="t-xs">App 2</text>
+  <rect x="410" y="166" width="60" height="32" rx="6" class="bx-a"/>
+  <text x="440" y="187" text-anchor="middle" class="t-xs">App 3</text>
+  <path d="M300,202 L470,216" class="ln-g"/>
+  <path d="M370,202 L490,216" class="ln-g"/>
+  <path d="M440,202 L508,216" class="ln-g"/>
+  <rect x="482" y="166" width="180" height="32" rx="6" class="bx-g"/>
+  <text x="572" y="187" text-anchor="middle" class="t-xs">Redis — ทุกเครื่องเห็นเหมือนกัน</text>
+  <text x="60" y="190" class="t-xs">ไปเครื่องไหนก็ได้</text>
+</svg>
+<figcaption>ต้นเหตุไม่ใช่ load balancer แต่คือการที่เราสมมติว่า request ถัดไปจะกลับมาที่เครื่องเดิม</figcaption>
+</figure>
+
+<div class="tbl"><table>
+<tr><th>เก็บอะไรไว้ในเครื่อง</th><th>ย้ายไปไหน</th></tr>
+<tr><td>Session</td><td><strong>Redis</strong> หรือใช้ JWT <span class="g">(token ที่เซ็นลายเซ็นมาในตัว ตรวจได้เลย ไม่ต้องเก็บ session ฝั่ง server)</span></td></tr>
+<tr><td>Cache (<code>Map</code>)</td><td><strong>Redis</strong> (บท 04)</td></tr>
+<tr><td>Counter / rate limit</td><td><strong>Redis <code>INCR</code></strong> (บท 04)</td></tr>
+<tr><td>ไฟล์ที่ผู้ใช้อัปโหลด</td><td>S3 / object storage <span class="g">(ที่เก็บไฟล์กลางนอกเครื่อง ทุก instance เข้าถึงได้)</span></td></tr>
+<tr><td>งานเบื้องหลัง</td><td><strong>Queue</strong> (บท 05)</td></tr>
+</table></div>
+
+<h3 id="s1-2">1.2 Session ใน Redis กับ JWT</h3>
+
+<div class="tbl"><table>
+<tr><th></th><th>Session ใน Redis</th><th>JWT</th></tr>
+<tr><td>ตรวจสิทธิ์</td><td>ต้องอ่าน Redis ทุก request</td><td>ตรวจ signature ได้เลย ไม่ต้องอ่านอะไร</td></tr>
+<tr><td><strong>เพิกถอน (revoke)</strong></td><td><strong>ทำได้ทันที</strong> ลบ key ทิ้งก็จบ</td><td><strong>ทำไม่ได้</strong> token ยังใช้ได้จนกว่าจะหมดอายุ</td></tr>
+<tr><td>ข้อแลก</td><td>Redis กลายเป็น SPOF <span class="g">(จุดเดียวที่ถ้าล่มแล้วระบบล่มทั้งหมด)</span> ของ auth</td><td>ต้องตั้ง TTL <span class="g">(อายุที่ตั้งไว้ ครบเวลาแล้วหมดอายุเอง)</span> สั้นแล้วมี refresh token <span class="g">(token อายุยาวไว้ขอ token ใหม่ตอนของเดิมหมดอายุ)</span> หรือทำ blacklist ใน Redis</td></tr>
+</table></div>
+
+<div class="box errata"><span class="lab">⚠ สไลด์เสนอ JWT ว่า "zero database queries for auth" โดยไม่พูดถึงข้อเสีย</span>
+<p>ข้อจำกัดที่ต้องพูดถึงเสมอคือ <strong>JWT เพิกถอนไม่ได้</strong> — ผู้ใช้กด "ออกจากระบบทุกอุปกรณ์" หรือแอดมินแบนบัญชี token เดิมก็ยังใช้ได้อยู่จนหมดอายุ</p>
+<p>ทางแก้คือตั้งอายุ token ให้สั้น เช่น 15 นาที แล้วใช้ refresh token หรือทำ blacklist ใน Redis — แต่ blacklist ก็คือการเอา shared state กลับเข้ามา ซึ่งลบล้างข้อดี "ไม่ต้องอ่านอะไรเลย" ไปพอสมควร มันเป็น trade-off ไม่ใช่ของฟรี</p></div>
+
+<h3 id="s1-3">1.3 Graceful Shutdown</h3>
+
+<p>ถ้า process ถูกฆ่าทันที request ที่กำลังทำอยู่จะถูกตัดกลางคัน ผู้ใช้เห็น 502 <strong>ทุกครั้งที่ deploy</strong> ลำดับที่ถูกต้องคือ:</p>
+
+<ol>
+<li>ได้รับ <code>SIGTERM</code> <span class="g">(สัญญาณบอกให้ process เตรียมปิดตัวเอง ไม่ใช่ฆ่าทันที)</span> → <strong>หยุดรับ request ใหม่</strong> และให้ <code>/health/ready</code> ตอบ fail เพื่อให้ LB <span class="g">(ตัวย่อของ load balancer)</span> ถอดเครื่องนี้ออกจากกลุ่ม</li>
+<li><strong>drain</strong> — รอ request ที่ค้างอยู่ให้ทำจนเสร็จ</li>
+<li>ปิด DB connection / Redis / worker แล้วค่อยจบ process</li>
+</ol>
+
+<p>Worker ของ queue (บท 05) ก็ต้องทำแบบเดียวกัน ไม่งั้นทุก deploy จะทิ้ง job ค้างสถานะ stalled <span class="g">(งานที่ worker หายไปกลางคัน ระบบไม่รู้ว่าเสร็จหรือยัง)</span></p>
+
+<h3 id="s1-4">1.4 สูตร connection pool <span class="g">(ถังเก็บ connection DB ไว้ใช้ซ้ำ ไม่ต้องเปิดใหม่ทุกครั้ง)</span> ฉบับสมบูรณ์</h3>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 250" role="img" aria-label="การคำนวณจำนวน connection ทั้งหมดเมื่อมีหลาย instance และหลาย replica">
+  <text x="14" y="18" class="t-b">ทำไม "too many connections" ถึงโผล่มาทันทีที่ scale</text>
+
+  <rect x="30" y="34" width="92" height="30" rx="6" class="bx-a"/>
+  <text x="76" y="54" text-anchor="middle" class="t-xs">App 1</text>
+  <rect x="30" y="72" width="92" height="30" rx="6" class="bx-a"/>
+  <text x="76" y="92" text-anchor="middle" class="t-xs">App 2</text>
+  <rect x="30" y="110" width="92" height="30" rx="6" class="bx-a"/>
+  <text x="76" y="130" text-anchor="middle" class="t-xs">App 3</text>
+  <text x="76" y="160" text-anchor="middle" class="t-xs">3 instance</text>
+
+  <text x="180" y="56" text-anchor="middle" class="t-xs">แต่ละ instance</text>
+  <text x="180" y="72" text-anchor="middle" class="t-xs">สร้าง pool</text>
+  <text x="180" y="88" text-anchor="middle" class="t-xs t-b">แยกต่อ 1 target</text>
+
+  <path d="M126,49 L236,49" class="ln" marker-end="url(#ar)"/>
+  <path d="M126,87 L236,87" class="ln" marker-end="url(#ar)"/>
+  <path d="M126,125 L236,125" class="ln" marker-end="url(#ar)"/>
+
+  <rect x="240" y="34" width="110" height="30" rx="6" class="bx-p"/>
+  <text x="295" y="54" text-anchor="middle" class="t-xs">Primary</text>
+  <rect x="240" y="72" width="110" height="30" rx="6" class="bx-p"/>
+  <text x="295" y="92" text-anchor="middle" class="t-xs">Replica 1</text>
+  <rect x="240" y="110" width="110" height="30" rx="6" class="bx-p"/>
+  <text x="295" y="130" text-anchor="middle" class="t-xs">Replica 2</text>
+  <text x="295" y="160" text-anchor="middle" class="t-xs">1 + 2 = 3 targets</text>
+
+  <rect x="386" y="40" width="292" height="46" rx="7" class="bx-r"/>
+  <text x="532" y="60" text-anchor="middle" class="t-xs t-b">สูตรในสไลด์: instances × poolSize</text>
+  <text x="532" y="78" text-anchor="middle" class="t-mono t-r">3 × 20 = 60 ← นับขาดไป 3 เท่า</text>
+
+  <rect x="386" y="96" width="292" height="46" rx="7" class="bx-g"/>
+  <text x="532" y="116" text-anchor="middle" class="t-xs t-b">สูตรจริง: instances × (1 + replicas) × poolSize</text>
+  <text x="532" y="134" text-anchor="middle" class="t-mono t-g">3 × 3 × 20 = 180</text>
+
+  <rect x="386" y="152" width="292" height="46" rx="7" class="bx-w"/>
+  <text x="532" y="172" text-anchor="middle" class="t-xs">ถ้า <tspan class="t-mono">max_connections = 100</tspan></text>
+  <text x="532" y="190" text-anchor="middle" class="t-xs t-r t-b">→ DB ปฏิเสธ connection ทั้งระบบ ล่มพร้อมกันหมด</text>
+
+  <text x="350" y="226" text-anchor="middle" class="t-xs">เป้าหมายคือให้อยู่ไม่เกิน 80% ของ <tspan class="t-mono">max_connections</tspan> · instance เยอะมากให้ใช้ PgBouncer เป็นตัวรวม connection</text>
+</svg>
+<figcaption>ตัวคูณที่คนลืมคือ replica — TypeORM <span class="g">(ORM ของ Node — ตัวแปลงระหว่าง object ในโค้ดกับตารางใน DB)</span> สร้าง pool แยกต่อ master และต่อ slave <span class="g">(ชื่อเก่าของ primary/replica — master รับเขียน slave เป็นสำเนาไว้อ่าน)</span> แต่ละตัว</figcaption>
+</figure>
+
+<div class="box why"><span class="lab">สูตรที่ต้องจำ — สาเหตุอันดับหนึ่งของ "too many connections"</span>
+<p><code>instances × (1 + replicas) × poolSize ≤ 80% ของ max_connections</code></p></div>
+
+
+<h2 id="s2">2. Load Balancing (Nginx) <span class="g">(Nginx = reverse proxy ตัวกลางที่รับ request แทน backend แล้วกระจายต่อ)</span></h2>
+
+<div class="tbl"><table>
+<tr><th>Algorithm</th><th>ใช้เมื่อ</th><th>หมายเหตุ</th></tr>
+<tr><td><code>round_robin</code> <span class="g">(วนส่งทีละเครื่องไปเรื่อย ๆ ไม่สนว่าใครยุ่ง)</span></td><td><strong>ค่าเริ่มต้น</strong> — request มีต้นทุนพอ ๆ กัน และ app stateless แล้ว</td><td>เรียบง่ายและพอสำหรับ API ทั่วไป</td></tr>
+<tr><td><code>least_conn</code> <span class="g">(ส่งให้ตัวที่มีงานค้างน้อยสุด)</span></td><td>request ใช้เวลาต่างกันมาก เช่น upload, long-polling, websocket</td><td>ส่งไปเครื่องที่มี connection ค้างน้อยที่สุด</td></tr>
+<tr><td><code>ip_hash</code> <span class="g">(ล็อก IP เดิมให้ไปเครื่องเดิมเสมอ คือการทำ sticky session)</span></td><td><strong>หลีกเลี่ยง</strong></td><td>ผู้ใช้จาก NAT <span class="g">(หลายเครื่องออกเน็ตผ่าน IP สาธารณะเดียวกัน)</span> หรือ proxy เดียวกันจะกองไปเครื่องเดียว, เครื่องล้ม = คนกลุ่มนั้นหลุด session หมด, และตอน scale-in การจับคู่จะเปลี่ยนทั้งหมด — <strong>ถ้าทำ stateless ถูกต้องแล้วก็ไม่ต้องใช้เลย</strong></td></tr>
+</table></div>
+
+<h3 id="s2-1">2.1 ค่าที่ต้องตั้ง</h3>
+
+<ul>
+<li><code>max_fails</code> + <code>fail_timeout</code> — เกณฑ์ที่จะถอด upstream <span class="g">(backend ที่ Nginx กระจาย request ไปหา)</span> ที่ล้มเหลวออกจากกลุ่ม</li>
+<li><code>proxy_connect_timeout</code> / <code>send</code> / <code>read</code> — ถ้าไม่ตั้ง upstream ที่ค้างจะยึด worker connection ของ Nginx จนหมด แล้วลามเป็น outage ทั้งระบบ</li>
+<li><code>X-Real-IP</code> / <code>X-Forwarded-For</code> — ถ้าไม่ forward ระบบ rate limiting, audit log และ geo ทั้งหมดจะเห็นแต่ IP ของ load balancer</li>
+</ul>
+
+<div class="box errata"><span class="lab">⚠ สไลด์ 44 ผิดอย่างมีนัยสำคัญ — น่าจะเป็นข้อสอบ</span>
+<p>สไลด์เขียนว่า <em>"Docker mark ว่า unhealthy → Nginx หยุดส่ง traffic"</em> ซึ่ง <strong>ไม่จริง</strong></p>
+<p><strong>Nginx อ่านสถานะ health ของ Docker ไม่ได้เลย</strong> เพราะเป็นคนละระบบที่ไม่รู้จักกัน สิ่งที่ Nginx รุ่นฟรีทำได้คือ <strong>passive health check</strong> <span class="g">(รู้ว่าเครื่องล่มก็ต่อเมื่อ request ของผู้ใช้จริงพัง)</span> เท่านั้น คือถอด upstream ออกก็ต่อเมื่อ<em>request จริงของผู้ใช้</em>ล้มเหลวครบ <code>max_fails</code> ครั้งภายใน <code>fail_timeout</code></p>
+<p>ส่วน <strong>active health check</strong> ที่ LB ยิงไปตรวจเองเป็นระยะ (<code>health_check</code> directive) มีเฉพาะใน <strong>Nginx Plus</strong> ซึ่งเสียเงิน ถ้าอยากได้พฤติกรรมแบบที่สไลด์บรรยาย ต้องใช้ <strong>Kubernetes readinessProbe</strong>, Docker Swarm หรือ Nginx Plus</p>
+<p><strong>ทำไมเรื่องนี้อันตราย:</strong> คนที่เชื่อตามสไลด์จะคิดว่าตัวเองมี failover <span class="g">(สลับไปใช้ตัวสำรองอัตโนมัติเมื่อตัวหลักล่ม)</span> ทั้งที่ไม่มี แล้วจะรู้ตัวก็ตอนระบบล่มจริงเท่านั้น</p>
+<p>เช่นเดียวกัน <code>HEALTHCHECK</code> ใน Dockerfile (บท 01) ถ้าไม่มี orchestrator <span class="g">(ตัวคุมการรัน container หลายเครื่อง เช่น Kubernetes)</span> มันแค่เปลี่ยนข้อความในคอลัมน์ STATUS ของ <code>docker ps</code> เท่านั้น ไม่มีใครเอาผลนั้นไปทำอะไรต่อ</p></div>
+
+<div class="box errata"><span class="lab">⚠ Nginx ตัวเดียวก็เป็น SPOF</span>
+<p>สไลด์วาดสถาปัตยกรรมที่มี Nginx ตัวเดียวเป็นทางเข้าเดียว แต่ตั้งเป้า "99.9%+ uptime, no single point of failure" ซึ่งขัดกันเอง ต้องรัน Nginx 2 ตัวคู่กับ VIP <span class="g">(IP กลางที่ย้ายไปเครื่องสำรองได้เมื่อตัวหลักล่ม)</span> หรือ DNS failover หรือใช้ managed load balancer ของ cloud</p></div>
+
+
+<h2 id="s3">3. Database Replication <span class="g">(ก๊อปข้อมูลจาก primary ไปไว้ที่ replica แบบต่อเนื่อง)</span></h2>
+
+<h3 id="s3-1">3.1 มันช่วยอะไรและไม่ช่วยอะไร</h3>
+
+<p>Primary รับ write ทั้งหมด ส่วน replica รับ read ซึ่งกินสัดส่วน <strong>80–90% ของ query ทั้งระบบ</strong></p>
+
+<div class="box trap"><span class="lab">ประโยคที่ต้องพูดในข้อสอบ</span>
+<p><strong>Replication ไม่ได้เพิ่ม write throughput เลย</strong> <span class="g">(throughput = จำนวนงานที่ระบบทำได้ต่อวินาที)</span> เพราะทุกการเขียนยังต้องผ่าน primary ตัวเดียว แถมยังต้องส่ง WAL <span class="g">(log ที่ Postgres เขียนก่อนแก้ข้อมูลจริง ใช้ส่งต่อให้ replica)</span> ไปให้ replica อีก ถ้า bottleneck <span class="g">(จุดคอขวดที่ช้าที่สุด ตัวกำหนดความเร็วรวมของระบบ)</span> คือการเขียน ต้องแก้ด้วย sharding, partitioning <span class="g">(sharding = แยกข้อมูลไปคนละเครื่อง, partitioning = ซอยตารางใหญ่เป็นส่วนย่อยในเครื่องเดียว)</span> หรือรวมงานเขียนเป็น batch ผ่าน queue (บท 05)</p></div>
+
+<pre><code>// TypeORM
+replication: {
+  master: { host: 'primary', ... },
+  slaves: [{ host: 'replica-1' }, { host: 'replica-2' }],
+}
+// ⚠️ สร้าง pool แยกต่อ master และต่อ slave แต่ละตัว → ดูสูตรใน §1.4</code></pre>
+
+<h3 id="s3-2">3.2 Replication Lag <span class="g">(ช่วงที่ replica ยังตามข้อมูลของ primary ไม่ทัน)</span> และ Read-Your-Writes</h3>
+
+<p>Replica ตามหลัง primary เสมอ ปกติ 10–100ms และตอนโหลดหนักอาจถึง 100ms–1s (ควรตั้ง alert เมื่อเกิน 1 วินาที)</p>
+
+<div class="box why"><span class="lab">บั๊กคลาสสิกที่ต้องรู้จัก</span>
+<p>ผู้ใช้สร้างโปรไฟล์ (เขียนไป primary) แล้วหน้าเว็บ redirect ไปดูโปรไฟล์ทันที (อ่านจาก replica ที่ยังไม่ได้รับข้อมูล) → <strong>404 ทั้งที่เพิ่งสร้างสำเร็จ</strong></p>
+<p>อาการนี้ <strong>ไม่เกิดตอน dev เลย</strong> เพราะ lag เป็นศูนย์ และจะโผล่เฉพาะตอน production มีโหลด ซึ่งทำให้หาสาเหตุยากมาก</p>
+<p><strong>ทางแก้:</strong> operation แบบ read-your-writes <span class="g">(เขียนเสร็จแล้วอ่านต่อทันที ต้องเห็นของที่เพิ่งเขียน)</span> ต้องบังคับให้อ่านจาก primary หรือทำทั้งชุดอยู่ใน transaction <span class="g">(กลุ่มคำสั่ง DB ที่ต้องสำเร็จทั้งหมดหรือไม่เกิดอะไรเลย)</span> ซึ่ง TypeORM จะใช้ master เสมอ</p></div>
+
+<h3 id="s3-3">3.3 เรื่อง ops ที่สไลด์ไม่พูด</h3>
+
+<div class="box trap"><span class="lab">Replication slot ที่ถูกลืม ทำให้ primary ล่มได้</span>
+<p>ถ้า replica ตายไปแต่ <strong>replication slot ยังค้างอยู่</strong> <span class="g">(slot = จุดที่ primary จำไว้ว่า replica อ่าน WAL ไปถึงไหนแล้ว)</span> primary จะ<strong>เก็บ WAL ไว้ตลอดไป</strong> เพราะคิดว่ายังมีคนต้องใช้ ผลคือดิสก์ของ primary เต็ม แล้ว<strong>ระบบเขียนทั้งหมดหยุดทำงาน</strong></p>
+<p>ต้อง monitor <code>pg_replication_slots</code>, ตั้ง <code>max_slot_wal_keep_size</code> และลบ slot ที่ไม่ใช้แล้ว</p></div>
+
+<p><strong>Config ฝั่ง primary:</strong> <code>wal_level=replica</code>, <code>max_wal_senders</code> เท่ากับจำนวน replica + 1, สร้าง replication slot, ใช้ role <code>replicator</code> แยกต่างหาก และ<strong>ต้องซ้อมทำ failover จริง</strong> ด้วย Patroni หรือ repmgr <span class="g">(เครื่องมือจัดการ failover ของ PostgreSQL ให้อัตโนมัติ)</span> ก่อนถึงวันที่ต้องใช้จริง</p>
+
+<div class="box errata"><span class="lab">⚠ สไลด์อ้างความสามารถของ TypeORM เกินจริง</span>
+<p>สไลด์บอกว่า "TypeORM ตรวจจับ connection failure, ข้าม replica ที่ล่ม และให้ master รับ read ถ้า replica ล่มหมด" ซึ่ง<strong>เกินจริง</strong> TypeORM ไม่มีการ health check replica แบบ active มันแค่วน round-robin ไปที่ slave และการ failover ขึ้นกับพฤติกรรม error ของ driver <strong>อย่าออกแบบระบบโดยพึ่งพาข้อนี้</strong></p>
+<p>อีกจุด: compose ในสไลด์ใช้ <code>pg_basebackup -U postgres</code> ขณะที่ init script สร้าง role <code>replicator</code> และสไลด์ถัดไปใช้ <code>-U replicator</code> ซึ่งไม่สอดคล้องกัน</p></div>
+
+
+<h2 id="s4">4. Health Check — ต้องแยกสองแบบ</h2>
+
+<div class="tbl"><table>
+<tr><th></th><th><code>/health/live</code> (Liveness)</th><th><code>/health/ready</code> (Readiness)</th></tr>
+<tr><td>ถามว่า</td><td>"process ยังไม่ตายใช่ไหม"</td><td>"พร้อมรับ traffic หรือยัง"</td></tr>
+<tr><td>เช็คอะไร</td><td><strong>ไม่เช็ค dependency เลย</strong> ตอบ 200 เฉย ๆ</td><td>เช็ค DB + Redis</td></tr>
+<tr><td>ถ้า fail</td><td><strong>restart container</strong></td><td><strong>ถอดออกจาก LB</strong> แต่ container ยังรันต่อ</td></tr>
+</table></div>
+
+<div class="box trap"><span class="lab">ทำไม liveness ห้ามเช็ค DB — เหตุผลที่ต้องอธิบายให้ได้</span>
+<p>ถ้า liveness เช็ค DB ด้วย แล้ว DB สะดุดไป 5 วินาที → <strong>ทุก container จะ fail liveness พร้อมกัน → ถูก restart พร้อมกันทั้งหมด</strong></p>
+<p>ผลคือระบบล่มยาวจากปัญหาที่จริง ๆ แล้วแค่สะดุดชั่วครู่ — <strong>เราสร้าง outage ขึ้นเองจากกลไกที่ตั้งใจจะป้องกัน outage</strong></p>
+<p>ในทางกลับกัน readiness ควรเช็ค DB เพราะถ้า instance ต่อ DB ไม่ได้ มันก็ให้บริการไม่ได้จริง ควรถูกถอดออกจาก LB ชั่วคราวแล้วกลับเข้ามาเองเมื่อเชื่อมต่อได้</p>
+<p><strong>⚠ สไลด์ใช้ <code>/health</code> เดียว (เช็คทั้ง DB และ memory) สำหรับทั้งสองหน้าที่ ซึ่งขัดกับตารางเปรียบเทียบของสไลด์เอง</strong> ถ้าเอาไปใช้เป็น livenessProbe ของ Kubernetes มันจะทำให้ทุก pod restart วนทุกครั้งที่ DB สะดุด</p></div>
+
+<p><strong>อีกข้อ:</strong> ต้องทำให้ endpoint นี้<strong>เบา</strong> เพราะภาระของ probe <span class="g">(การยิงเช็คสุขภาพเป็นระยะ)</span> จะถูกคูณด้วยความถี่และจำนวน instance ถ้า probe หนักแล้ว DB เริ่มช้า probe เองจะกลายเป็นตัวเร่งให้ instance ถูกถอดออกเป็นลูกโซ่</p>
+
+
+<h2 id="s5">5. Observability <span class="g">(ความสามารถในการรู้ว่าข้างในระบบเกิดอะไรขึ้น จากสิ่งที่มันพ่นออกมา)</span></h2>
+
+<h3 id="s5-1">5.1 Logging</h3>
+
+<ul>
+<li><strong>JSON แบบมีโครงสร้าง</strong> ไม่ใช่ข้อความดิบ เพื่อให้ query ได้</li>
+<li><strong>correlation หรือ trace id ทุก request</strong> <span class="g">(id เดียวแปะไปทุก log ของ request นั้น ใช้ตามรอยข้ามระบบ)</span> และ<strong>ส่งต่อไปถึง worker</strong> ด้วย (บท 05) ไม่งั้นจะตาม request เดียวข้ามระบบไม่ได้เลย</li>
+<li><strong>centralized logging</strong> (ELK / CloudWatch) เพราะ log ที่กระจายอยู่ใน 5 เครื่องใช้งานไม่ได้จริงตอนเกิดเหตุ</li>
+<li>ระดับต่ำสุดใน prod คือ <code>info</code> — <code>debug</code> ทำให้ดิสก์เต็ม ค่าใช้จ่ายบาน และ<strong>กลบสัญญาณจริง</strong></li>
+<li><strong>ห้าม log รหัสผ่าน, token, ข้อมูลส่วนบุคคล, เลขบัตร</strong> เพราะ log ไปอยู่ในที่ที่คนเข้าถึงได้กว้างและเก็บไว้นาน</li>
+<li>ค่า log อาจแพงกว่าค่า compute ควร sample <span class="g">(เก็บแค่บางส่วนแทนที่จะเก็บทุกอัน)</span> เส้นทางที่มี volume สูง</li>
+</ul>
+
+<h3 id="s5-2">5.2 Metrics <span class="g">(ตัวเลขวัดพฤติกรรมระบบที่เก็บต่อเนื่องตามเวลา)</span> ที่ต้องมี</h3>
+
+<p>request rate · error rate (<strong>แยก 4xx กับ 5xx</strong>) · p50/p95/p99 latency <span class="g">(เวลาตอบกลับที่ช้ากว่านี้แค่ 50% / 5% / 1% ของ request — ดูคนซวย ไม่ใช่ค่าเฉลี่ย)</span> · queue depth และ queue lag <span class="g">(งานค้างในคิวกี่ชิ้น / รอนานแค่ไหนกว่าจะถูกหยิบไปทำ)</span> (บท 05) · cache hit ratio <span class="g">(สัดส่วนที่หาเจอใน cache ไม่ต้องไปถาม DB)</span> (บท 04) · replication lag · pool utilization</p>
+
+<h3 id="s5-3">5.3 ทำไมต้องดู percentile ไม่ใช่ค่าเฉลี่ย</h3>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 220" role="img" aria-label="ค่าเฉลี่ยซ่อนผู้ใช้ที่รอนานที่สุดไว้ ต่างจาก p99">
+  <line x1="60" y1="160" x2="660" y2="160" class="ln"/>
+  <text x="60" y="180" class="t-xs">เร็ว</text>
+  <text x="650" y="180" text-anchor="end" class="t-xs">ช้า</text>
+  <text x="360" y="200" text-anchor="middle" class="t-xs">เวลาตอบสนองของแต่ละ request</text>
+
+  <rect x="90" y="100" width="16" height="58" class="bx"/>
+  <rect x="112" y="70" width="16" height="88" class="bx"/>
+  <rect x="134" y="48" width="16" height="110" class="bx"/>
+  <rect x="156" y="40" width="16" height="118" class="bx"/>
+  <rect x="178" y="56" width="16" height="102" class="bx"/>
+  <rect x="200" y="82" width="16" height="76" class="bx"/>
+  <rect x="222" y="108" width="16" height="50" class="bx"/>
+  <rect x="244" y="126" width="16" height="32" class="bx"/>
+  <rect x="266" y="138" width="16" height="20" class="bx"/>
+  <rect x="288" y="146" width="16" height="12" class="bx"/>
+  <rect x="330" y="150" width="16" height="8" class="bx"/>
+  <rect x="400" y="152" width="16" height="6" class="bx"/>
+  <rect x="500" y="152" width="16" height="6" class="bx-r"/>
+  <rect x="580" y="150" width="16" height="8" class="bx-r"/>
+
+  <line x1="180" y1="30" x2="180" y2="166" class="ln-g"/>
+  <text x="180" y="24" text-anchor="middle" class="t-xs t-g">ค่าเฉลี่ย ~100ms</text>
+  <text x="180" y="182" text-anchor="middle" class="t-xs t-g">"ดูดีมาก"</text>
+
+  <line x1="560" y1="30" x2="560" y2="166" class="ln-r"/>
+  <text x="588" y="24" text-anchor="middle" class="t-xs t-r">p99 ~5,000ms</text>
+  <text x="588" y="182" text-anchor="middle" class="t-xs t-r">คนกลุ่มนี้รอ 5 วินาที</text>
+
+  <text x="60" y="212" class="t-xs">p99 มักไม่ใช่ผู้ใช้แบบสุ่ม แต่เป็นคนที่มีข้อมูลเยอะที่สุด — ซึ่งมักเป็นลูกค้ารายใหญ่ที่สุดของเรา</text>
+</svg>
+<figcaption>ค่าเฉลี่ยไม่ได้โกหก แต่มันเล่าเรื่องของคนที่ไม่มีปัญหา ส่วน p99 เล่าเรื่องของคนที่กำลังจะเลิกใช้</figcaption>
+</figure>
+
+<div class="box why"><span class="lab">ประโยคที่ควรจำไปเขียน</span>
+<p>ถ้า 99 request ใช้เวลา 50ms และ 1 request ใช้ 5,000ms ค่าเฉลี่ยจะเป็นราว 100ms ซึ่ง<strong>ดูดีมาก</strong> ทั้งที่มีผู้ใช้ที่ต้องนั่งรอ 5 วินาที</p>
+<p><strong>p99 คือผู้ใช้ที่โกรธที่สุด และมักเป็นคนที่มีข้อมูลมากที่สุด</strong> เช่นลูกค้ารายใหญ่ที่มี order เป็นหมื่นรายการ แปลว่า p99 มักตรงกับลูกค้าที่เราเสียไม่ได้ ค่าเฉลี่ยซ่อนคนกลุ่มนี้ไว้ทั้งหมด</p></div>
+
+
+<h2 id="s6">6. ตัวเลขเป้าหมาย &amp; ลำดับการทำงาน</h2>
+
+<div class="tbl"><table>
+<tr><th>Metric</th><th>เป้าหมาย</th></tr>
+<tr><td>RPS <span class="g">(request ต่อวินาทีที่รับไหว)</span></td><td>1,000+ สำหรับ API ทั่วไป</td></tr>
+<tr><td>p50 / p95 / p99</td><td>&lt; 100ms / &lt; 200ms / &lt; 500ms</td></tr>
+<tr><td>Error rate</td><td>&lt; 0.1%</td></tr>
+<tr><td>Replication lag</td><td>&lt; 1 วินาที</td></tr>
+<tr><td>CPU ต่อ instance หลัง scale</td><td>ราว 45%</td></tr>
+</table></div>
+
+<p><strong>ตัวเลขอ้างอิงจากสไลด์:</strong> 1 instance ได้ 500 RPS ที่ p95 300ms → 3 instance ได้ 1,400 RPS ที่ p95 150ms คือ <strong>ราว 2.8 เท่า ไม่ใช่ 3 เท่า</strong> เพราะมี overhead ของ LB และการแย่งทรัพยากรที่ DB (และนี่เป็นแค่ตัวอย่างประกอบ ไม่ใช่การรับประกัน)</p>
+
+<div class="box why"><span class="lab">ลำดับที่ต้องทำ — ข้อนี้คือบทสรุปของทั้งวิชา</span>
+<ol>
+<li><strong>วัดก่อน</strong> หา bottleneck จริง ไม่ใช่เดา</li>
+<li><strong>แก้ query + index</strong> (บท 03)</li>
+<li><strong>ใส่ cache</strong> (บท 04)</li>
+<li><strong>ย้ายงานหนักไป queue</strong> (บท 05)</li>
+<li><strong>ค่อย scale out</strong> (บทนี้)</li>
+</ol>
+<p>เหตุผล: <strong>การ scale แอปที่มี N+1 query คือการซื้อ query ห่วย ๆ ที่เร็วขึ้นเท่านั้น</strong> <span class="g">(N+1 = วน loop ยิง query ทีละแถว จนกลายเป็นหลายร้อยรอบ)</span> ถ้า bottleneck อยู่ที่ DB การเพิ่ม instance จะได้ผลตอบแทนแทบเป็นศูนย์ ซ้ำร้ายยังทำให้ DB โดนหนักขึ้นจาก connection ที่เพิ่มขึ้นตาม</p></div>
+
+<p><strong>Load testing:</strong> <span class="g">(ยิงโหลดจำลองใส่ระบบ เพื่อดูว่ารับได้ถึงไหนก่อนพัง)</span> ใช้ k6 <span class="g">(เครื่องมือยิง load test สคริปต์เป็น JS — สายเดียวกับ JMeter)</span> ทำแบบ ramp-up → peak → ramp-down เพื่อให้ได้ baseline ที่เอาไปเทียบก่อน-หลังได้จริง ไม่ใช่ยิงพรวดครั้งเดียว</p>
+
+
+<h2 id="s7">7. 🔗 แผนที่รวมทั้ง 6 บท</h2>
+
+<div class="box link-box"><span class="lab">ทุกอย่างมาบรรจบที่นี่</span>
+<ul>
+<li><strong>บท 01 →</strong> container ที่เล็กและ config มาจาก env ทำให้ scale ออกและ rolling update <span class="g">(ทยอยเปลี่ยนเครื่องทีละตัว ไม่ดับพร้อมกันทั้งระบบ)</span> ได้เร็ว / <code>HEALTHCHECK</code> ของ Docker ไม่มีผลกับ Nginx จริง</li>
+<li><strong>บท 02 →</strong> service ที่ stateless คือ<strong>เงื่อนไขบังคับ</strong>ของทุกอย่างในบทนี้ / correlation id จาก interceptor คือรากฐานของ observability</li>
+<li><strong>บท 03 →</strong> สูตร connection pool ที่ต้องคูณ replica เข้าไป / expand-and-contract <span class="g">(เพิ่มของใหม่ก่อน ค่อยลบของเก่าทีหลัง ให้โค้ดสองเวอร์ชันอยู่ร่วมกันได้)</span> จำเป็นเพราะ rolling update ทำให้มีสองเวอร์ชันรันพร้อมกัน / read-your-writes ต้องไป primary</li>
+<li><strong>บท 04 →</strong> Redis คือที่เก็บ session และ cache ที่แชร์ระหว่าง instance / hit ratio เป็น metric หลัก / Redis เดี่ยวเป็น SPOF ต้องวางแผน HA <span class="g">(High Availability — ออกแบบให้ระบบไม่ล่มแม้เครื่องหนึ่งตาย)</span></li>
+<li><strong>บท 05 →</strong> pub/sub + N instance = ทำงานซ้ำ N ครั้ง / queue lag เป็น metric หลัก / graceful shutdown ของ worker / ต้อง offload ก่อน scale</li>
+</ul>
+<p><strong>ถ้าจำได้ประโยคเดียวจากทั้งวิชา:</strong> <em>ทุกบทกำลังแก้ปัญหาเดียวกันในระดับที่ต่างกัน — "มีหลายสิ่งเกิดขึ้นพร้อมกัน" ไม่ว่าจะเป็นหลาย request (บท 03), หลายชั้นของข้อมูล (บท 04), หลายงานที่ค้างอยู่ (บท 05) หรือหลายเครื่อง (บท 06)</em></p></div>
+
+
+<h2 id="s8">8. 📝 คลังคำตอบอัตนัย</h2>
+
+<details class="qa"><summary>เหตุใดแอปพลิเคชันต้อง stateless ก่อนจึงจะทำ horizontal scaling ได้</summary>
+<div class="ans">
+<div class="skel">โครง: กลไก LB → ผลเมื่อมี state → สิ่งที่ต้องย้าย → เงื่อนไขเพิ่มเติม</div>
+<p>เพราะ load balancer สามารถส่ง request ไปยัง instance ใดก็ได้ และไม่มีการรับประกันว่า request ถัดไปของผู้ใช้คนเดิมจะไปยังเครื่องเดิม</p>
+<p>หาก instance เก็บ state ไว้ในหน่วยความจำของตนเอง จะเกิดปัญหาสองประการ ประการแรกคือ <strong>ข้อมูลไม่ตรงกันระหว่างเครื่อง</strong> เช่นผู้ใช้ล็อกอินที่เครื่อง A แล้ว request ถัดไปถูกส่งไปเครื่อง B ซึ่งไม่รู้จัก session นั้น ทำให้หลุดออกจากระบบแบบสุ่ม หรือ cache ที่เก็บใน <code>Map</code> ของแต่ละเครื่องไม่ตรงกัน ทำให้ผู้ใช้เห็นราคาสินค้าไม่เหมือนกัน ประการที่สองคือ <strong>ข้อมูลสูญหายทุกครั้งที่ restart</strong> ซึ่งเกิดขึ้นทุกครั้งที่ deploy</p>
+<p>สิ่งที่ต้องย้ายออกจากหน่วยความจำ ได้แก่ session ไปไว้ที่ Redis หรือเปลี่ยนไปใช้ JWT, cache ไปไว้ที่ Redis, counter และ rate limit ใช้คำสั่ง <code>INCR</code> ของ Redis, ไฟล์ที่ผู้ใช้อัปโหลดไปไว้ที่ object storage และงานเบื้องหลังไปไว้ที่ queue</p>
+<p>เงื่อนไขเพิ่มเติมที่มาคู่กันคือ ทุก instance ต้องรันโค้ดเวอร์ชันเดียวกันและใช้ image เดียวกันที่รับ config ผ่าน environment variable, ต้องมี graceful shutdown เพื่อไม่ให้ทุกการ deploy เกิด 502 และต้องคำนวณ connection pool ใหม่ทั้งระบบ เพราะจำนวน connection รวมจะเพิ่มขึ้นตามจำนวน instance</p>
+</div></details>
+
+<details class="qa"><summary>เหตุใดหลังจากเพิ่มจำนวน instance จึงเกิด error "too many connections" และป้องกันอย่างไร</summary>
+<div class="ans">
+<div class="skel">โครง: กลไก pool ต่อ instance → สูตรเต็ม → ตัวอย่างตัวเลข → ทางแก้</div>
+<p>เพราะ connection pool ถูกสร้าง<strong>แยกกันในแต่ละ instance</strong> ไม่ได้ใช้ร่วมกัน เมื่อเพิ่มจำนวน instance จำนวน connection รวมที่วิ่งไปยัง database จึงเพิ่มขึ้นเป็นทวีคูณ ในขณะที่ <code>max_connections</code> ของ PostgreSQL ยังคงเท่าเดิม</p>
+<p>สูตรที่ถูกต้องคือ <strong>จำนวน instance คูณด้วย (1 บวกจำนวน replica) คูณด้วย pool size</strong> และค่านี้ควรอยู่ไม่เกินประมาณ 80% ของ <code>max_connections</code> เพื่อสำรอง connection สำหรับงานดูแลระบบ</p>
+<p>ตัวคูณ (1 + replicas) เป็นจุดที่มักถูกลืม เนื่องจาก TypeORM สร้าง pool แยกสำหรับ master และสำหรับ slave แต่ละตัว ตัวอย่างเช่นระบบที่มี 3 instance, 1 primary กับ 2 replica และ pool size 20 จะใช้ connection จริงถึง 180 ในขณะที่สูตรอย่างง่ายที่คิดเพียง instances คูณ poolSize จะได้เพียง 60 ซึ่งต่ำกว่าความเป็นจริงถึงสามเท่า หาก <code>max_connections</code> ตั้งไว้ที่ 100 ระบบจะปฏิเสธ connection ทั้งหมดและล่มทันทีที่ scale</p>
+<p>การป้องกันคือคำนวณตามสูตรเต็มก่อน scale ทุกครั้ง ปรับ pool size ต่อ instance ให้เล็กลงเมื่อจำนวน instance มากขึ้น และหากมี instance จำนวนมากควรใช้ <strong>PgBouncer</strong> เป็น connection pooler กลางเพื่อรวม connection ก่อนถึง database นอกจากนี้ควรหลีกเลี่ยง long transaction เพราะจะทำให้ pool ถูกจองค้างจนหมดทั้งที่ database ยังว่างอยู่</p>
+</div></details>
+
+<details class="qa"><summary>เหตุใดจึงต้องแยก liveness probe ออกจาก readiness probe</summary>
+<div class="ans">
+<div class="skel">โครง: คำถามที่ต่างกัน → การกระทำที่ต่างกัน → หายนะถ้ารวมกัน → ข้อควรระวังเรื่องน้ำหนัก</div>
+<p>เพราะทั้งสองตอบคำถามคนละข้อและนำไปสู่การกระทำคนละอย่าง</p>
+<p><strong>Liveness</strong> ถามว่า "process นี้ยังไม่ตายใช่หรือไม่" หากล้มเหลว orchestrator จะ <strong>restart container</strong> ดังนั้นจึงต้องเบาและ<strong>ไม่ตรวจสอบ dependency ภายนอกใด ๆ</strong> เพียงตอบ 200 กลับมาก็เพียงพอ</p>
+<p><strong>Readiness</strong> ถามว่า "พร้อมรับ traffic แล้วหรือยัง" หากล้มเหลว instance จะถูก <strong>ถอดออกจาก load balancer</strong> แต่ container ยังทำงานต่อและกลับเข้ามาได้เองเมื่อพร้อม จึงเหมาะที่จะตรวจสอบการเชื่อมต่อ database และ Redis</p>
+<p>หากรวมทั้งสองไว้ใน endpoint เดียวที่ตรวจสอบ database ด้วย จะเกิดผลเสียร้ายแรงเมื่อ database สะดุดเพียงไม่กี่วินาที กล่าวคือ <strong>ทุก container จะ fail liveness พร้อมกันและถูก restart พร้อมกันทั้งหมด</strong> ทำให้ระบบล่มเป็นเวลานานจากปัญหาที่เดิมทีเป็นเพียงการสะดุดชั่วครู่ นั่นคือกลไกที่ตั้งใจป้องกัน outage กลับสร้าง outage เสียเอง</p>
+<p>ข้อควรระวังเพิ่มเติมคือต้องทำให้ endpoint เหล่านี้เบาที่สุด เพราะภาระของ probe จะถูกคูณด้วยความถี่ในการเรียกและจำนวน instance หาก probe หนักและ database เริ่มช้าลง probe เองจะกลายเป็นตัวเร่งให้ instance ถูกถอดออกจาก load balancer เป็นลูกโซ่</p>
+</div></details>
+
+<details class="qa"><summary>Database replication ช่วยเรื่องอะไร ไม่ช่วยเรื่องอะไร และมีข้อควรระวังอะไร</summary>
+<div class="ans">
+<div class="skel">โครง: กลไก → ช่วยอะไร → ไม่ช่วยอะไร (จุดสำคัญ) → lag และ read-your-writes → ops</div>
+<p>Replication คือการให้ primary รับงานเขียนทั้งหมดแล้วส่งข้อมูลไปยัง replica ซึ่งรับเฉพาะงานอ่าน โดยงานอ่านคิดเป็นราว 80–90% ของ query ทั้งระบบ จึงช่วยแบ่งเบาภาระ primary ได้มาก และยังได้สำเนาข้อมูลไว้สำหรับการทำ failover ด้วย</p>
+<p>สิ่งที่ replication <strong>ไม่ช่วย</strong> คือ <strong>write throughput</strong> เพราะทุกการเขียนยังต้องผ่าน primary เพียงตัวเดียว ซ้ำยังเพิ่มภาระให้ primary ในการส่ง WAL ไปยัง replica อีก หาก bottleneck อยู่ที่การเขียน ต้องแก้ด้วยวิธีอื่น เช่น sharding, partitioning หรือรวมงานเขียนเป็น batch ผ่าน queue</p>
+<p>ข้อควรระวังหลักคือ <strong>replication lag</strong> ซึ่งปกติอยู่ที่ 10–100 มิลลิวินาที และอาจถึงหลักวินาทีเมื่อโหลดสูง ทำให้เกิดปัญหา <strong>read-your-writes</strong> เช่นผู้ใช้สร้างข้อมูลเสร็จแล้วระบบ redirect ไปหน้าแสดงผลทันที แต่อ่านจาก replica ที่ยังไม่ได้รับข้อมูลนั้น จึงได้ 404 ทั้งที่บันทึกสำเร็จ อาการนี้จะไม่ปรากฏตอนพัฒนาเพราะ lag เป็นศูนย์ และจะโผล่เฉพาะบน production ที่มีโหลด วิธีแก้คือบังคับให้ operation ประเภทนี้อ่านจาก primary หรือดำเนินการภายใน transaction ซึ่งจะใช้ master เสมอ</p>
+<p>ในเชิง operation ต้องเฝ้าติดตาม lag และตั้ง alert เมื่อเกิน 1 วินาที และต้องเฝ้าดู <code>pg_replication_slots</code> ด้วย เพราะหาก replica ล่มไปแต่ slot ยังค้างอยู่ primary จะเก็บ WAL ไว้ตลอดไปจนดิสก์เต็มและหยุดรับการเขียนทั้งหมด ควรตั้ง <code>max_slot_wal_keep_size</code> และลบ slot ที่ไม่ใช้แล้ว สุดท้ายต้องซ้อม failover จริงด้วยเครื่องมืออย่าง Patroni หรือ repmgr และไม่ควรออกแบบระบบโดยพึ่งพาความสามารถ failover อัตโนมัติของ ORM เพราะ TypeORM ไม่มีการ health check replica แบบ active</p>
+</div></details>
+
+<details class="qa"><summary>เหตุใดจึงต้องวัด p95 และ p99 แทนที่จะดูค่าเฉลี่ยของ response time</summary>
+<div class="ans">
+<div class="skel">โครง: ตัวอย่างตัวเลข → สิ่งที่ค่าเฉลี่ยซ่อนไว้ → ทำไม p99 สำคัญเป็นพิเศษ → metric อื่นที่ควรดูคู่กัน</div>
+<p>เพราะค่าเฉลี่ยถูกกลบด้วยกรณีปกติจนมองไม่เห็นกรณีที่แย่ ตัวอย่างเช่นหาก 99 request ใช้เวลา 50 มิลลิวินาที และอีก 1 request ใช้เวลา 5,000 มิลลิวินาที ค่าเฉลี่ยจะออกมาราว 100 มิลลิวินาที ซึ่งดูดีมากบน dashboard ทั้งที่มีผู้ใช้ที่ต้องรอถึง 5 วินาทีจริง ๆ</p>
+<p>Percentile บอกสิ่งที่ค่าเฉลี่ยซ่อนไว้ โดย p95 หมายถึงเวลาที่ 95% ของ request ทำได้ดีกว่านั้น และ p99 คือ 1% ที่แย่ที่สุด</p>
+<p>เหตุผลที่ p99 สำคัญเป็นพิเศษคือ <strong>โดยมากไม่ใช่ผู้ใช้แบบสุ่ม</strong> แต่เป็นผู้ใช้ที่มีข้อมูลมากที่สุด เช่นลูกค้าที่มีคำสั่งซื้อเป็นหมื่นรายการ ซึ่ง query ของเขาหนักที่สุดโดยธรรมชาติ นั่นแปลว่า p99 มักตรงกับ<strong>ลูกค้ารายใหญ่ที่สำคัญที่สุด</strong> การมองแต่ค่าเฉลี่ยจึงเท่ากับมองข้ามกลุ่มที่เราเสียไม่ได้</p>
+<p>ค่าเป้าหมายอ้างอิงคือ p50 น้อยกว่า 100 มิลลิวินาที, p95 น้อยกว่า 200 และ p99 น้อยกว่า 500 มิลลิวินาที นอกจากนี้ควรดู error rate โดย<strong>แยก 4xx กับ 5xx</strong> ออกจากกัน เพราะ 4xx คือผู้ใช้ส่งข้อมูลผิดส่วน 5xx คือระบบเราล้มเหลว ซึ่งมีความหมายต่างกันโดยสิ้นเชิง และควรดู queue lag, cache hit ratio, replication lag และ pool utilization ควบคู่กันเพื่อระบุว่า bottleneck อยู่ที่ชั้นใด</p>
+</div></details>
+
+<details class="qa"><summary>ระบบมี p95 สูงและ CPU ของ instance เต็ม ควรเพิ่มจำนวน instance ทันทีหรือไม่</summary>
+<div class="ans">
+<div class="skel">โครง: ตอบไม่ → ลำดับที่ถูกต้อง → เหตุผลเชิงกลไก → ผลข้างเคียงของการ scale ผิดที่</div>
+<p>ไม่ควรทำทันที ต้อง <strong>วัดเพื่อหา bottleneck ที่แท้จริงก่อน</strong> เสมอ</p>
+<p>ลำดับที่ถูกต้องคือ วัดก่อน จากนั้นแก้ปัญหา query และ index เป็นอันดับแรก ตามด้วยการใส่ cache สำหรับข้อมูลที่อ่านบ่อย จากนั้นย้ายงานที่ช้าหรือไม่จำเป็นต้องตอบทันทีไปยัง queue แล้วจึงค่อยพิจารณา scale out เป็นขั้นสุดท้าย</p>
+<p>เหตุผลเชิงกลไกคือ <strong>การเพิ่ม instance ไม่ได้ทำให้ query ที่เขียนไม่ดีเร็วขึ้น</strong> หากปัญหาที่แท้จริงคือ N+1 query หรือ full table scan เพราะไม่มี index การเพิ่มเครื่องเป็นเพียงการซื้อ query ที่ไม่ดีให้ทำงานเร็วขึ้นเท่านั้น และหาก bottleneck อยู่ที่ database การเพิ่ม instance ของแอปพลิเคชันจะให้ผลตอบแทนแทบเป็นศูนย์ เพราะทุกเครื่องยังคงไปรออยู่ที่ database ตัวเดิม</p>
+<p>ที่แย่กว่านั้นคือการ scale ผิดจุดมี<strong>ผลข้างเคียงที่ทำให้สถานการณ์แย่ลง</strong> เนื่องจากจำนวน connection รวมจะเพิ่มขึ้นตามจำนวน instance ทำให้ database ที่กำลังรับภาระหนักอยู่แล้วต้องแบกเพิ่ม จนอาจเกิด "too many connections" และล่มทั้งระบบ</p>
+<p>นอกจากนี้ต้องตรวจสอบด้วยว่า CPU ที่เต็มนั้นมาจากสาเหตุใด หากมาจากงาน CPU-bound <span class="g">(งานที่กินซีพียูล้วน ไม่ได้นั่งรอ I/O)</span> เช่นการสร้าง PDF หรือประมวลผลรูปภาพที่ทำอยู่ใน process เดียวกับ API งานเหล่านั้นกำลังยึด event loop <span class="g">(คิวงานเส้นเดียวของ Node ถ้าโดนยึดคือช้าทั้งระบบ)</span> และทำให้ทุก request ช้าตามไปด้วย ทางแก้ที่ถูกต้องคือย้ายไปยัง worker แยกผ่าน queue ไม่ใช่การเพิ่ม instance ของ API</p>
+<p>เมื่อถึงขั้นตอน scale จริง ควรทดสอบด้วยเครื่องมืออย่าง k6 แบบ ramp-up ไปจนถึง peak แล้ว ramp-down เพื่อให้ได้ baseline ที่เปรียบเทียบก่อนและหลังได้ และพึงระวังว่าการเพิ่มเป็น 3 instance มักได้ throughput ราว 2.8 เท่า ไม่ใช่ 3 เท่า เพราะมี overhead ของ load balancer และการแย่งทรัพยากรที่ database</p>
+</div></details>
+
+<details class="qa"><summary>จงอธิบายว่า Nginx รู้ได้อย่างไรว่า instance ไหนล่ม และมีข้อจำกัดอะไร</summary>
+<div class="ans">
+<div class="skel">โครง: แก้ความเข้าใจผิด → passive check ทำงานยังไง → active check ต้องใช้อะไร → SPOF</div>
+<p>ต้องแก้ความเข้าใจผิดที่พบบ่อยเสียก่อน คือ <strong>Nginx ไม่สามารถอ่านสถานะ health ของ Docker ได้</strong> ทั้งสองเป็นคนละระบบที่ไม่รู้จักกัน คำสั่ง <code>HEALTHCHECK</code> ใน Dockerfile เพียงเปลี่ยนสถานะที่แสดงใน <code>docker ps</code> เท่านั้น หากไม่มี orchestrator ก็ไม่มีผู้ใดนำผลนั้นไปใช้ต่อ</p>
+<p>สิ่งที่ Nginx รุ่นฟรีทำได้คือ <strong>passive health check</strong> เท่านั้น กล่าวคือจะถอด upstream ออกจากกลุ่มก็ต่อเมื่อ <em>request จริงของผู้ใช้</em> ล้มเหลวครบตามจำนวน <code>max_fails</code> ภายในช่วงเวลา <code>fail_timeout</code> ข้อจำกัดที่ตามมาคือต้องมีผู้ใช้จำนวนหนึ่งพบ error เสียก่อน Nginx จึงจะทราบว่า instance นั้นมีปัญหา</p>
+<p><strong>Active health check</strong> ซึ่งคือการที่ load balancer ยิงไปตรวจสุขภาพ upstream เองเป็นระยะโดยไม่ต้องรอ request จริงนั้น มีเฉพาะใน <strong>Nginx Plus</strong> ที่เป็นรุ่นเสียค่าใช้จ่าย หากต้องการพฤติกรรมนี้โดยไม่เสียค่าใช้จ่าย ต้องใช้ orchestrator ที่รองรับ เช่น Kubernetes ผ่าน readinessProbe หรือ Docker Swarm</p>
+<p>ประเด็นนี้สำคัญเพราะผู้ที่เข้าใจผิดจะเชื่อว่าตนเองมีระบบ failover อยู่แล้วทั้งที่ไม่มี และจะทราบก็ต่อเมื่อระบบล่มจริง</p>
+<p>ข้อจำกัดอีกประการคือ <strong>Nginx ตัวเดียวเป็น single point of failure</strong> หากล่ม ระบบทั้งหมดจะเข้าไม่ถึงแม้ instance เบื้องหลังจะทำงานปกติดี จึงต้องรัน Nginx อย่างน้อยสองตัวคู่กับ virtual IP หรือ DNS failover หรือใช้ managed load balancer ของผู้ให้บริการ cloud นอกจากนี้ต้องตั้ง proxy timeout ให้ครบ มิฉะนั้น upstream ที่ค้างจะยึด worker connection ของ Nginx จนหมดและลุกลามเป็น outage และต้อง forward header <code>X-Real-IP</code> กับ <code>X-Forwarded-For</code> ไม่เช่นนั้นระบบ rate limiting และ audit log ทั้งหมดจะเห็นแต่ IP ของ load balancer</p>
+</div></details>
+
+
+<h2 id="s9">9. ✅ เช็คตัวเองก่อนปิดบท</h2>
+
+<ul>
+<li>อธิบายได้ว่า "เพิ่มเครื่องแล้วพังหนักกว่าเดิม" เกิดจากอะไรบ้าง อย่างน้อย 4 อาการ</li>
+<li>ท่องสูตร <code>instances × (1 + replicas) × poolSize</code> ได้ และรู้ว่าตัวคูณ replica มาจากไหน</li>
+<li>ตอบได้ว่าทำไม liveness ห้ามเช็ค DB</li>
+<li>รู้ว่า Nginx ฟรี<strong>ทำ active health check ไม่ได้</strong> และสไลด์เขียนผิดตรงไหน</li>
+<li>อธิบาย read-your-writes กับ replication lag ได้</li>
+<li>บอกลำดับ "วัด → query → cache → queue → scale" ได้พร้อมเหตุผล</li>
+</ul>
+
+<div class="pager">
+  <a href="05-async-queue.html">← บทที่ 5</a>
+  <a href="00-index.html">กลับสารบัญ →</a>
+</div>
+
+</main>
+
+<aside class="toc">
+<h4>ในบทนี้</h4>
+<a href="#s0">0. จุดที่เรื่องเดินมาถึง</a>
+<a href="#s1">1. Stateless</a>
+<a href="#s2">2. Load Balancing</a>
+<a href="#s3">3. Replication</a>
+<a href="#s4">4. Health Check ⚠️</a>
+<a href="#s5">5. Observability</a>
+<a href="#s6">6. ตัวเลข &amp; ลำดับ</a>
+<a href="#s7">7. 🔗 แผนที่รวม 6 บท</a>
+<a href="#s8">8. 📝 คลังคำตอบอัตนัย</a>
+<a href="#s9">9. ✅ เช็คตัวเอง</a>
+</aside>
+</div>
+</body>
+</html>

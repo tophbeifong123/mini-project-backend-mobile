@@ -1,0 +1,521 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>บทที่ 5 — Async Communication &amp; Queue</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" aria-hidden="true" style="position:absolute"><defs>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-i"/></marker>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-r"/></marker>
+<marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-g"/></marker>
+<marker id="ara" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-a"/></marker>
+</defs></svg>
+
+<nav class="topnav"><div class="topnav-inner">
+  <a class="home" href="00-index.html">◆ สารบัญ</a>
+  <a href="01-architecture-docker.html">01 Docker</a>
+  <a href="02-nestjs-di.html">02 NestJS</a>
+  <a href="03-database.html">03 Database</a>
+  <a href="04-redis.html">04 Redis</a>
+  <a class="here" href="05-async-queue.html">05 Queue</a>
+  <a href="06-scaling.html">06 Scaling</a>
+</div></nav>
+
+<div class="wrap">
+<main>
+
+<div class="hero">
+  <div class="kicker">Backend 05</div>
+  <h1>Async Communication</h1>
+  <p>บทนี้ตอบคำถามเดียว: <strong>งานที่ช้าและงานที่ล้มเหลวได้ ควรถูกย้ายออกจากเส้นทางของ request ยังไง โดยไม่ทำงานหาย และไม่ทำงานซ้ำ</strong></p>
+</div>
+
+<div class="chips">
+  <span class="chip">Sync vs Async <span class="g">(รอผลลัพธ์ตรงนั้น vs โยนงานทิ้งไว้แล้วตอบกลับเลย)</span></span>
+  <span class="chip">Pub/Sub <span class="g">(ประกาศออกไป ใครฟังอยู่ก็ได้รับ ไม่ฟังก็ตกหล่น)</span></span>
+  <span class="chip">Queue / BullMQ <span class="g">(ที่พักงานรอ worker มาหยิบไปทำ / ไลบรารีคิวบน Redis)</span></span>
+  <span class="chip">At-least-once <span class="g">(รับประกันว่างานถึงแน่ ๆ แต่อาจถึงซ้ำ)</span></span>
+  <span class="chip">Idempotency <span class="g">(ทำซ้ำกี่รอบผลก็เท่าเดิม ไม่เกิดของซ้ำ)</span></span>
+  <span class="chip">Retry + Backoff + Jitter <span class="g">(ลองใหม่ + เว้นห่างขึ้นเรื่อย ๆ + สุ่มเวลากันมาพร้อมกัน)</span></span>
+  <span class="chip">DLQ <span class="g">(ถังพักงานที่ retry จนครบแล้วยังพัง ไว้ตามแก้ทีหลัง)</span></span>
+  <span class="chip">Concurrency / Rate limit <span class="g">(ทำพร้อมกันได้กี่งาน / ยิงได้ไม่เกินกี่ครั้งต่อวินาที)</span></span>
+</div>
+
+<h2 id="s0">0. จุดที่เรื่องเดินมาถึง</h2>
+
+<p>Flash Sale ตัดสต็อกถูกแล้ว (บท 03) DB ไม่ตายแล้ว (บท 04) แต่ผู้ใช้ยังต้อง<strong>รอ 8 วินาที</strong> หลังกดปุ่ม "ยืนยันคำสั่งซื้อ"</p>
+
+<pre><code>async createOrder(dto) {
+  const order = await this.repo.save(dto);        //  50ms
+  await this.mailer.sendConfirmation(order);      // 3000ms ← รอ SendGrid
+  await this.sms.send(order.phone);               // 2000ms ← รอ Twilio
+  await this.invoice.generatePdf(order);          // 3000ms ← สร้าง PDF
+  return order;                                   // รวมประมาณ 8 วินาที
+}</code></pre>
+
+<p>และมันแย่กว่าแค่ "ช้า" ตรงที่ <strong>ถ้า SendGrid ล่ม ผู้ใช้จะได้ error ทั้งที่ order สร้างสำเร็จไปแล้ว</strong> เขาก็จะกดซ้ำ แล้วเราก็ได้ order ซ้ำ</p>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 250" role="img" aria-label="เปรียบเทียบเวลาที่ผู้ใช้ต้องรอระหว่างทำงานแบบ synchronous กับ asynchronous">
+  <text x="14" y="18" class="t-b t-r">แบบเดิม (sync) — ผู้ใช้รอทุกอย่าง</text>
+  <rect x="120" y="30" width="40" height="30" rx="4" class="bx-a"/>
+  <text x="140" y="50" text-anchor="middle" class="t-xs">DB</text>
+  <rect x="162" y="30" width="180" height="30" rx="4" class="bx-r"/>
+  <text x="252" y="50" text-anchor="middle" class="t-xs">ส่งอีเมล 3s</text>
+  <rect x="344" y="30" width="120" height="30" rx="4" class="bx-r"/>
+  <text x="404" y="50" text-anchor="middle" class="t-xs">SMS 2s</text>
+  <rect x="466" y="30" width="180" height="30" rx="4" class="bx-r"/>
+  <text x="556" y="50" text-anchor="middle" class="t-xs">สร้าง PDF 3s</text>
+  <path d="M120,70 L646,70" class="ln-r"/>
+  <path d="M120,66 L120,74" class="ln-r"/>
+  <path d="M646,66 L646,74" class="ln-r"/>
+  <text x="383" y="88" text-anchor="middle" class="t-xs t-r t-b">ผู้ใช้จ้องหน้าจอรออยู่ตรงนี้ ~8 วินาที</text>
+  <text x="14" y="50" class="t-xs">ผู้ใช้</text>
+
+  <line x1="14" y1="106" x2="686" y2="106" class="ln-t"/>
+
+  <text x="14" y="130" class="t-b t-g">แบบใหม่ (async) — ผู้ใช้รอแค่ของที่จำเป็น</text>
+  <text x="14" y="162" class="t-xs">ผู้ใช้</text>
+  <rect x="120" y="142" width="40" height="30" rx="4" class="bx-a"/>
+  <text x="140" y="162" text-anchor="middle" class="t-xs">DB</text>
+  <rect x="162" y="142" width="34" height="30" rx="4" class="bx-g"/>
+  <text x="179" y="162" text-anchor="middle" class="t-xs">คิว</text>
+  <path d="M120,182 L196,182" class="ln-g"/>
+  <path d="M120,178 L120,186" class="ln-g"/>
+  <path d="M196,178 L196,186" class="ln-g"/>
+  <text x="215" y="186" class="t-xs t-g t-b">~70ms แล้วตอบกลับเลย</text>
+
+  <text x="14" y="222" class="t-xs">worker</text>
+  <rect x="230" y="204" width="140" height="28" rx="4" class="bx"/>
+  <text x="300" y="222" text-anchor="middle" class="t-xs">ส่งอีเมล</text>
+  <rect x="374" y="204" width="120" height="28" rx="4" class="bx"/>
+  <text x="434" y="222" text-anchor="middle" class="t-xs">SMS</text>
+  <rect x="498" y="204" width="140" height="28" rx="4" class="bx"/>
+  <text x="568" y="222" text-anchor="middle" class="t-xs">สร้าง PDF</text>
+  <path d="M180,176 L180,218 L226,218" class="ln-g" marker-end="url(#arg)"/>
+  <text x="640" y="196" text-anchor="end" class="t-xs">ทำงานอยู่เบื้องหลัง ผู้ใช้ไม่เกี่ยวแล้ว</text>
+</svg>
+<figcaption>งานเท่าเดิม ใช้เวลารวมเท่าเดิม — เปลี่ยนแค่ว่า "ใครเป็นคนรอ"</figcaption>
+</figure>
+
+<div class="box base"><span class="lab">ความคิดตั้งต้นของทั้งบท</span>
+<p>งานสองแบบนี้ต่างกันโดยสิ้นเชิง:</p>
+<ul>
+<li><strong>สิ่งที่ผู้ใช้ต้องรู้ผลเดี๋ยวนี้</strong> เช่น "order เลขที่ 123 สร้างแล้ว" → ทำ<em>ตอนนี้</em> แล้วตอบกลับ</li>
+<li><strong>สิ่งที่ผู้ใช้ไม่จำเป็นต้องรอ</strong> เช่น อีเมล, SMS, PDF → <strong>ฝากไว้ให้คนอื่นทำทีหลัง</strong> <span class="g">(โยนแล้วไม่ต้องรอผล = fire-and-forget)</span></li>
+</ul>
+<p><strong>กฎตัดสิน:</strong> ถ้างานใช้เวลาเกิน 1 วินาที <strong>หรือ</strong> ผลลัพธ์ไม่จำเป็นต้องใช้ทันที → ทำแบบ async <span class="g">(โยนงานไปทำเบื้องหลังแล้วตอบกลับเลย ไม่ block รอเหมือน sync)</span></p></div>
+
+
+<h2 id="s1">1. Pub/Sub <span class="g">(publisher ประกาศเข้า channel ใครที่ subscribe ฟังอยู่ก็ได้ยินหมด)</span> กับ Queue — ต่างกันคนละโลก</h2>
+
+<p>นี่คือจุดที่คนสับสนมากที่สุดในบทนี้ เพราะทั้งคู่รันอยู่บน Redis เหมือนกัน แต่<strong>รับประกันคนละเรื่อง</strong></p>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 260" role="img" aria-label="เปรียบเทียบรูปแบบการส่งข้อความของ Pub/Sub กับ Queue">
+  <text x="168" y="18" text-anchor="middle" class="t-b">Pub/Sub — กระจายเสียง</text>
+  <text x="520" y="18" text-anchor="middle" class="t-b">Queue — ส่งถึงตัว</text>
+
+  <!-- pubsub -->
+  <rect x="108" y="34" width="120" height="34" rx="6" class="bx-a"/>
+  <text x="168" y="56" text-anchor="middle" class="t-sm">Publisher</text>
+  <path d="M168,72 L168,90" class="ln" marker-end="url(#ar)"/>
+  <rect x="78" y="94" width="180" height="30" rx="6" class="bx"/>
+  <text x="168" y="114" text-anchor="middle" class="t-mono">channel: user.created</text>
+
+  <path d="M120,128 L60,164" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M168,128 L168,164" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M216,128 L276,164" class="ln-r" marker-end="url(#arr)"/>
+
+  <rect x="20" y="168" width="80" height="34" rx="6" class="bx"/>
+  <text x="60" y="190" text-anchor="middle" class="t-xs">instance 1</text>
+  <rect x="128" y="168" width="80" height="34" rx="6" class="bx"/>
+  <text x="168" y="190" text-anchor="middle" class="t-xs">instance 2</text>
+  <rect x="236" y="168" width="80" height="34" rx="6" class="bx"/>
+  <text x="276" y="190" text-anchor="middle" class="t-xs">instance 3</text>
+
+  <text x="168" y="222" text-anchor="middle" class="t-xs t-r t-b">ทุกตัวได้ข้อความ → ถ้าข้างในส่งอีเมล = ผู้ใช้ได้ 3 ฉบับ</text>
+  <text x="168" y="242" text-anchor="middle" class="t-xs">ไม่เก็บข้อความ · ไม่มี ack · ไม่ retry · ไม่เรียงลำดับ</text>
+
+  <line x1="340" y1="28" x2="340" y2="250" class="ln-t"/>
+
+  <!-- queue -->
+  <rect x="460" y="34" width="120" height="34" rx="6" class="bx-a"/>
+  <text x="520" y="56" text-anchor="middle" class="t-sm">Producer</text>
+  <path d="M520,72 L520,90" class="ln" marker-end="url(#ar)"/>
+  <rect x="400" y="94" width="240" height="30" rx="6" class="bx-g"/>
+  <rect x="410" y="100" width="34" height="18" rx="3" class="bx"/>
+  <rect x="450" y="100" width="34" height="18" rx="3" class="bx"/>
+  <rect x="490" y="100" width="34" height="18" rx="3" class="bx"/>
+  <text x="590" y="114" text-anchor="middle" class="t-xs t-g">คิวใน Redis</text>
+
+  <path d="M440,128 L412,164" class="ln-g" marker-end="url(#arg)"/>
+  <path d="M480,128 L520,164" class="ln-g" marker-end="url(#arg)"/>
+  <path d="M520,128 L628,164" class="ln-g" marker-end="url(#arg)"/>
+
+  <rect x="372" y="168" width="80" height="34" rx="6" class="bx"/>
+  <text x="412" y="190" text-anchor="middle" class="t-xs">worker 1</text>
+  <rect x="480" y="168" width="80" height="34" rx="6" class="bx"/>
+  <text x="520" y="190" text-anchor="middle" class="t-xs">worker 2</text>
+  <rect x="588" y="168" width="80" height="34" rx="6" class="bx"/>
+  <text x="628" y="190" text-anchor="middle" class="t-xs">worker 3</text>
+
+  <text x="520" y="222" text-anchor="middle" class="t-xs t-g t-b">งาน 1 ชิ้น มีคนหยิบไปทำแค่คนเดียว → เพิ่ม worker ได้ไม่ซ้ำ</text>
+  <text x="520" y="242" text-anchor="middle" class="t-xs">เก็บใน Redis · มี ack · retry อัตโนมัติ · FIFO ตอนหยิบ</text>
+</svg>
+<figcaption>ความต่างอยู่ที่ลูกศรล่าง — Pub/Sub แจกให้ทุกคน ส่วน Queue ให้คนเดียว</figcaption>
+</figure>
+
+<div class="tbl"><table>
+<tr><th></th><th>Pub/Sub</th><th>Queue (BullMQ) <span class="g">(BullMQ = ไลบรารีทำคิวที่ใช้ Redis เป็น broker เก็บงาน)</span></th></tr>
+<tr><td>รูปแบบ</td><td>one-to-many (broadcast) <span class="g">(กระจายให้ทุกตัวที่ฟังอยู่ = fan-out)</span></td><td>point-to-point (ใครหยิบได้ก่อนได้ไป)</td></tr>
+<tr><td>เก็บข้อความไว้ไหม</td><td><strong>ไม่</strong> — ถ้าไม่มีใครฟังอยู่ตอนนั้น <strong>ข้อความหายเลย</strong></td><td><strong>เก็บใน Redis</strong> รอจนมีคนมาทำ</td></tr>
+<tr><td>ack <span class="g">(สัญญาณบอกคิวว่างานนี้ทำเสร็จแล้ว คิวถึงจะลบทิ้ง)</span></td><td>ไม่มี</td><td>มี</td></tr>
+<tr><td>retry <span class="g">(ล้มเหลวแล้วคิวเอากลับมาลองใหม่ให้เอง)</span></td><td>ไม่มี</td><td>มี auto-retry</td></tr>
+<tr><td>ลำดับ</td><td>ไม่รับประกัน</td><td>FIFO (ตอนหยิบ) <span class="g">(เข้าคิวก่อนได้ทำก่อน)</span></td></tr>
+<tr><td>ใช้กับ</td><td>cache invalidation <span class="g">(สั่งล้างของเก่าใน cache ทิ้ง)</span>, notification แบบ real-time, metrics, sync ระหว่าง instance <span class="g">(ตัวสำเนาของแอปที่รันอยู่จริง 1 ตัว)</span></td><td>อีเมล, payment, ประมวลผลวิดีโอ, งาน batch, งานตั้งเวลา</td></tr>
+</table></div>
+
+<div class="box why"><span class="lab">ประโยคเดียวที่ตัดสินได้ทุกกรณี</span>
+<p><strong>ถ้างานนี้ "ต้องเกิดขึ้นให้ได้" → ใช้ Queue</strong><br>
+<strong>ถ้างานนี้ "เกิดก็ดี ไม่เกิดก็ไม่เป็นไร" → ใช้ Pub/Sub</strong></p>
+<p>Pub/Sub ไม่มี persistence <span class="g">(เก็บลงที่ที่ข้อมูลไม่หายตอนระบบดับ)</span> ไม่มี ack ไม่มี retry — ห้ามใช้กับ payment หรือการสร้าง user เด็ดขาด</p></div>
+
+<h3 id="s1-1">1.1 กับดัก Pub/Sub ที่โยงกับบท 06</h3>
+
+<div class="box trap"><span class="lab">Pub/Sub + หลาย instance = ทำงานซ้ำ N ครั้ง</span>
+<p>ตามรูปด้านบน Pub/Sub เป็น broadcast คือ <strong>ทุก subscriber ที่ฟังอยู่ได้ข้อความหมด</strong> ถ้าเรา scale เป็น 3 instance (บท 06) แล้ว subscriber ข้างในนั้นส่งอีเมล → <strong>ผู้ใช้จะได้อีเมล 3 ฉบับ</strong></p>
+<p>เพราะฉะนั้น: <strong>logic ที่มี side effect ต้องอยู่ใน queue ไม่ใช่ใน subscriber</strong> <span class="g">(side effect = ผลที่ไปเปลี่ยนของจริง เช่นส่งอีเมล ตัดเงิน)</span> — subscriber <span class="g">(ฝั่งที่สมัครฟัง channel นั้น)</span> ควรทำได้แค่งานที่ "ทำซ้ำกี่ครั้งก็ได้ผลเหมือนเดิม" เช่น ลบ cache key ซึ่งพอดีเป๊ะกับที่บท 04 ต้องการ คือบอกทุก instance ให้ล้าง cache พร้อมกัน</p></div>
+
+<p><strong>ข้อจำกัดทางเทคนิค:</strong> Redis client ที่อยู่ใน subscribe mode <strong>รันคำสั่งอื่นไม่ได้เลย</strong> ต้องแยก client สำหรับ publish กับ subscribe คนละตัว</p>
+
+<p><strong>ตั้งชื่อ channel:</strong> <span class="g">(ชื่อช่องที่ประกาศเข้าไป บางเจ้าเรียก topic)</span> ใช้รูปแบบ <code>resource.action</code> เช่น <code>user.created</code>, <code>order.placed</code></p>
+
+
+<h2 id="s2">2. Queue ทำงานยังไง</h2>
+
+<p>โครงสร้างมี 3 ส่วน: <strong>producer</strong> <span class="g">(ฝั่งผลิตงาน คู่กับ consumer คือฝั่งที่หยิบไปทำ)</span> คือคนโยนงานเข้าคิว (ปกติคือ service ใน API), <strong>queue</strong> คือที่พักงานซึ่งอยู่ใน Redis, และ <strong>worker</strong> คือ process แยกที่คอยหยิบงานไปทำ</p>
+
+<pre><code>// Producer — อยู่ใน service (บท 02)
+await this.emailQueue.add('order-confirmation', { orderId: order.id }, {
+  attempts: 3,
+  backoff: { type: 'exponential', delay: 1000 },
+  removeOnComplete: { age: 3600 },
+  removeOnFail: false,
+});
+
+// Worker — เป็น process แยกต่างหาก
+@Processor('email')
+export class EmailProcessor extends WorkerHost {
+  async process(job: Job) {
+    const order = await this.orderRepo.findOne({ where: { id: job.data.orderId } });
+    await this.mailer.send(order);
+  }
+}</code></pre>
+
+<div class="box why"><span class="lab">payload <span class="g">(ข้อมูลที่แนบไปกับ job)</span> ต้องเป็น "ตั๋ว" ไม่ใช่ "ของ"</span>
+<p>ส่ง <strong>reference</strong> (id, url) ไม่ใช่ตัวข้อมูลจริง — ส่ง <code>{ orderId: 123 }</code> ไม่ใช่ order object ทั้งก้อน และห้ามส่ง binary หรือ buffer เด็ดขาด เพราะ <strong>job ทั้งหมดอยู่ใน RAM ของ Redis</strong> <span class="g">(job = งาน 1 ชิ้นในคิว)</span> ส่ง PDF 5MB เข้าคิว 1,000 งาน Redis ก็ระเบิด</p>
+<p>ผลพลอยได้คือ worker จะอ่านข้อมูลสด ณ เวลาที่ทำงานจริง ไม่ใช่ข้อมูล ณ เวลาที่โยนเข้าคิวซึ่งอาจเก่าไปแล้ว</p></div>
+
+
+<h2 id="s3">3. At-Least-Once &amp; Idempotency — ใจกลางของบทนี้</h2>
+
+<h3 id="s3-1">3.1 ทำไมงานถึงถูกทำซ้ำได้</h3>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 240" role="img" aria-label="ลำดับเหตุการณ์ที่ทำให้ job ถูกทำซ้ำเพราะ worker ตายก่อน ack">
+  <text x="14" y="18" class="t-b">ทำไมระบบคิวถึงรับประกันได้แค่ at-least-once</text>
+
+  <text x="14" y="62" class="t-sm t-b">Worker 1</text>
+  <rect x="96" y="38" width="104" height="40" rx="6" class="bx"/>
+  <text x="148" y="55" text-anchor="middle" class="t-xs">① หยิบ job</text>
+  <text x="148" y="70" text-anchor="middle" class="t-xs">"ส่งอีเมล"</text>
+
+  <rect x="212" y="38" width="130" height="40" rx="6" class="bx-g"/>
+  <text x="277" y="55" text-anchor="middle" class="t-xs">② ส่งอีเมลสำเร็จ</text>
+  <text x="277" y="70" text-anchor="middle" class="t-xs t-g">ผู้ใช้ได้รับแล้ว ✓</text>
+
+  <rect x="354" y="38" width="140" height="40" rx="6" class="bx-r"/>
+  <text x="424" y="55" text-anchor="middle" class="t-xs t-r">③ 💥 ตายก่อน ack</text>
+  <text x="424" y="70" text-anchor="middle" class="t-xs">(deploy / OOM / ไฟดับ)</text>
+
+  <text x="14" y="132" class="t-sm t-b">Queue</text>
+  <rect x="354" y="108" width="140" height="40" rx="6" class="bx-w"/>
+  <text x="424" y="125" text-anchor="middle" class="t-xs">④ ไม่เห็น ack</text>
+  <text x="424" y="140" text-anchor="middle" class="t-xs">คืน job กลับเข้าคิว</text>
+
+  <text x="14" y="192" class="t-sm t-b">Worker 2</text>
+  <rect x="506" y="168" width="174" height="40" rx="6" class="bx-r"/>
+  <text x="593" y="185" text-anchor="middle" class="t-xs">⑤ หยิบไปทำใหม่</text>
+  <text x="593" y="200" text-anchor="middle" class="t-xs t-r t-b">ผู้ใช้ได้อีเมลฉบับที่ 2</text>
+
+  <path d="M424,148 L424,188 L502,188" class="ln-r" marker-end="url(#arr)"/>
+  <line x1="90" y1="222" x2="686" y2="222" class="ln" marker-end="url(#ar)"/>
+  <text x="676" y="238" text-anchor="end" class="t-xs">เวลา →</text>
+  <text x="180" y="238" class="t-xs">"ทำงานเสร็จ" กับ "บอกว่าเสร็จแล้ว" เป็นคนละเหตุการณ์ และรวมเป็นหนึ่งเดียวไม่ได้</text>
+</svg>
+<figcaption>ช่องว่างระหว่างขั้น ② กับการ ack คือสิ่งที่ทำให้ exactly-once <span class="g">(ทำครั้งเดียวเป๊ะ — อีกแบบคือ at-most-once ที่ไม่ซ้ำแต่ยอมให้งานหาย)</span> เป็นไปไม่ได้ในทางทฤษฎี</figcaption>
+</figure>
+
+<div class="box trap"><span class="lab">ความจริงที่ต้องยอมรับ</span>
+<p>ระบบคิวทุกตัวรับประกันแบบ <strong>at-least-once</strong> (อย่างน้อยหนึ่งครั้ง) ไม่ใช่ exactly-once</p>
+<p>เพราะจังหวะระหว่าง "ทำงานเสร็จ" กับ "บอกว่าทำเสร็จแล้ว" <strong>ไม่มีทางเป็น atomic ได้</strong> <span class="g">(atomic = เกิดครบทั้งคู่หรือไม่เกิดเลย ไม่มีสภาพครึ่ง ๆ)</span> นี่เป็นข้อจำกัดเชิงทฤษฎีของระบบกระจาย ไม่ใช่ข้อบกพร่องของ BullMQ</p>
+<p><strong>⚠ สไลด์เขียนขัดกันเอง</strong> — สไลด์หนึ่งบอก "At-least-once delivery" แต่อีกสไลด์ถัดมาบอก "Exactly-once: each job processed once" ข้อหลัง<strong>ผิด</strong> ถ้าข้อสอบถามให้ตอบว่า at-least-once</p></div>
+
+<h3 id="s3-2">3.2 ทางออกเดียวคือ Idempotency</h3>
+
+<p><strong>Idempotent</strong> แปลว่า ทำกี่ครั้งก็ได้ผลเหมือนทำครั้งเดียว (เหมือนกดปุ่มลิฟต์ซ้ำ ๆ ลิฟต์ก็มาคันเดียว)</p>
+
+<pre><code>async process(job: Job) {
+  const key = `email:${job.data.orderId}`;
+
+  // เช็คก่อนว่าเคยทำไปแล้วหรือยัง
+  const already = await this.sentRepo.findOne({ where: { key } });
+  if (already) return;                      // ทำไปแล้ว → จบเลย ไม่ถือเป็น error
+
+  await this.mailer.send(...);
+  await this.sentRepo.insert({ key });      // unique constraint กันซ้ำอีกชั้น
+}</code></pre>
+
+<div class="box why"><span class="lab">โยงกับบท 03 และ 04</span>
+<p><strong>ตัวรับประกันสุดท้ายคือ unique constraint ที่ database</strong> <span class="g">(unique constraint = กฎที่ DB บังคับว่าค่านี้ห้ามซ้ำ ซ้ำแล้ว insert ไม่ผ่าน)</span> ไม่ใช่ <code>if</code> ในโค้ด เพราะการเช็คแล้วค่อยเขียนก็คือ read-check-write <span class="g">(อ่านมาเช็คแล้วค่อยเขียน มีช่องให้อีก request แทรกจนผลเพี้ยน)</span> ที่มีช่องว่างอีกแล้ว (บท 03) และเป็นเหตุผลเดียวกับที่บท 04 บอกว่า distributed lock <span class="g">(กุญแจกลางกันหลาย instance แย่งทำของชิ้นเดียวกัน)</span> เป็นแค่ best-effort</p>
+<p>สรุปเป็นหลักที่ใช้ได้ทั้งวิชา: <strong>lock กับ cache ช่วยลดการทำซ้ำ แต่ความถูกต้องมาจาก idempotency + constraint ที่ DB</strong></p></div>
+
+
+<h2 id="s4">4. Retry — ทำให้ถูกวิธี</h2>
+
+<h3 id="s4-1">4.1 Exponential backoff <span class="g">(ล้มแล้วรอนานขึ้นเรื่อย ๆ ค่อยลองใหม่ ไม่ถล่มซ้ำทันที)</span> + jitter</h3>
+
+<pre><code>attempts: 3,
+backoff: { type: 'exponential', delay: 1000 },   // 1s → 2s → 4s</code></pre>
+
+<p>ทำไมต้อง exponential: ถ้า SendGrid <span class="g">(บริการส่งอีเมลของเจ้าอื่น เรียกผ่าน API)</span> ล่มแล้วเรา retry ทันทีทุก 100ms เราแค่กำลัง<strong>ซัดระบบที่กำลังป่วยให้หนักขึ้น</strong> การถอยห่างขึ้นเรื่อย ๆ คือการให้เวลามันฟื้น</p>
+
+<div class="box errata"><span class="lab">⚠ สไลด์ไม่ได้พูดถึง jitter</span>
+<p>ถ้า job 1,000 ตัวล้มเหลวพร้อมกัน (เพราะ SendGrid ล่ม) แล้วทุกตัวใช้ backoff เท่ากันเป๊ะ ๆ มันจะ <strong>กลับมาพร้อมกันอีกครั้งเป็นระลอก</strong> ที่วินาทีที่ 1, 2, 4 พอดี</p>
+<p>ต้องบวก <strong>jitter</strong> <span class="g">(สุ่มบวกลบเวลานิดหน่อย กันทุกตัวกลับมาพร้อมกันเป๊ะ)</span> แบบสุ่มเพื่อกระจายออก — หลักการเดียวกับ TTL jitter (บท 04) และ deadlock retry (บท 03)</p></div>
+
+<h3 id="s4-2">4.2 แยกความล้มเหลว 2 ประเภท (ข้อนี้ออกสอบแน่)</h3>
+
+<div class="tbl"><table>
+<tr><th></th><th>Transient (ชั่วคราว)</th><th>Permanent (ถาวร)</th></tr>
+<tr><td>ตัวอย่าง SMTP <span class="g">(โปรโตคอลส่งอีเมล)</span></td><td><strong>4xx</strong> — 421, 450, 451, 452<br>(server ยุ่ง, mailbox เต็มชั่วคราว)</td><td><strong>5xx</strong> — 550, 551, 552, 553<br>(อีเมลไม่มีอยู่จริง)</td></tr>
+<tr><td>ควรทำ</td><td><strong>retry</strong> เดี๋ยวมันก็หาย</td><td><strong>ห้าม retry</strong> ส่งอีกกี่ครั้งก็ล้มเหลวเหมือนเดิม</td></tr>
+<tr><td>ถ้าทำผิด</td><td>—</td><td>เปลือง attempt ฟรี ๆ และ<strong>ทำลาย sender reputation</strong> <span class="g">(คะแนนความน่าเชื่อถือของผู้ส่ง ตกแล้วเมลเราจะไปลง spam)</span> เพราะ provider มองว่าเราสแปม</td></tr>
+</table></div>
+
+<pre><code>async process(job: Job) {
+  try {
+    await this.mailer.send(...);
+  } catch (e) {
+    if (e.responseCode &gt;= 550 &amp;&amp; e.responseCode &lt;= 559) {
+      await this.markPermanentFailure(job);
+      return;             // ← return ไม่ใช่ throw : บอกคิวว่า "จบแล้ว อย่า retry"
+    }
+    throw e;              // ← transient : ให้ BullMQ retry ตาม backoff
+  }
+}</code></pre>
+
+<h3 id="s4-3">4.3 Dead Letter Queue (DLQ) <span class="g">(ที่พักงานที่ retry ครบแล้วยังพัง กัน poison message วนกวนคิวไม่จบ)</span></h3>
+
+<p>พอ retry ครบแล้วยังไม่สำเร็จ ต้องมีที่ให้มันไปอยู่ <strong>และต้องมี alert</strong> ไม่งั้นความล้มเหลวจะเงียบ ซึ่งเท่ากับข้อมูลหายโดยไม่มีใครรู้</p>
+
+<div class="box errata"><span class="lab">⚠ ตัวอย่าง DLQ ในสไลด์มีบั๊ก</span>
+<p>สไลด์ push เข้า DLQ เมื่อถึง attempt สุดท้าย <strong>แล้วยัง <code>throw error</code> ต่อ</strong> → BullMQ เห็น throw ก็ retry อีกครั้ง → เข้า DLQ ซ้ำเป็นรายการที่สอง</p>
+<p>ทางที่ถูกคือที่ attempt สุดท้ายให้ <code>return</code> หลังจาก push DLQ แล้ว ไม่ใช่ throw</p></div>
+
+<h3 id="s4-4">4.4 การตั้งค่าที่ต้องมี</h3>
+
+<div class="tbl"><table>
+<tr><th>Option</th><th>ทำไม</th></tr>
+<tr><td><code>attempts: 3–5</code></td><td>มากไปคือทรมานระบบปลายทาง น้อยไปคือยอมแพ้เร็วเกิน</td></tr>
+<tr><td><code>removeOnFail: false</code></td><td><strong>เก็บหลักฐานไว้ debug</strong> ถ้าลบทิ้ง เราจะไม่มีทางรู้ว่ามันพังเพราะอะไร</td></tr>
+<tr><td><code>removeOnComplete: { age: 3600 }</code></td><td>ถ้าไม่ตั้ง job ที่สำเร็จจะกองสะสมจน <strong>Redis memory เต็ม</strong></td></tr>
+<tr><td>job timeout</td><td><strong>BullMQ ไม่มี option <code>timeout</code></strong> (มีแต่ใน Bull v4) ต้องทำเองด้วย <code>Promise.race</code> <span class="g">(ใครถึงก่อนเอาอันนั้น ใช้ตัดงานที่เกินเวลา)</span> ไม่งั้น job ที่ค้างจะกิน worker slot ตลอดกาล</td></tr>
+<tr><td>graceful shutdown <span class="g">(ปิด worker แบบรอ job ที่ทำค้างอยู่ให้จบก่อน ไม่ตัดกลางคัน)</span></td><td>ถ้าไม่มี ทุกครั้งที่ deploy จะทิ้ง job ค้างสถานะ stalled <span class="g">(หยิบไปแล้วเงียบเกินเวลาที่คิวยอมรอ เจ้าอื่นเรียก visibility timeout)</span> ไว้</td></tr>
+</table></div>
+
+<p><strong>หมายเหตุ:</strong> พอ job ที่ stalled ถูกกู้คืน มันจะ<strong>รันใหม่ทั้งงาน</strong>ตั้งแต่ต้น ไม่ใช่ทำต่อจากจุดที่ค้าง — ย้ำเรื่อง idempotency อีกครั้ง</p>
+
+
+<h2 id="s5">5. Throughput <span class="g">(จำนวนงานที่ทำได้ต่อวินาที)</span>: Concurrency, Rate Limit, Priority</h2>
+
+<h3 id="s5-1">5.1 Concurrency <span class="g">(worker 1 ตัวรับ job พร้อมกันได้กี่ชิ้น)</span></h3>
+
+<div class="tbl"><table>
+<tr><th>ประเภทงาน</th><th>Concurrency</th><th>เหตุผล</th></tr>
+<tr><td>CPU-bound (สร้าง PDF, resize รูป)</td><td><strong>1–2</strong></td><td>Node เป็น single-threaded — งาน CPU หนักหลายตัวพร้อมกันจะ<strong>ยึด event loop</strong> <span class="g">(เส้นทางรันงานเส้นเดียวของ Node ถ้าโดนยึด งานอื่นรอหมด)</span> ทำให้ทุกอย่างช้าลงหมด</td></tr>
+<tr><td>I/O-bound (ส่งอีเมล, เรียก API)</td><td>5–20</td><td>ส่วนใหญ่คือการนั่งรอ ไม่ได้กิน CPU ทำพร้อมกันได้เยอะ</td></tr>
+<tr><td>งานเบามาก</td><td>20–50</td><td></td></tr>
+</table></div>
+
+<p>ถ้าอยากได้ throughput มากขึ้นสำหรับงาน CPU-bound ให้ <strong>เพิ่มจำนวน process ไม่ใช่เพิ่ม concurrency</strong> เช่น <code>pm2 -i 4</code> <span class="g">(สั่งรัน Node เป็น 4 process พร้อมกัน)</span> เพราะแต่ละ process มี event loop ของตัวเอง</p>
+
+<h3 id="s5-2">5.2 Rate Limiter <span class="g">(คุมไม่ให้ยิงงานเกินโควตาต่อวินาทีของปลายทาง)</span></h3>
+
+<p>ต้องตั้งให้ตรงกับโควตาของ provider เช่น SendGrid 100 ต่อวินาที, Mailgun 1000 ต่อชั่วโมง, Stripe 100 ต่อวินาที</p>
+
+<div class="box trap"><span class="lab">ทำไมสำคัญกว่าที่คิด</span>
+<p>ถ้าส่งเกินโควตา provider จะตอบ <strong>429</strong> <span class="g">(รหัส HTTP ที่แปลว่า "ยิงถี่เกินไป")</span> หรือ<strong>ตีตราว่าเราสแปม</strong> และเนื่องจาก job ที่ได้ 429 จะถูก retry ตามระบบ มันจะ<strong>ยิ่งส่งเยอะขึ้น</strong> กลายเป็นวงจรที่ทำให้แย่ลงเรื่อย ๆ</p>
+<p><strong>⚠ สไลด์วาง <code>limiter</code> ไว้ที่ <code>registerQueue</code> ซึ่งผิด</strong> — ใน BullMQ <code>limiter</code> เป็น option ของ <strong>Worker</strong></p></div>
+
+<h3 id="s5-3">5.3 Priority <span class="g">(งานด่วนได้หยิบก่อน ไม่ต้องต่อท้ายแถว)</span></h3>
+
+<div class="tbl"><table>
+<tr><th>Priority</th><th>งาน</th></tr>
+<tr><td>1</td><td>reset password / security alert</td></tr>
+<tr><td>2–3</td><td>ผู้ใช้ premium</td></tr>
+<tr><td>4–6</td><td>งานปกติ (order confirmation)</td></tr>
+<tr><td>7–9</td><td>อีเมลการตลาด / bulk</td></tr>
+<tr><td>10</td><td>งานเบื้องหลัง</td></tr>
+</table></div>
+
+<p><strong>แยกคิวตามประเภทงานด้วย</strong> — งานประมวลผลวิดีโอที่ใช้เวลา 10 นาทีต้องไม่ไปติดขวางคิวอีเมล ลำพัง priority อย่างเดียวไม่พอถ้ายังใช้คิวเดียวกัน</p>
+
+<h3 id="s5-4">5.4 Delayed jobs</h3>
+<p><code>delay: 86400000</code> แปลว่าทำอีก 24 ชั่วโมง ใช้กับการเตือนก่อนหมดช่วงทดลองใช้หรือ reminder และยกเลิกได้ด้วยการเก็บ <code>jobId</code> ไว้แล้วเรียก <code>job.remove()</code></p>
+
+
+<h2 id="s6">6. Operations</h2>
+
+<div class="tbl"><table>
+<tr><th>เรื่อง</th><th>ทำไม</th></tr>
+<tr><td><strong>แยก Redis ของ queue ออกจาก cache</strong></td><td>eviction policy <code>allkeys-lru</code> <span class="g">(memory เต็มเมื่อไหร่ เขี่ยคีย์ที่ไม่ได้ใช้นานสุดทิ้ง)</span> ของ cache จะ<strong>ลบ job ในคิวทิ้ง</strong> (ย้ำจากบท 04)</td></tr>
+<tr><td>เปิด <strong>AOF</strong> <span class="g">(โหมดจดทุกคำสั่งลงไฟล์ ข้อมูลไม่หายตอน Redis ดับ)</span> บน Redis ของคิว</td><td>คิวคือข้อมูลที่หายไม่ได้ ต้องมี persistence จริง ไม่ใช่แค่ snapshot เป็นช่วง ๆ</td></tr>
+<tr><td><strong>Bull Board ต้องมี auth</strong> <span class="g">(Bull Board = หน้าเว็บ dashboard ไว้ดูและสั่งงานในคิว)</span></td><td>มันเปิดเผย payload ของทุก job ซึ่งอาจมีข้อมูลส่วนบุคคล และ<strong>สั่ง retry หรือ remove ได้</strong> — สไลด์ mount ไว้ที่ <code>/admin/queues</code> โดยไม่มี middleware ป้องกันเลย</td></tr>
+<tr><td>เปลี่ยนรูปร่างของ payload</td><td>job ที่อยู่ในคิวแล้วยังใช้รูปแบบเก่า → ต้อง<strong>รองรับทั้งสองแบบไว้หนึ่ง release</strong> (แนวคิดเดียวกับ expand-and-contract ในบท 03) <span class="g">(เพิ่มของใหม่ให้อยู่ร่วมกับของเก่าก่อน แล้วค่อยถอดของเก่าทิ้ง)</span></td></tr>
+</table></div>
+
+<p><strong>Metric ที่ต้อง monitor:</strong> <span class="g">(ตัวเลขที่ต้องมีจอเฝ้า ไม่งั้นคิวตันแล้วไม่มีใครรู้)</span> waiting <span class="g">(จำนวน job ที่กองรออยู่ = ความลึกของคิว)</span>, active, failed ต่อชั่วโมง, processing rate, avg duration, p95/p99 <span class="g">(ช้ากว่านี้แค่ 5% / 1% ของงานทั้งหมด ดูความช้าของคนซวย ไม่ใช่ค่าเฉลี่ย)</span>, <strong>queue lag</strong> คืออายุของ job ที่รอนานที่สุด (ตัวนี้บอกได้ดีที่สุดว่าคิวตามงานทันหรือไม่), stalled count</p>
+
+<div class="box trap"><span class="lab">FIFO ไม่ได้แปลว่าเสร็จตามลำดับ</span>
+<p>คิวรับประกันลำดับการ <em>หยิบ</em> เท่านั้น ไม่ใช่ลำดับการ <em>เสร็จ</em> — ถ้า concurrency มากกว่า 1 job ที่ 2 อาจเสร็จก่อน job ที่ 1 ได้ ถ้าต้องการลำดับเคร่งครัดจริง ๆ ต้องตั้ง concurrency เป็น 1 หรือใช้ FlowProducer <span class="g">(ตัวจัด job เป็นสายพ่อ-ลูก ให้ทำต่อกันเป็นสเต็ป)</span></p></div>
+
+<div class="box errata"><span class="lab">⚠ สไลด์บทนี้ผิดเรื่อง Bull vs BullMQ หลายจุด</span>
+<ol>
+<li><strong>สไลด์ผสม Bull กับ BullMQ</strong> — ติดตั้ง <code>@nestjs/bull</code> คู่กับ <code>bullmq</code> แต่ import <code>from 'bull'</code> ซึ่งใช้ด้วยกันไม่ได้ ต้องเลือกชุดเดียว: <code>@nestjs/bullmq</code> + <code>bullmq</code> (แนะนำ) หรือ <code>@nestjs/bull</code> + <code>bull</code></li>
+<li><code>timeout</code> ไม่มีใน BullMQ (มีใน Bull v4) ให้ใช้ <code>Promise.race</code></li>
+<li><code>job.progress(n)</code> เป็นของ Bull — BullMQ ใช้ <code>job.updateProgress(n)</code></li>
+<li><code>queue.on('completed')</code> ใช้ไม่ได้กับ BullMQ Queue ต้องใช้ <code>QueueEvents</code> หรือ <code>@OnWorkerEvent()</code></li>
+<li>สไลด์อ้างทั้ง at-least-once และ exactly-once — <strong>exactly-once ผิด</strong></li>
+<li>ตัวอย่าง DLQ push แล้ว throw ต่อ ทำให้เกิด attempt เกินและได้รายการซ้ำ</li>
+<li><code>limiter</code> ถูกวางที่ <code>registerQueue</code> แต่ที่ถูกคือเป็น option ของ Worker</li>
+<li>เทส "should not retry on permanent failure" คาดหวัง <code>result.success === false</code> แต่ processor ที่แสดงไว้ throw ทุกกรณี — ขาด branch ตรวจ 5xx</li>
+<li>ตัวอย่าง publisher ใช้ <code>this.db.user.create()</code> ซึ่งเป็น Prisma <span class="g">(ORM อีกยี่ห้อ — ตัวแปลงระหว่าง object ในโค้ดกับตารางใน DB)</span> ทั้งที่ทั้งวิชาใช้ TypeORM</li>
+</ol></div>
+
+
+<h2 id="s7">7. 🔗 บทนี้ต่อกับบทอื่นตรงไหน</h2>
+
+<div class="box link-box"><span class="lab">เส้นเชื่อม</span>
+<ul>
+<li><strong>← บท 02:</strong> เพราะ business logic อยู่ใน service ไม่ใช่ controller → worker จึงเรียกใช้ logic เดิมได้เลยโดยไม่ต้อง copy โค้ด</li>
+<li><strong>← บท 03:</strong> "ห้ามส่งอีเมลหรือตัดบัตรใน transaction ให้ enqueue แทน" <span class="g">(transaction = กลุ่มคำสั่ง DB ที่ต้องสำเร็จทั้งหมดหรือไม่เกิดอะไรเลย)</span> คือ<strong>ประโยคที่ทำให้บทนี้มีอยู่</strong> — และต้อง enqueue <span class="g">(โยนงานเข้าคิว)</span> หลัง commit <span class="g">(ยืนยันจบ transaction แล้วข้อมูลลง DB จริง)</span> เท่านั้น / backoff + jitter คือหลักการเดียวกับ retry deadlock / idempotency ต้องพึ่ง unique constraint ที่ DB</li>
+<li><strong>← บท 04:</strong> queue อยู่บน Redis จึงต้องแยก instance จาก cache เพราะ eviction จะกิน job / pub/sub ใช้บอกทุก instance ให้ล้าง cache</li>
+<li><strong>→ บท 06:</strong> Pub/Sub + หลาย instance = ทำงานซ้ำ N ครั้ง เป็นเหตุผลตรง ๆ ที่ต้องเข้าใจ horizontal scaling / graceful shutdown ของ worker คือเรื่องเดียวกับ graceful shutdown ของ API / queue lag เป็น metric ที่ต้องอยู่บน dashboard</li>
+<li><strong>→ บท 06:</strong> การย้ายงานหนักออกไปที่ queue คือ<strong>ขั้นตอนที่ต้องทำก่อน scale out</strong> เพราะการเพิ่ม instance ไม่ได้ทำให้ SendGrid ตอบเร็วขึ้น</li>
+</ul></div>
+
+
+<h2 id="s8">8. 📝 คลังคำตอบอัตนัย</h2>
+
+<details class="qa"><summary>Pub/Sub กับ Message Queue ต่างกันอย่างไร และควรเลือกใช้อันไหนในกรณีใด</summary>
+<div class="ans">
+<div class="skel">โครง: รูปแบบการส่ง → การรับประกัน 4 ข้อ → เกณฑ์เลือก → กับดักตอน multi-instance</div>
+<p><strong>Pub/Sub</strong> เป็นรูปแบบ one-to-many คือ publisher ส่งข้อความไปยัง channel แล้ว subscriber ทุกตัวที่ฟังอยู่จะได้รับข้อความนั้นทั้งหมด ส่วน <strong>Queue</strong> เป็น point-to-point คือ job หนึ่งชิ้นจะถูกหยิบไปทำโดย worker เพียงตัวเดียวเท่านั้น</p>
+<p>ความต่างที่สำคัญกว่าคือการรับประกัน Pub/Sub <strong>ไม่มี persistence</strong> หากไม่มี subscriber ฟังอยู่ในขณะนั้นข้อความจะหายทันที อีกทั้ง<strong>ไม่มี ack ไม่มี retry และไม่รับประกันลำดับ</strong> ขณะที่ Queue เก็บ job ไว้ใน Redis จนกว่าจะมี worker มาหยิบ มีการ ack มี auto-retry และเป็น FIFO ในการหยิบงาน</p>
+<p>เกณฑ์การเลือกสรุปได้เป็นประโยคเดียวคือ <strong>หากงานนั้น "ต้องเกิดขึ้นให้ได้" ใช้ Queue หากเป็นกรณี "เกิดก็ดี ไม่เกิดก็ไม่เสียหาย" ใช้ Pub/Sub</strong></p>
+<p>ดังนั้น Pub/Sub จึงเหมาะกับ cache invalidation, การแจ้งเตือนแบบ real-time, การส่ง metric และการซิงค์สถานะระหว่าง instance ส่วน Queue ต้องใช้กับการส่งอีเมล การชำระเงิน การประมวลผลไฟล์ งาน batch และงานตั้งเวลา โดยห้ามใช้ Pub/Sub กับงานเหล่านี้เด็ดขาด</p>
+<p>กับดักที่ต้องระวังคือเมื่อมีหลาย instance เนื่องจาก Pub/Sub เป็น broadcast ทุก instance ที่ subscribe จะได้รับข้อความและทำงานนั้นซ้ำกันทั้งหมด หาก subscriber นั้นส่งอีเมล ผู้ใช้จะได้รับอีเมลเท่ากับจำนวน instance ดังนั้น logic ที่มี side effect ต้องอยู่ใน queue เท่านั้น ส่วน subscriber ควรทำเฉพาะงานที่ทำซ้ำแล้วได้ผลเหมือนเดิม เช่นการลบ cache key</p>
+</div></details>
+
+<details class="qa"><summary>เหตุใดระบบคิวจึงรับประกันได้เพียง at-least-once และเราต้องออกแบบระบบอย่างไรเพื่อรับมือ</summary>
+<div class="ans">
+<div class="skel">โครง: ลำดับเหตุการณ์ที่ทำให้ซ้ำ → ทำไมเป็นข้อจำกัดเชิงทฤษฎี → idempotency → ตัวรับประกันสุดท้ายอยู่ที่ DB</div>
+<p>สาเหตุคือระหว่าง "การทำงานเสร็จ" กับ "การแจ้งคิวว่าทำเสร็จแล้ว" หรือ ack นั้นเป็นสองเหตุการณ์ที่<strong>ไม่สามารถทำให้เป็น atomic ได้</strong></p>
+<p>ลำดับที่เกิดขึ้นจริงคือ worker หยิบ job ไปส่งอีเมลสำเร็จแล้ว แต่เกิด crash ก่อนที่จะ ack ซึ่งอาจเกิดจากการ deploy, OOM <span class="g">(โดนระบบฆ่าเพราะใช้ RAM เกินที่ให้ไว้)</span> หรือไฟดับ คิวจึงเห็นว่า job นี้ไม่มีผู้ใดยืนยันว่าทำเสร็จ และคืน job กลับเข้าคิวให้ worker ตัวอื่นหยิบไปทำใหม่ ผลคือผู้ใช้ได้รับอีเมลสองฉบับ</p>
+<p>นี่เป็นข้อจำกัดเชิงทฤษฎีของระบบกระจาย ไม่ใช่ข้อบกพร่องของ BullMQ ดังนั้นคำกล่าวที่ว่าระบบคิวให้การรับประกันแบบ exactly-once จึงไม่ถูกต้อง</p>
+<p>วิธีรับมือคือทำให้ทุก handler <strong>idempotent</strong> คือทำกี่ครั้งก็ได้ผลลัพธ์เหมือนทำครั้งเดียว ในทางปฏิบัติคือมีตาราง dedupe <span class="g">(ตารางกันซ้ำ เก็บ idempotency key ของงานที่ทำไปแล้ว)</span> ที่บันทึกว่างานนี้เคยทำไปแล้ว โดยใช้ <code>jobId</code> หรือ business key เป็นตัวระบุ แล้วตรวจสอบก่อนทำงานว่ามีบันทึกอยู่หรือไม่ หากมีก็ return ทันทีโดยไม่ถือเป็น error</p>
+<p>จุดสำคัญคือ <strong>การตรวจสอบด้วย <code>if</code> ในโค้ดเพียงอย่างเดียวไม่เพียงพอ</strong> เพราะการอ่านแล้วค่อยเขียนยังคงมีช่องว่างให้เกิด race แบบเดียวกับที่ทำให้เกิด oversell ในบทฐานข้อมูล ตัวรับประกันสุดท้ายจึงต้องเป็น <strong>unique constraint ที่ระดับ database</strong></p>
+<p>เพิ่มเติมคือ เมื่อ job อยู่ในสถานะ stalled แล้วถูกกู้คืน มันจะถูกรันใหม่ทั้งงานตั้งแต่ต้น ไม่ใช่ทำต่อจากจุดที่ค้างอยู่ จึงยิ่งตอกย้ำความจำเป็นของ idempotency</p>
+</div></details>
+
+<details class="qa"><summary>ออกแบบระบบส่งอีเมลยืนยันคำสั่งซื้อให้ทนทานต่อความล้มเหลว จงอธิบายการตั้งค่าและเหตุผล</summary>
+<div class="ans">
+<div class="skel">โครง: ย้ายออกจาก request → ตั้ง retry → แยก transient/permanent → DLQ → idempotency → rate limit → ops</div>
+<p>ขั้นแรก <strong>ย้ายการส่งอีเมลออกจากเส้นทางของ request</strong> โดยให้ API บันทึก order ลง database แล้ว enqueue job หลังจาก commit สำเร็จเท่านั้น จากนั้นตอบผู้ใช้ทันที เหตุผลคือลด response time จากหลายวินาทีเหลือหลักสิบมิลลิวินาที และทำให้ความล้มเหลวของ SendGrid ไม่ทำให้การสร้าง order ล้มเหลวตามไปด้วย</p>
+<p>ขั้นที่สอง ตั้ง <strong>retry แบบ exponential backoff ร่วมกับ jitter</strong> เช่น <code>attempts: 3–5</code> และ <code>backoff: { type: 'exponential', delay: 1000 }</code> เหตุผลของ exponential คือหากปลายทางกำลังมีปัญหา การ retry ถี่ ๆ จะยิ่งซ้ำเติม ส่วน jitter จำเป็นเพราะหาก job นับพันตัวล้มเหลวพร้อมกันแล้วใช้ delay เท่ากันหมด มันจะกลับมาชนกันซ้ำเป็นระลอกที่จังหวะเดิม</p>
+<p>ขั้นที่สาม <strong>แยกความล้มเหลวชั่วคราวออกจากความล้มเหลวถาวร</strong> SMTP code กลุ่ม 4xx เช่น 421, 450, 451, 452 เป็นความล้มเหลวชั่วคราวที่ควร retry ส่วน 5xx เช่น 550, 551, 552, 553 หมายถึงที่อยู่อีเมลไม่มีอยู่จริง ซึ่งไม่ควร retry เลย เพราะนอกจากจะเปลือง attempt แล้วยังทำลาย sender reputation ทำให้ provider มองว่าเราส่งสแปม ในโค้ดคือเมื่อพบ 5xx ให้บันทึกเป็น permanent failure แล้ว <code>return</code> ไม่ใช่ <code>throw</code></p>
+<p>ขั้นที่สี่ มี <strong>dead letter queue พร้อม alert</strong> สำหรับ job ที่ retry ครบแล้วยังล้มเหลว เพราะหากไม่มี ความล้มเหลวจะเงียบและกลายเป็นการสูญหายของข้อมูลที่ไม่มีผู้ใดทราบ ควรตั้ง <code>removeOnFail: false</code> เพื่อเก็บหลักฐานไว้วิเคราะห์ และตั้ง <code>removeOnComplete</code> ตามอายุหรือจำนวน เพื่อไม่ให้ job ที่สำเร็จสะสมจน Redis เต็ม</p>
+<p>ขั้นที่ห้า ทำ handler ให้ <strong>idempotent</strong> ด้วยตาราง dedupe ที่มี unique constraint เนื่องจากระบบคิวรับประกันแบบ at-least-once</p>
+<p>สุดท้ายในเชิง operation ต้องตั้ง <strong>rate limiter ให้ตรงกับโควตาของ provider</strong> เช่น SendGrid ประมาณ 100 ต่อวินาที มิฉะนั้นจะได้รับ 429 ซึ่งจะถูก retry แล้วยิ่งส่งหนักขึ้นเป็นวงจร, ตั้ง concurrency ประมาณ 5–20 เพราะเป็นงาน I/O-bound, แยกคิวอีเมลออกจากคิวงานหนักอย่างการประมวลผลวิดีโอ, ส่ง payload เป็น <code>orderId</code> ไม่ใช่ object ทั้งก้อน, ใช้ Redis คนละ instance กับ cache และเปิด AOF, ทำ graceful shutdown ของ worker และเฝ้าติดตาม queue lag กับจำนวน failed ต่อชั่วโมง</p>
+</div></details>
+
+<details class="qa"><summary>ทำไมงานที่ใช้ CPU หนักจึงต้องตั้ง concurrency ต่ำ</summary>
+<div class="ans">
+<div class="skel">โครง: กลไก event loop → ผลที่เกิด → ตัวเลขแนะนำ → ทางเลือกเชิงสถาปัตยกรรม</div>
+<p>เพราะ Node.js ประมวลผล JavaScript ด้วย <strong>thread เดียว</strong> ผ่าน event loop งานประเภท I/O เช่นการเรียก API หรือ query database จะปล่อยให้ event loop ไปทำงานอื่นระหว่างรอ แต่งานที่ใช้ CPU เช่นการสร้าง PDF หรือ resize รูปภาพจะ<strong>ยึด event loop ไว้จนกว่าจะทำเสร็จ</strong></p>
+<p>ผลคือหากตั้ง concurrency สูงสำหรับงาน CPU-bound งานหลายชิ้นจะแย่ง event loop เดียวกัน ทำให้ทุกชิ้นช้าลงพร้อมกัน และที่แย่กว่านั้นคือหาก worker อยู่ใน process เดียวกับ API งานเหล่านั้นจะทำให้ทุก request ค้างไปด้วย</p>
+<p>ค่าที่แนะนำจึงเป็น concurrency 1–2 สำหรับงาน CPU-bound, 5–20 สำหรับงาน I/O-bound เช่นการส่งอีเมลหรือเรียก API และ 20–50 สำหรับงานที่เบามาก</p>
+<p>หากต้องการ throughput มากขึ้นสำหรับงาน CPU-bound วิธีที่ถูกต้องคือ<strong>เพิ่มจำนวน process ไม่ใช่เพิ่ม concurrency</strong> เช่นใช้ <code>pm2 -i 4</code> ซึ่งได้ 4 process แยกกันโดยแต่ละตัวมี event loop ของตัวเอง และควรแยกคิวของงานหนักออกจากคิวงานเบา เพื่อไม่ให้งานประมวลผลวิดีโอไปขวางคิวอีเมล</p>
+</div></details>
+
+<details class="qa"><summary>ทำไมไม่ควรส่งข้อมูลขนาดใหญ่หรือไฟล์เป็น payload ของ job</summary>
+<div class="ans">
+<div class="skel">โครง: job อยู่ที่ไหน → ผลกระทบ → ทางที่ถูก → ประโยชน์แถม</div>
+<p>เพราะ <strong>job ทั้งหมดถูกเก็บอยู่ใน Redis ซึ่งเป็น in-memory store</strong> การส่งไฟล์หรือ buffer ขนาดหลายเมกะไบต์เข้าไปในคิวจึงหมายถึงการนำข้อมูลเหล่านั้นไปกองไว้ใน RAM หากมี job ลักษณะนี้หลักพันชิ้นในคิว Redis จะใช้ memory จนเต็มและเริ่ม evict ข้อมูล ซึ่งอาจทำให้ job หายไปเลย</p>
+<p>สิ่งที่ควรทำคือส่ง <strong>reference แทนตัวข้อมูล</strong> เช่นส่ง <code>{ orderId: 123 }</code> หรือ <code>{ videoUrl: 's3://...' }</code> แล้วให้ worker ไปดึงข้อมูลจริงจาก database หรือ object storage <span class="g">(ที่เก็บไฟล์ก้อนใหญ่อย่าง S3 ไม่ใช่ DB)</span> เอง</p>
+<p>ประโยชน์ที่ได้เพิ่มคือ worker จะอ่าน<strong>ข้อมูลล่าสุด ณ เวลาที่ประมวลผลจริง</strong> ไม่ใช่ข้อมูล ณ เวลาที่ enqueue ซึ่งอาจเก่าไปแล้วหากงานรออยู่ในคิวเป็นเวลานาน</p>
+<p>ข้อควรระวังเพิ่มเติมคือ หากต้องเปลี่ยนรูปร่างของ payload ต้องคำนึงว่ามี job รูปแบบเก่าค้างอยู่ในคิวแล้ว จึงต้องเขียน handler ให้รองรับทั้งสองรูปแบบไว้อย่างน้อยหนึ่ง release ก่อนจะถอดแบบเก่าออก ซึ่งเป็นหลักการเดียวกับ expand-and-contract ของการเปลี่ยน schema</p>
+</div></details>
+
+<details class="qa"><summary>ควรทำงานใดแบบ synchronous และงานใดแบบ asynchronous จงอธิบายเกณฑ์และผลกระทบ</summary>
+<div class="ans">
+<div class="skel">โครง: เกณฑ์ → ตัวอย่างสองฝั่ง → ผลด้าน latency → ผลด้าน resilience (สำคัญกว่า) → ข้อแลกเปลี่ยน</div>
+<p>เกณฑ์คือ <strong>หากงานใช้เวลาเกินประมาณ 1 วินาที หรือผลลัพธ์ไม่จำเป็นต้องใช้ทันที ให้ทำแบบ asynchronous</strong></p>
+<p>สิ่งที่ต้องทำแบบ synchronous คือสิ่งที่ผู้ใช้ต้องทราบผลทันทีเพื่อดำเนินการต่อได้ เช่นการบันทึก order และคืนหมายเลข order การตรวจสอบสิทธิ์ และการ validate ข้อมูล ส่วนสิ่งที่ควรเป็น asynchronous คือการส่งอีเมลยืนยัน การส่ง SMS การสร้างไฟล์ PDF การประมวลผลรูปภาพหรือวิดีโอ และการส่งข้อมูลไปยังระบบวิเคราะห์</p>
+<p>ผลกระทบด้านแรกคือ latency <span class="g">(เวลาที่ 1 request ใช้ตอบกลับ ต่างจาก throughput ที่นับงานต่อวินาที)</span> จากตัวอย่างที่ทำทุกอย่างแบบ synchronous ซึ่งใช้เวลารวมราว 8 วินาที เมื่อย้ายงานที่ไม่จำเป็นออกไปจะเหลือเพียงหลักสิบมิลลิวินาที</p>
+<p>ผลกระทบด้านที่สองสำคัญกว่าและมักตอบไม่ถึง คือ <strong>ความทนทานต่อความล้มเหลว</strong> เมื่อทำแบบ synchronous ระบบของเราจะล้มเหลวตามทุกครั้งที่บริการภายนอกล้มเหลว ผู้ใช้จะเห็น error ทั้งที่ order ถูกสร้างสำเร็จไปแล้ว จากนั้นเขาจะกดซ้ำจนเกิด order ซ้ำ แต่เมื่อย้ายไปเป็น asynchronous ความล้มเหลวของ SendGrid จะไม่กระทบการสร้าง order เลย และ job จะถูก retry โดยอัตโนมัติเมื่อบริการกลับมาทำงาน</p>
+<p>ข้อแลกเปลี่ยนที่ต้องยอมรับคือระบบซับซ้อนขึ้น ต้องมี worker เพิ่ม ต้องมี Redis ที่ทนทาน ต้องเฝ้าติดตามคิว และที่สำคัญที่สุดคือ<strong>ทุก handler ต้อง idempotent</strong> เพราะการรับประกันเป็นแบบ at-least-once นอกจากนี้ผู้ใช้จะไม่เห็นผลลัพธ์ทันที จึงต้องออกแบบ UX ให้สื่อสารว่างานกำลังดำเนินการอยู่</p>
+<p>ข้อควรระวังเชิงลำดับคือต้อง enqueue <strong>หลังจาก transaction commit สำเร็จแล้วเท่านั้น</strong> ไม่ใช่ภายใน transaction เพราะหาก transaction ถูก rollback <span class="g">(ย้อนคืนทุกอย่างเหมือนไม่เคยทำ)</span> แต่ job ถูกส่งไปแล้ว worker จะทำงานกับข้อมูลที่ไม่มีอยู่จริง</p>
+</div></details>
+
+
+<h2 id="s9">9. ✅ เช็คตัวเองก่อนปิดบท</h2>
+
+<ul>
+<li>ตอบได้ทันทีว่า pub/sub กับ queue ต่างกันตรงไหน และเลือกยังไง</li>
+<li>อธิบายได้ว่าทำไม exactly-once <strong>เป็นไปไม่ได้</strong> (สไลด์เขียนผิด) โดยเล่าเป็นลำดับเหตุการณ์</li>
+<li>เขียน handler แบบ idempotent ได้ และรู้ว่าตัวรับประกันสุดท้ายอยู่ที่ไหน</li>
+<li>แยก transient (4xx) กับ permanent (5xx) ได้ และรู้ว่าทำผิดแล้วเกิดอะไร</li>
+<li>บอกได้ว่าทำไม CPU-bound ต้อง concurrency 1–2</li>
+<li>รู้ว่าทำไม pub/sub + 3 instance = อีเมล 3 ฉบับ</li>
+</ul>
+
+<div class="pager">
+  <a href="04-redis.html">← บทที่ 4</a>
+  <a href="06-scaling.html">บทที่ 6 — Scaling →</a>
+</div>
+
+</main>
+
+<aside class="toc">
+<h4>ในบทนี้</h4>
+<a href="#s0">0. จุดที่เรื่องเดินมาถึง</a>
+<a href="#s1">1. Pub/Sub vs Queue</a>
+<a href="#s2">2. Queue ทำงานยังไง</a>
+<a href="#s3">3. At-least-once &amp; Idempotency ⚠️</a>
+<a href="#s4">4. Retry</a>
+<a href="#s5">5. Concurrency / Rate limit</a>
+<a href="#s6">6. Operations</a>
+<a href="#s7">7. 🔗 เชื่อมกับบทอื่น</a>
+<a href="#s8">8. 📝 คลังคำตอบอัตนัย</a>
+<a href="#s9">9. ✅ เช็คตัวเอง</a>
+</aside>
+</div>
+</body>
+</html>

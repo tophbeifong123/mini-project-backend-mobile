@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>บทที่ 4 — Redis: Caching &amp; Atomic Operations</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" aria-hidden="true" style="position:absolute"><defs>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-i"/></marker>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-r"/></marker>
+<marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-g"/></marker>
+<marker id="ara" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-a"/></marker>
+</defs></svg>
+
+<nav class="topnav"><div class="topnav-inner">
+  <a class="home" href="00-index.html">◆ สารบัญ</a>
+  <a href="01-architecture-docker.html">01 Docker</a>
+  <a href="02-nestjs-di.html">02 NestJS</a>
+  <a href="03-database.html">03 Database</a>
+  <a class="here" href="04-redis.html">04 Redis</a>
+  <a href="05-async-queue.html">05 Queue</a>
+  <a href="06-scaling.html">06 Scaling</a>
+</div></nav>
+
+<div class="wrap">
+<main>
+
+<div class="hero">
+  <div class="kicker">Backend 04</div>
+  <h1>Redis: Caching &amp; Atomic Operations</h1>
+  <p>บทนี้ตอบคำถามเดียว: <strong>ทำยังไงให้ DB ไม่ตายเพราะโดนถามคำถามเดิมซ้ำ ๆ วินาทีละหมื่นครั้ง โดยที่ข้อมูลไม่เก่าเกินรับได้</strong></p>
+</div>
+
+<div class="chips">
+  <span class="chip">Cache-aside / Write-through / Write-behind <span class="g">(อ่านไม่เจอค่อยไปเอาจาก DB / เขียน cache กับ DB พร้อมกัน / เขียน cache ก่อนแล้วค่อยลง DB)</span></span>
+  <span class="chip">TTL + Jitter <span class="g">(อายุของข้อมูลใน cache + สุ่มบวกลบกันหมดอายุพร้อมกัน)</span></span>
+  <span class="chip">Invalidation <span class="g">(ล้างของเก่าใน cache เมื่อข้อมูลจริงเปลี่ยน)</span></span>
+  <span class="chip">Stampede / Avalanche <span class="g">(คีย์เดียวหมดอายุแล้วแห่ไป DB พร้อมกัน / หลายคีย์หมดอายุพร้อมกันทั้งชุด)</span></span>
+  <span class="chip">INCR / Atomic <span class="g">(คำสั่งเดียวจบ ไม่มีใครแทรกกลางคัน)</span></span>
+  <span class="chip">Distributed Lock <span class="g">(ล็อกข้ามหลายเครื่อง ให้มีแค่ตัวเดียวทำงานนั้น)</span></span>
+  <span class="chip">Eviction Policy <span class="g">(memory เต็มแล้วจะเลือกลบคีย์ไหนทิ้ง)</span></span>
+</div>
+
+<h2 id="s0">0. จุดที่เรื่องเดินมาถึง</h2>
+
+<p>Flash Sale ตัดสต็อกถูกต้องแล้ว (บท 03) แต่พอเปิดขายจริง <strong>DB ตายก่อนที่จะมีใครกดซื้อทัน</strong></p>
+
+<p>เพราะคนห้าพันคนเปิดหน้า product พร้อมกันแล้วรีเฟรชรัว ๆ ทุกครั้งคือ query เดิมเป๊ะ ๆ วิ่งไปที่ DB — และคำตอบก็เหมือนกันทุกครั้งด้วย</p>
+
+<div class="box base"><span class="lab">ความคิดตั้งต้นของทั้งบท</span>
+<p>Cache คือการ <strong>"จำคำตอบของคำถามที่ถูกถามบ่อย ไว้ในที่ที่ตอบได้เร็ว"</strong></p>
+<p>DB ต้องอ่านจากดิสก์แล้วประมวลผล query ประมาณ <span class="big-num">100ms</span> ส่วน Redis <span class="g">(ที่เก็บข้อมูลใน RAM ใช้จำคำตอบไว้ตอบแทน DB)</span> อ่านจาก RAM ประมาณ <span class="big-num">1ms</span> ต่างกันราว 100 เท่า</p>
+<p>แต่ทันทีที่เก็บสำเนาข้อมูลไว้สองที่ เราก็ได้ปัญหาใหม่มาฟรี ๆ คือ <strong>"สองที่ไม่ตรงกัน"</strong> ซึ่งครึ่งหนึ่งของบทนี้คือการจัดการปัญหานั้น</p></div>
+
+<h3 id="s0-1">Redis คืออะไรกันแน่</h3>
+
+<p>Redis เป็น <strong>in-memory key-value store</strong> พูดง่าย ๆ คือ "ตู้เก็บของที่มีป้ายชื่อ" ที่วางอยู่ใน RAM ไม่ใช่ดิสก์ เราสั่ง <code>SET product:1 "{...}"</code> แล้ว <code>GET product:1</code> ก็ได้กลับมา ไม่มีตาราง ไม่มี JOIN ไม่มี query language ซับซ้อน</p>
+
+<p>และมันเป็น <strong>single-threaded</strong> คือประมวลผลคำสั่งทีละคำสั่งเรียงกันไป</p>
+
+<div class="box why"><span class="lab">2 คุณสมบัตินี้อธิบายเกือบทุกอย่างในบทนี้</span>
+<ul>
+<li><strong>อยู่ใน RAM</strong> → เร็วมาก แต่ RAM แพงกว่าดิสก์เยอะ → เลยต้องมี TTL <span class="g">(อายุของข้อมูลใน cache ครบเวลาแล้วหายเอง)</span>, ต้อง cache เฉพาะข้อมูลที่ร้อนจริง ๆ และต้องมี eviction policy <span class="g">(กฎว่าพอ RAM เต็มแล้วจะเตะ key ไหนออกก่อน)</span></li>
+<li><strong>Single-threaded</strong> → คำสั่งเดียวเป็น atomic <span class="g">(ทำจบในทีเดียว ไม่มีใครแทรกกลางคันได้)</span> โดยธรรมชาติ (เลยใช้ <code>INCR</code> <span class="g">(บวกเลขให้ตัวนับ จบในคำสั่งเดียว)</span> และทำ distributed lock <span class="g">(กุญแจกลางที่วางไว้นอกเครื่อง ให้หลายเครื่องถือได้ทีละตัว)</span> ได้) แต่ก็แปลว่า <strong>คำสั่งช้าตัวเดียวบล็อกทั้ง server</strong> (เลยห้ามใช้ <code>KEYS</code>)</li>
+</ul></div>
+
+
+<h2 id="s1">1. ควร cache อะไร และไม่ควร cache อะไร</h2>
+
+<div class="tbl"><table>
+<tr><th>ควร cache</th><th>ไม่ควร cache</th></tr>
+<tr><td>ข้อมูลที่อ่านบ่อยกว่าเขียนมาก ๆ (read-heavy)</td><td>ข้อมูลที่เขียนบ่อยกว่าอ่าน เพราะจะ invalidate <span class="g">(สั่งล้าง cache ตัวเก่าทิ้งเมื่อข้อมูลจริงเปลี่ยน)</span> จนไม่เหลือประโยชน์</td></tr>
+<tr><td>query ที่แพง เช่น JOIN หลายตาราง หรือ aggregate</td><td>ข้อมูลที่เปลี่ยนตลอดเวลา</td></tr>
+<tr><td>ข้อมูลกึ่งนิ่ง เช่น product, category, config</td><td>ข้อมูลที่ต้องถูกต้อง 100% เสมอ เช่น <strong>ยอดเงินคงเหลือ, สต็อกที่ใช้ตัดขาย</strong></td></tr>
+<tr><td>endpoint ที่ร้อนที่สุด 10 อันดับแรก</td><td>ข้อมูลที่ผู้ใช้แต่ละคนไม่ซ้ำกันเลย เพราะ hit ratio <span class="g">(สัดส่วนคำขอที่หาเจอใน cache)</span> จะต่ำมาก</td></tr>
+</table></div>
+
+<p><strong>วัดผลด้วย hit ratio:</strong> <code>hits / (hits + misses)</code> เป้าหมายคือเกิน <strong>80%</strong> ถ้าต่ำกว่านั้นแปลว่าเรากำลังจ่ายค่า RAM และความซับซ้อนโดยแทบไม่ได้อะไรกลับมา ให้ย้อนไปดูว่า cache ผิดของ หรือ TTL สั้นเกินไป</p>
+
+<div class="box link-box"><span class="lab">🔗 สำคัญมาก — อย่าสับสนระหว่างบท 03 กับ 04</span>
+<p><strong>Cache แก้ปัญหา "ช้า" ไม่ได้แก้ปัญหา "ผิด"</strong></p>
+<p>สต็อกที่เอาไปโชว์หน้าเว็บ → cache ได้ (เห็นเลขคลาดไปนิดหน่อยไม่เป็นไร)<br>
+สต็อกที่ใช้ตัดตอนกดซื้อ → <strong>ต้องอ่านจาก DB ภายใต้ lock เท่านั้น</strong> <span class="g">(lock = จองข้อมูลไว้ ไม่ให้คนอื่นเข้ามาแก้พร้อมกัน)</span> (บท 03)</p>
+<p>ถ้าเอา cache ไปตัดสต็อก จะได้ oversell <span class="g">(ขายเกินจำนวนที่มีจริง)</span> กลับมาเหมือนเดิม เพราะ cache ไม่มี transaction <span class="g">(กลุ่มคำสั่ง DB ที่ต้องสำเร็จทั้งหมดหรือไม่เกิดอะไรเลย)</span> ไม่มี lock ไม่มี constraint</p></div>
+
+
+<h2 id="s2">2. Cache Strategy 3 แบบ</h2>
+
+<h3 id="s2-1">2.1 Cache-Aside (Lazy Loading) <span class="g">(ถาม cache ก่อน ไม่เจอค่อยไป DB แล้วเก็บคำตอบกลับเข้า cache)</span> — ตัวหลักที่ใช้จริง</h3>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 270" role="img" aria-label="ลำดับการทำงานของ cache-aside ทั้งกรณี hit และ miss">
+  <rect x="30" y="46" width="120" height="132" rx="8" class="bx-a"/>
+  <text x="90" y="112" text-anchor="middle" class="t-b">App</text>
+  <text x="90" y="130" text-anchor="middle" class="t-xs">(NestJS)</text>
+
+  <rect x="290" y="46" width="120" height="132" rx="8" class="bx-g"/>
+  <text x="350" y="106" text-anchor="middle" class="t-b">Redis</text>
+  <text x="350" y="124" text-anchor="middle" class="t-xs">RAM</text>
+  <text x="350" y="142" text-anchor="middle" class="t-xs t-g">~1 ms</text>
+
+  <rect x="550" y="46" width="120" height="132" rx="8" class="bx-p"/>
+  <text x="610" y="106" text-anchor="middle" class="t-b">PostgreSQL</text>
+  <text x="610" y="124" text-anchor="middle" class="t-xs">ดิสก์</text>
+  <text x="610" y="142" text-anchor="middle" class="t-xs t-r">~100 ms</text>
+
+  <path d="M154,66 L286,66" class="ln" marker-end="url(#ar)"/>
+  <text x="220" y="60" text-anchor="middle" class="t-xs">① GET product:1</text>
+
+  <path d="M286,92 L154,92" class="ln-g" marker-end="url(#arg)"/>
+  <text x="220" y="86" text-anchor="middle" class="t-xs t-g">②ก มีอยู่ (HIT) → คืนเลย จบ</text>
+
+  <path d="M286,124 L154,124" class="ln-r" marker-end="url(#arr)"/>
+  <text x="220" y="118" text-anchor="middle" class="t-xs t-r">②ข ไม่มี (MISS)</text>
+
+  <path d="M90,182 L90,206 L610,206 L610,182" class="ln" marker-end="url(#ar)"/>
+  <text x="350" y="224" text-anchor="middle" class="t-xs">③ MISS เท่านั้นถึงจะไป DB</text>
+
+  <path d="M154,158 L286,158" class="ln-a" marker-end="url(#ara)"/>
+  <text x="220" y="172" text-anchor="middle" class="t-xs t-a">④ SET + TTL (พร้อม jitter)</text>
+
+  <text x="350" y="248" text-anchor="middle" class="t-xs">ครั้งแรกช้าเสมอ (cold) แต่ครั้งที่ 2 เป็นต้นไปจบที่ Redis · ถ้า Redis ล่ม เส้น ③ ก็ยังทำงานได้ ระบบแค่ช้าลง</text>
+  <text x="350" y="264" text-anchor="middle" class="t-xs t-b">ทุกการเรียก Redis ต้องอยู่ใน try/catch ที่ fallback ไป DB ได้</text>
+</svg>
+<figcaption>เส้นทางปกติจบแค่ ①→②ก — DB โดนแตะเฉพาะตอน miss <span class="g">(หาใน cache ไม่เจอ ต่างจาก hit ที่เจอแล้วตอบได้เลย)</span> เท่านั้น</figcaption>
+</figure>
+
+<pre><code>async getProduct(id: string) {
+  const key = `product:${id}`;
+  const cached = await this.redis.get(key);
+  if (cached) return JSON.parse(cached);        // HIT
+
+  const product = await this.repo.findOne({ where: { id } });   // MISS → ไป DB
+  await this.redis.set(key, JSON.stringify(product), 'EX', 300);
+  return product;
+}</code></pre>
+
+<p><strong>ข้อดี:</strong> เก็บเฉพาะข้อมูลที่มีคนขอจริง ๆ และถ้า Redis ล่ม ระบบยังทำงานได้เพราะยัง fallback <span class="g">(ถอยไปใช้ทางสำรอง)</span> ไป DB ได้<br>
+<strong>ข้อเสีย:</strong> request แรกช้าเสมอ (cold) และมีความเสี่ยงเรื่อง stampede <span class="g">(คีย์ดังหมดอายุพอดีตอนคนแห่เข้ามา เลย miss พร้อมกันทั้งหมด)</span> (ดูข้อ 4)</p>
+
+<h3 id="s2-2">2.2 Write-Through</h3>
+<p>เขียน DB แล้วอัปเดต cache ทันทีในจังหวะเดียวกัน → cache สดใหม่หลังเขียนเสมอ<br>
+<strong>แลกกับ:</strong> write latency <span class="g">(เวลาที่การเขียน 1 ครั้งใช้จนตอบกลับ)</span> สูงขึ้นเพราะต้องทำสองที่ และเปลือง cache กับข้อมูลที่อาจไม่มีใครอ่านเลย</p>
+
+<h3 id="s2-3">2.3 Write-Behind (Write-Back)</h3>
+<p>เขียนลง cache ก่อนแล้วตอบผู้ใช้ทันที ค่อยทยอย flush <span class="g">(เทของที่ค้างอยู่ลง DB จริง)</span> ลง DB ทีหลัง → write เร็วที่สุด</p>
+
+<div class="box trap"><span class="lab">อันตราย — ต้องพูดถึงถ้าข้อสอบถาม</span>
+<p><strong>ถ้า Redis ล่มก่อน flush ข้อมูลหายจริง</strong> ใช้ได้เฉพาะข้อมูลที่หายแล้วไม่เดือดร้อน เช่น counter จำนวนวิว หรือ analytics — <strong>ห้ามใช้เด็ดขาดกับ payment, order, auth</strong></p></div>
+
+<div class="tbl"><table>
+<tr><th></th><th>Cache-Aside</th><th>Write-Through</th><th>Write-Behind</th></tr>
+<tr><td>Read latency</td><td>ดี (หลัง warm)</td><td>ดี</td><td>ดี</td></tr>
+<tr><td>Write latency</td><td>ปกติ</td><td>ช้าลง</td><td>เร็วที่สุด</td></tr>
+<tr><td>ความสดของข้อมูล</td><td>อาจ stale <span class="g">(ค่าเก่าค้างอยู่ ไม่ตรงกับ DB)</span> ตาม TTL</td><td>สดหลังเขียน</td><td>DB ตามหลัง cache</td></tr>
+<tr><td>เสี่ยงข้อมูลหาย</td><td>ไม่</td><td>ไม่</td><td><strong>ใช่</strong></td></tr>
+<tr><td>ใช้เมื่อ</td><td><strong>read-heavy ทั่วไป</strong></td><td>ต้องสดทันทีหลังเขียน</td><td>counter / analytics เท่านั้น</td></tr>
+</table></div>
+
+
+<h2 id="s3">3. TTL และ Invalidation — จุดที่ทำให้ระบบพัง</h2>
+
+<h3 id="s3-1">3.1 ทุก key ต้องมี TTL ไม่มีข้อยกเว้น</h3>
+
+<div class="box why"><span class="lab">เหตุผล 2 ชั้น</span>
+<p><strong>ชั้นที่ 1:</strong> key ที่ไม่มี TTL คือ <strong>memory leak</strong> <span class="g">(กินหน่วยความจำเพิ่มไปเรื่อย ๆ ไม่มีคืน)</span> — มันอยู่ไปเรื่อย ๆ จน Redis ชน <code>maxmemory</code> <span class="g">(เพดาน RAM ที่ตั้งให้ Redis ใช้ได้)</span> แล้วเริ่ม evict ซึ่งอาจไปเตะข้อมูลที่ยังใช้อยู่ออก</p>
+<p><strong>ชั้นที่ 2 (สำคัญกว่า):</strong> TTL คือ <strong>ตาข่ายนิรภัยของ invalidation</strong> ต่อให้เขียน invalidation ดีแค่ไหน ก็จะมีจังหวะที่มันพลาดเสมอ เช่น process ตายกลางคัน หรือลืม invalidate key ที่เกี่ยวข้องบางตัว TTL คือสิ่งที่รับประกันว่า <em>ข้อมูลเก่าจะหายไปเองภายในเวลาที่กำหนด</em> ไม่ใช่ค้างอยู่ตลอดกาล</p></div>
+
+<div class="tbl"><table>
+<tr><th>ประเภทข้อมูล</th><th>TTL แนะนำ</th></tr>
+<tr><td>เปลี่ยนบ่อย (สต็อกที่แสดงผล, ราคาโปรโมชัน)</td><td>30 วินาที – 5 นาที</td></tr>
+<tr><td>กึ่งนิ่ง (โปรไฟล์, รายละเอียดสินค้า)</td><td>10 นาที – 1 ชั่วโมง</td></tr>
+<tr><td>นิ่ง (หมวดหมู่, config, รายชื่อประเทศ)</td><td>1 – 24 ชั่วโมง</td></tr>
+</table></div>
+
+<h3 id="s3-2">3.2 Invalidation ต้องล้างทั้งสาย</h3>
+
+<pre><code>async updateUser(id, dto) {
+  await this.repo.update(id, dto);
+  await this.redis.del(
+    `user:${id}`,          // ตัวมันเอง
+    `user:${id}:posts`,    // ของที่ประกอบขึ้นจากมัน
+    `users:list`,          // list ที่มันอยู่ในนั้น
+  );
+}</code></pre>
+
+<p>คนมักลืมข้อ 2 กับ 3 ผลคือหน้ารายละเอียดอัปเดตแล้ว แต่หน้า list ยังโชว์ชื่อเก่า บั๊กแบบนี้หายากมากเพราะโค้ดดูเหมือนถูกต้องแล้ว</p>
+
+<p><strong>ตั้งชื่อ key ให้เป็นระบบ:</strong> <code>{namespace}:{entity}:{id}:{field}</code> <span class="g">(namespace = คำนำหน้าบอกว่า key นี้ของแอปไหน กันชนกับระบบอื่นที่ใช้ Redis ตัวเดียวกัน)</span> เช่น <code>app:user:42:posts</code> และควรมี <strong>key-builder ตัวกลาง</strong> ไม่ใช่ต่อ string เอาเองกระจายทั่วโค้ด เพราะพิมพ์ผิดที่เดียวคือได้ cache ที่ไม่มีวันถูก invalidate</p>
+
+<h3 id="s3-3">3.3 ลำดับการเขียนกับการลบ</h3>
+
+<p>ให้ <strong>update DB ก่อน แล้วค่อย DEL cache</strong> ไม่ใช่ DEL ก่อนแล้วค่อย update เพราะถ้า DEL ก่อน จะมีช่องให้ request อื่นเข้ามาอ่าน DB ค่าเก่าแล้วเขียนกลับเข้า cache พอดี</p>
+
+<p>แต่ต้องรู้ด้วยว่า<strong>ลำดับไหนก็ยังมี race เหลืออยู่</strong> <span class="g">(race condition = สองคำขอเข้ามาพร้อมกันแล้วแย่งข้อมูลก้อนเดียวกันจนผลเพี้ยน)</span> เลยต้องมี TTL สั้นคุมไว้ หรือใช้เทคนิค delayed double-delete <span class="g">(ลบ cache ซ้ำอีกรอบหลังหน่วงเวลา กันค่าเก่าที่แอบเขียนกลับเข้ามา)</span> ในระบบที่ซีเรียส</p>
+
+
+<h2 id="s4">4. Cache Stampede &amp; Avalanche</h2>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 260" role="img" aria-label="เปรียบเทียบ cache stampede กับ cache avalanche">
+  <text x="168" y="18" text-anchor="middle" class="t-b t-r">Stampede — คีย์เดียว คนเยอะ</text>
+  <text x="512" y="18" text-anchor="middle" class="t-b t-r">Avalanche — คีย์เป็นหมื่น หมดพร้อมกัน</text>
+
+  <!-- stampede -->
+  <rect x="108" y="32" width="120" height="30" rx="6" class="bx-r"/>
+  <text x="168" y="52" text-anchor="middle" class="t-mono">product:hot ✕</text>
+  <text x="240" y="52" class="t-xs t-r">หมดอายุพอดี</text>
+
+  <circle cx="40" cy="106" r="12" class="bx"/>
+  <circle cx="90" cy="106" r="12" class="bx"/>
+  <circle cx="140" cy="106" r="12" class="bx"/>
+  <circle cx="190" cy="106" r="12" class="bx"/>
+  <circle cx="240" cy="106" r="12" class="bx"/>
+  <text x="140" y="90" text-anchor="middle" class="t-xs">5,000 request กำลังขอคีย์นี้อยู่</text>
+
+  <path d="M40,120 L120,168" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M90,120 L133,168" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M140,120 L145,168" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M190,120 L158,168" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M240,120 L171,168" class="ln-r" marker-end="url(#arr)"/>
+
+  <rect x="98" y="172" width="106" height="34" rx="6" class="bx-p"/>
+  <text x="151" y="194" text-anchor="middle" class="t-sm">DB</text>
+  <text x="151" y="226" text-anchor="middle" class="t-xs t-r">ทุกคน miss พร้อมกัน → ยิง query เดียวกันพร้อมกัน</text>
+  <text x="151" y="244" text-anchor="middle" class="t-xs t-g">แก้: ให้คนเดียวถือ lock ไปเติม cache ที่เหลือรอ</text>
+
+  <line x1="340" y1="28" x2="340" y2="250" class="ln-t"/>
+
+  <!-- avalanche -->
+  <text x="370" y="46" class="t-xs t-r">TTL เท่ากันหมด</text>
+  <rect x="370" y="54" width="200" height="9" rx="3" class="bx"/>
+  <rect x="370" y="67" width="200" height="9" rx="3" class="bx"/>
+  <rect x="370" y="80" width="200" height="9" rx="3" class="bx"/>
+  <rect x="370" y="93" width="200" height="9" rx="3" class="bx"/>
+  <rect x="370" y="106" width="200" height="9" rx="3" class="bx"/>
+  <line x1="572" y1="50" x2="572" y2="120" class="ln-r"/>
+  <text x="580" y="90" class="t-xs t-r">ระเบิด</text>
+  <text x="580" y="104" class="t-xs t-r">พร้อมกัน</text>
+
+  <text x="370" y="152" class="t-xs t-g">TTL + jitter สุ่ม</text>
+  <rect x="370" y="160" width="188" height="9" rx="3" class="bx-g"/>
+  <rect x="370" y="173" width="214" height="9" rx="3" class="bx-g"/>
+  <rect x="370" y="186" width="196" height="9" rx="3" class="bx-g"/>
+  <rect x="370" y="199" width="228" height="9" rx="3" class="bx-g"/>
+  <rect x="370" y="212" width="204" height="9" rx="3" class="bx-g"/>
+  <text x="512" y="240" text-anchor="middle" class="t-xs t-g">หมดอายุกระจายกันไป โหลดที่ DB เรียบขึ้น</text>
+</svg>
+<figcaption>สองอันนี้คนละปัญหาและแก้คนละวิธี — stampede แก้ด้วย lock, avalanche แก้ด้วย jitter <span class="g">(สุ่มบวกลบเวลานิดหน่อย กันทุกตัวมาพร้อมกันเป๊ะ)</span></figcaption>
+</figure>
+
+<h3 id="s4-1">4.1 Stampede (แห่เข้าคีย์เดียว)</h3>
+<p>key ยอดฮิตหมดอายุพอดีตอนมีคน 5,000 คนขออยู่ → ทั้งหมด miss พร้อมกัน → ทั้งหมดยิง query เดิมไป DB พร้อมกัน → <strong>DB ตาย</strong></p>
+
+<p>ทางแก้คือให้ <strong>คนเดียวไปเติม cache</strong> ที่เหลือรอ โดยใช้ distributed lock (ข้อ 6)</p>
+
+<div class="box errata"><span class="lab">⚠ สไลด์เขียนทางแก้ผิด</span>
+<p>สไลด์แก้ stampede โดยเรียก <code>return this.getPopularPost()</code> ตัวเอง<strong>ซ้ำแบบไม่มีขอบเขต</strong> ถ้าคนที่ถือ lock ตายไป คนที่เหลือจะวนเรียกตัวเองจน stack overflow <span class="g">(เรียกตัวเองซ้อนลึกจนหน่วยความจำ stack เต็ม แล้วโปรแกรมตาย)</span></p>
+<p>ทางที่ถูกคือ <strong>retry loop ที่จำกัดจำนวนครั้ง + backoff + ถ้าครบแล้วยังไม่ได้ให้ fallback ไปอ่าน DB ตรง ๆ</strong> <span class="g">(backoff = ลองใหม่โดยเว้นระยะห่างขึ้นเรื่อย ๆ ไม่ถล่มซ้ำทันที)</span></p></div>
+
+<h3 id="s4-2">4.2 Avalanche (หมดอายุพร้อมกันเป็นกอง)</h3>
+<p>ตอน deploy หรือ warm-up <span class="g">(โหลดข้อมูลใส่ cache ล่วงหน้าก่อนเปิดใช้จริง)</span> เรา set key พร้อมกัน 10,000 ตัวด้วย TTL 300 เท่ากันหมด อีก 5 นาทีข้างหน้ามันจะ<strong>หมดอายุพร้อมกันทั้งหมด</strong> แล้ว DB โดนถล่มเป็นระลอก</p>
+
+<pre><code>// ✅ ใส่ jitter — สุ่มบวกเข้าไป ไม่ให้หมดอายุตรงกัน
+const ttl = 300 + Math.floor(Math.random() * 60);   // 300–360 วินาที
+await redis.set(key, value, 'EX', ttl);</code></pre>
+
+<div class="box why"><span class="lab">jitter คือหลักการเดียวกันทั้งวิชา</span>
+<p>บท 03 retry deadlock ต้องมี jitter / บท 04 TTL ต้องมี jitter / บท 05 retry job ต้องมี jitter</p>
+<p>เหตุผลเดียวกันหมด: <strong>อะไรก็ตามที่ทำพร้อมกันเป๊ะ ๆ จะกลับมาชนกันเป็นระลอกซ้ำ ๆ</strong> jitter คือการจงใจทำให้มันไม่ตรงกัน</p></div>
+
+<h3 id="s4-3">4.3 Redis ต้องเป็นตัวเลือก ไม่ใช่ตัวบังคับ</h3>
+
+<pre><code>async getProduct(id: string) {
+  try {
+    const cached = await this.redis.get(key);
+    if (cached) return JSON.parse(cached);
+  } catch (e) {
+    this.logger.warn('cache read failed, falling back to DB', e);
+  }
+  return this.repo.findOne({ where: { id } });   // ยังทำงานได้แม้ Redis ล่ม
+}</code></pre>
+
+<div class="box trap"><span class="lab">ประโยคที่ควรเขียนลงในข้อสอบ</span>
+<p><strong>Cache คือการ optimize ถ้าระบบพังเมื่อ cache ล่ม แปลว่าเราเพิ่งใส่ single point of failure เข้าไปในระบบโดยไม่ตั้งใจ</strong> <span class="g">(จุดเดียวที่ถ้าพังแล้วลากทั้งระบบล้มตาม)</span></p>
+<p>ทุกการเรียก cache ต้องอยู่ใน try/catch ที่ fallback ไป DB ได้</p></div>
+
+
+<h2 id="s5">5. Atomic Operations</h2>
+
+<h3 id="s5-1">5.1 ทำไม get → +1 → set ถึงผิด</h3>
+
+<pre><code>// ❌ race condition แบบเดียวกับบท 03 เป๊ะ ๆ
+const count = await redis.get('views:1');
+await redis.set('views:1', Number(count) + 1);
+
+// ✅ คำสั่งเดียว เป็น atomic เพราะ Redis เป็น single-threaded
+await redis.incr('views:1');</code></pre>
+
+<p>สังเกตว่านี่คือ <strong>read-check-write</strong> <span class="g">(อ่านค่ามาก่อน ค่อยตัดสินใจแล้วเขียนกลับ — มีช่องว่างให้คนอื่นแทรก)</span> รูปแบบเดียวกับ oversell ในบท 03 เป๊ะ ๆ พอเป็น 3 instance <span class="g">(ตัวสำเนาของแอปที่รันอยู่จริง 1 ตัว)</span> (บท 06) ยิ่งชนกันหนักขึ้นไปอีก การใช้ <code>INCR</code> คือการให้ Redis ทำทั้งหมดในคำสั่งเดียว จึงไม่มีช่องว่างให้ใครแทรก</p>
+
+<h3 id="s5-2">5.2 คำสั่งที่ควรรู้</h3>
+<ul>
+<li><code>INCR</code> / <code>INCRBY</code> — counter (จำนวนวิว, rate limit) <span class="g">(rate limit = จำกัดจำนวนครั้งที่ยิงได้ต่อช่วงเวลา)</span></li>
+<li><code>SET key value EX 300 NX</code> — เขียนเฉพาะเมื่อยังไม่มี key นี้ (พื้นฐานของ lock)</li>
+<li><code>SCAN</code> — ไล่ดู key ทีละชุด</li>
+</ul>
+
+<div class="box trap"><span class="lab">ห้ามใช้ <code>KEYS</code> ใน production เด็ดขาด</span>
+<p><code>KEYS pattern</code> เป็น O(N) <span class="g">(เวลาที่ใช้โตตามจำนวน key ทั้งหมดที่มี)</span> และเพราะ Redis เป็น <strong>single-threaded</strong> มันจะ<strong>บล็อกทั้ง server</strong> ระหว่างที่ไล่ดูทุก key — ทุก request ของทุกคนค้างหมดพร้อมกัน ให้ใช้ <code>SCAN</code> ที่แบ่งทำเป็นชุด ๆ หรือดีกว่านั้นคือเก็บ index ไว้ใน SET เอง</p>
+<p><strong>⚠ สไลด์มีตัวอย่างที่เรียก <code>redis.keys(pattern)</code> ทั้งที่ comment ของตัวเองเขียนไว้ว่าให้ใช้ SCAN</strong></p></div>
+
+
+<h2 id="s6">6. Distributed Lock</h2>
+
+<p>บท 03 เราใช้ DB lock ได้เพราะทุกอย่างอยู่ใน DB เดียว แต่ถ้าต้องกันไม่ให้ <strong>งานหนึ่งถูกทำซ้ำจาก 3 instance พร้อมกัน</strong> (เช่น cron <span class="g">(งานตั้งเวลาให้รันเองเป็นรอบ ๆ)</span> ที่รันทุกเครื่อง หรือ "ใครสักคนไปเติม cache") ก็ต้องมี lock ที่อยู่นอกทั้งสามเครื่อง = Redis</p>
+
+<pre><code>const token = randomUUID();                                  // ① token เฉพาะตัว
+const ok = await redis.set(key, token, 'EX', 10, 'NX');       // ② NX + TTL
+
+if (!ok) return;   // มีคนถืออยู่
+try {
+  await doWork();
+} finally {
+  // ③ ปล่อยด้วย Lua: เทียบ token ก่อนลบ (เป็นคำสั่งเดียว atomic)
+  await redis.eval(
+    `if redis.call("get",KEYS[1])==ARGV[1] then return redis.call("del",KEYS[1]) else return 0 end`,
+    1, key, token,
+  );
+}</code></pre>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 250" role="img" aria-label="บั๊กที่เกิดขึ้นถ้าปล่อย lock ด้วย DEL เฉย ๆ โดยไม่เทียบ token">
+  <text x="14" y="18" class="t-b t-r">ถ้าปล่อย lock ด้วย DEL เฉย ๆ (ไม่เทียบ token) จะเกิดแบบนี้</text>
+
+  <text x="14" y="62" class="t-sm t-b">Worker A</text>
+  <rect x="92" y="38" width="130" height="40" rx="6" class="bx-g"/>
+  <text x="157" y="55" text-anchor="middle" class="t-xs">ได้ lock 🔒</text>
+  <text x="157" y="70" text-anchor="middle" class="t-mono t-g">TTL 10 วินาที</text>
+
+  <rect x="230" y="38" width="180" height="40" rx="6" class="bx-w"/>
+  <text x="320" y="55" text-anchor="middle" class="t-xs">งานช้ากว่าที่คิด…</text>
+  <text x="320" y="70" text-anchor="middle" class="t-xs t-w">TTL หมดตอนนี้ (lock หลุด)</text>
+
+  <rect x="504" y="38" width="176" height="40" rx="6" class="bx-r"/>
+  <text x="592" y="55" text-anchor="middle" class="t-xs">ทำเสร็จ → สั่ง DEL</text>
+  <text x="592" y="70" text-anchor="middle" class="t-mono t-r">ลบ lock ของ B ทิ้ง!</text>
+
+  <text x="14" y="140" class="t-sm t-b">Worker B</text>
+  <rect x="418" y="116" width="150" height="40" rx="6" class="bx-g"/>
+  <text x="493" y="133" text-anchor="middle" class="t-xs">ได้ lock 🔒 (ว่างแล้ว)</text>
+  <text x="493" y="148" text-anchor="middle" class="t-xs">เริ่มทำงาน</text>
+
+  <text x="14" y="196" class="t-sm t-b">Worker C</text>
+  <rect x="576" y="172" width="104" height="40" rx="6" class="bx-r"/>
+  <text x="628" y="189" text-anchor="middle" class="t-xs t-r">เข้ามาได้เลย</text>
+  <text x="628" y="204" text-anchor="middle" class="t-xs t-r">ทำซ้อนกับ B</text>
+
+  <line x1="86" y1="228" x2="686" y2="228" class="ln" marker-end="url(#ar)"/>
+  <text x="676" y="245" text-anchor="end" class="t-xs">เวลา →</text>
+  <text x="300" y="245" class="t-xs t-g">แก้ด้วย: เทียบ token ก่อนลบ ผ่าน Lua script (เพื่อให้เป็นคำสั่งเดียว)</text>
+</svg>
+<figcaption>A ลบ lock ที่ไม่ใช่ของตัวเอง เพราะ <code>DEL</code> ไม่รู้ว่าใครเป็นเจ้าของ — จึงต้องมี token <span class="g">(รหัสสุ่มประจำตัวคนถือ lock ไว้พิสูจน์ว่าเป็นเจ้าของจริง)</span> ประจำตัวและเทียบก่อนลบ</figcaption>
+</figure>
+
+<div class="tbl"><table>
+<tr><th>องค์ประกอบ</th><th>ถ้าไม่มีจะเกิดอะไร</th></tr>
+<tr><td><strong>TTL บังคับ</strong></td><td>worker ที่ถือ lock crash → <strong>lock ค้างตลอดกาล</strong> ไม่มีใครทำงานนั้นได้อีกเลย</td></tr>
+<tr><td><strong>token เฉพาะตัว + ปล่อยด้วย Lua</strong></td><td>เกิดเหตุการณ์ตามรูปด้านบน การแยก <code>GET</code> แล้วค่อย <code>DEL</code> ก็ยังมีช่องว่างระหว่างสองคำสั่ง จึงต้องรวมเป็น Lua script <span class="g">(สคริปต์สั้น ๆ ที่ Redis รันรวดเดียวจบ จึงเป็น atomic)</span> เดียว</td></tr>
+<tr><td><strong><code>try/finally</code></strong></td><td>งาน throw แล้ว lock ไม่ถูกปล่อย ต้องรอ TTL หมดเอง</td></tr>
+<tr><td><strong>heartbeat / extendLock</strong> <span class="g">(ส่งสัญญาณต่ออายุ lock เป็นระยะระหว่างที่ยังทำงานอยู่)</span></td><td>งานยาวกว่า TTL → lock หลุดกลางคันทั้งที่ยังทำอยู่</td></tr>
+</table></div>
+
+<div class="box trap"><span class="lab">ข้อจำกัดที่ต้องรู้ (ตอบข้อนี้ได้คะแนนพิเศษ)</span>
+<p><strong>Distributed lock เป็น best-effort ไม่ใช่การรับประกัน</strong> <span class="g">(best-effort = พยายามให้ดีที่สุด แต่ไม่การันตี 100%)</span> — GC pause <span class="g">(จังหวะที่ Node หยุดทุกอย่างไปเก็บขยะหน่วยความจำ)</span> ของ Node หรือ clock drift <span class="g">(นาฬิกาของแต่ละเครื่องเดินไม่ตรงกัน)</span> ทำให้ process เชื่อว่ายังถือ lock อยู่ทั้งที่ TTL หมดไปแล้ว</p>
+<p>ดังนั้น <strong>ความถูกต้องต้องมาจาก idempotency + unique constraint ที่ DB</strong> <span class="g">(idempotency = ทำซ้ำกี่รอบผลก็เท่าเดิม / unique constraint = กฎที่ DB บังคับว่าห้ามมีค่าซ้ำ)</span> ส่วน lock มีไว้แค่ "ลดการทำงานซ้ำ" เท่านั้น (Redlock <span class="g">(สูตรทำ lock พร้อมกันข้าม Redis หลายตัว)</span> เองก็ยังเป็นที่ถกเถียงในเชิงวิชาการ และถ้าจะใช้ instance ต้องแยกกันจริง ๆ ไม่ใช่ primary กับ replica <span class="g">(ตัวสำเนาที่ก๊อปข้อมูลตามตัวหลัก)</span> ของกันเอง)</p>
+<p>ประโยคนี้เชื่อมตรงไปยังบท 05 เรื่อง <strong>at-least-once + idempotent handler</strong> <span class="g">(at-least-once = job อาจถูกส่งซ้ำได้ ตัวรับงานเลยต้องกันซ้ำเอง)</span></p></div>
+
+<div class="box errata"><span class="lab">⚠ สไลด์บทนี้ผิดหลายจุด</span>
+<ol>
+<li><code>cache.set(lockKey,'1',{ttl:10,nx:true})</code> — <code>Cache</code> ของ <code>@nestjs/cache-manager</code> <strong>ไม่มี option <code>nx</code></strong> ต้องใช้ ioredis <span class="g">(ไลบรารีที่คุยกับ Redis ตรง ๆ จาก Node)</span> ตรง ๆ: <code>set(k,v,'EX',10,'NX')</code></li>
+<li><code>cache.ttl(key)</code> ก็ไม่มีเช่นกัน ต้องใช้ <code>redis.ttl</code></li>
+<li>ตัวอย่างปล่อย lock ด้วย <code>cache.del(lockKey)</code> เฉย ๆ โดยไม่เทียบ token — <strong>ขัดกับหัวข้อ lock ของสไลด์เอง</strong> และลบ lock ของคนอื่นได้ตามรูปด้านบน</li>
+<li><code>finally { releaseLock(key, token) }</code> อ้าง <code>token</code> ที่อาจเป็น undefined ถ้าตอน acquire โยน error ต้องเช็ค <code>if (token)</code> ก่อน</li>
+<li>ตัวอย่าง cache-aside ครอบ <code>cache.set</code> ไว้ใน try เดียวกับการอ่าน DB ทำให้ถ้า cache write พัง จะไป query DB ซ้ำอีกรอบใน catch ควรครอบ try เฉพาะส่วนที่คุยกับ cache</li>
+<li><code>this.userRepo.findOne(id)</code> เป็น API ของ TypeORM <span class="g">(ORM ของ Node — ตัวแปลงระหว่าง object ในโค้ดกับตารางใน DB)</span> 0.2 ที่ถูกถอดออกไปแล้ว ให้ใช้ <code>findOne({ where: { id } })</code> ตามบท 03</li>
+<li>สไลด์ไม่พูดถึง Redis HA <span class="g">(High Availability — มีตัวสำรองพร้อมขึ้นแทนเมื่อตัวหลักล่ม)</span> เลย ทั้งที่ Redis เดี่ยวเป็น SPOF <span class="g">(ย่อจาก single point of failure)</span> ของ session</li>
+</ol></div>
+
+
+<h2 id="s7">7. Memory &amp; Operations</h2>
+
+<h3 id="s7-1">7.1 maxmemory + eviction policy</h3>
+
+<p>เพราะ RAM มีจำกัด เราต้องบอก Redis ล่วงหน้าว่า "ถ้าเต็มแล้วให้ทำยังไง"</p>
+
+<div class="tbl"><table>
+<tr><th>Policy</th><th>ทำอะไร</th><th>ใช้เมื่อ</th></tr>
+<tr><td><code>allkeys-lru</code> <span class="g">(LRU = ดูว่าใครถูกใช้ครั้งล่าสุดนานสุด)</span></td><td>เตะ key ที่ไม่ถูกใช้นานที่สุดออก ไม่ว่าจะมี TTL หรือไม่</td><td>ใช้เป็น cache ล้วน ๆ</td></tr>
+<tr><td><code>volatile-lru</code></td><td>เตะเฉพาะ key ที่มี TTL</td><td>ปนกันระหว่าง cache กับข้อมูลที่ต้องอยู่</td></tr>
+<tr><td><code>noeviction</code></td><td>ไม่เตะอะไรเลย พอเต็มก็ error</td><td>ข้อมูลสำคัญที่หายไม่ได้</td></tr>
+</table></div>
+
+<div class="box trap"><span class="lab">กับดักที่โยงไปบท 05 โดยตรง</span>
+<p>ถ้าใช้ Redis ตัวเดียวกันทั้งเป็น <strong>cache</strong> และเป็น <strong>queue (BullMQ)</strong> <span class="g">(ไลบรารีคิวงานของ Node ที่เก็บคิวไว้ใน Redis)</span> แล้วตั้ง <code>allkeys-lru</code> ไว้ พอ memory เต็ม Redis จะ <strong>เตะ job ในคิวทิ้ง</strong> เพราะมันมองว่าเป็น key ที่ไม่ถูกใช้นาน = งานของผู้ใช้หายเงียบ ๆ โดยไม่มี error ให้เห็น</p>
+<p><strong>ต้องแยก instance หรืออย่างน้อยแยก database index ระหว่าง cache กับ queue เสมอ</strong> <span class="g">(database index ของ Redis = เลขช่อง 0–15 ที่แบ่งพื้นที่กัน ไม่ใช่ index ของตาราง)</span></p></div>
+
+<h3 id="s7-2">7.2 สิ่งที่ต้อง monitor</h3>
+<ul>
+<li><code>keyspace_hits</code> / <code>keyspace_misses</code> → เอามาคำนวณ hit ratio</li>
+<li><code>used_memory</code> → ใกล้ <code>maxmemory</code> หรือยัง</li>
+<li><code>evicted_keys</code> → ถ้าพุ่ง แปลว่า memory ไม่พอและกำลังทิ้งข้อมูลที่ยังใช้อยู่</li>
+<li><code>SLOWLOG GET 10</code> → หาคำสั่งที่ไปบล็อก server</li>
+</ul>
+
+<p><strong>ข้ออื่น ๆ:</strong> ใช้ connection ซ้ำ อย่าเปิดใหม่ทุก request · value ที่ใหญ่เกิน 1MB ให้แยกหรือบีบอัด · Redis เดี่ยวเป็น SPOF ของ session ต้องวางแผน Sentinel <span class="g">(ตัวเฝ้าดู คอยดัน replica ขึ้นเป็นตัวหลักเมื่อตัวหลักล่ม)</span> หรือใช้ managed Redis <span class="g">(Redis ที่เช่าคลาวด์ให้เขาดูแลให้)</span></p>
+
+
+<h2 id="s8">8. 🔗 บทนี้ต่อกับบทอื่นตรงไหน</h2>
+
+<div class="box link-box"><span class="lab">เส้นเชื่อม</span>
+<ul>
+<li><strong>← บท 02:</strong> "service ต้อง stateless อย่าใช้ <code>Map</code> ใน singleton" <span class="g">(stateless = ไม่เก็บข้อมูลผู้ใช้ไว้ในตัวเอง / singleton = object ตัวเดียวที่ทุก request ใช้ร่วมกัน)</span> — Redis คือคำตอบว่าแล้วเอา state ไปไว้ที่ไหน</li>
+<li><strong>← บท 03:</strong> cache แก้ "ช้า" / lock กับ transaction แก้ "ผิด" — <strong>อย่าเอา cache ไปตัดสต็อก</strong> และก่อนจะ cache ให้แก้ index กับ N+1 <span class="g">(ดึง list มาแล้ววน query ลูกทีละแถว จนจำนวน query บานปลาย)</span> ก่อนเสมอ เพราะ cache ที่วางทับ query ห่วย ๆ แค่ซ่อนปัญหาไว้ แล้วจะระเบิดตอน miss</li>
+<li><strong>→ บท 05:</strong> BullMQ ใช้ Redis เป็นที่เก็บคิว จึงต้อง<strong>แยก instance จาก cache</strong> เพราะ eviction policy จะกินงานในคิว / distributed lock ที่เป็น best-effort คือเหตุผลที่ job handler ต้อง idempotent</li>
+<li><strong>→ บท 05:</strong> pub/sub <span class="g">(ประกาศข้อความทีเดียว ให้ทุกเครื่องที่สมัครฟังได้รับพร้อมกัน)</span> ที่ใช้บอกทุก instance ให้ล้าง cache ก็อยู่บน Redis เช่นกัน</li>
+<li><strong>→ บท 06:</strong> session ที่ย้ายมาไว้ Redis คือเงื่อนไขที่ทำให้ scale ออกหลาย instance ได้ / cache hit ratio เป็นหนึ่งใน metric หลักที่ต้อง monitor</li>
+</ul></div>
+
+
+<h2 id="s9">9. 📝 คลังคำตอบอัตนัย</h2>
+
+<details class="qa"><summary>Cache-aside คืออะไร มีข้อดีข้อเสียอย่างไร เทียบกับ write-through และ write-behind</summary>
+<div class="ans">
+<div class="skel">โครง: อธิบายกลไกทีละแบบ → เทียบ 3 มิติ (latency / freshness / ความเสี่ยง) → บอกว่าเลือกอันไหนเมื่อไร</div>
+<p><strong>Cache-aside</strong> หรือ lazy loading คือแอปพลิเคชันอ่านจาก cache ก่อน หากพบข้อมูล (hit) ก็คืนค่าทันที หากไม่พบ (miss) จึงไปอ่านจาก database แล้วนำผลลัพธ์ไปเขียนลง cache พร้อมกำหนด TTL ก่อนคืนค่า ข้อดีคือ cache เก็บเฉพาะข้อมูลที่มีผู้ขอจริง และหาก Redis ล่มระบบยังทำงานต่อได้เพราะสามารถ fallback ไป database ได้ ข้อเสียคือ request แรกช้าเสมอเพราะ cache ยังว่าง และมีความเสี่ยงเรื่อง cache stampede</p>
+<p><strong>Write-through</strong> คือเมื่อมีการเขียนข้อมูล จะเขียนลง database แล้วอัปเดต cache ทันทีในจังหวะเดียวกัน ทำให้ cache สดใหม่เสมอหลังการเขียน แต่ write latency สูงขึ้นเพราะต้องดำเนินการสองที่ และอาจสิ้นเปลือง memory กับข้อมูลที่ไม่มีผู้ใดอ่าน</p>
+<p><strong>Write-behind</strong> คือเขียนลง cache ก่อนแล้วตอบผู้ใช้ทันที จากนั้นจึงทยอย flush ลง database แบบ asynchronous ทำให้ write latency ต่ำที่สุด แต่มีความเสี่ยงร้ายแรงคือ <strong>หาก Redis ล่มก่อน flush ข้อมูลจะสูญหายจริง</strong> จึงใช้ได้เฉพาะข้อมูลที่ยอมให้สูญหายได้ เช่น counter จำนวนการเข้าชมหรือข้อมูล analytics และห้ามใช้กับ payment, order หรือ authentication โดยเด็ดขาด</p>
+<p>โดยทั่วไปจึงเลือก cache-aside เป็นค่าเริ่มต้นสำหรับงาน read-heavy เพราะให้ความปลอดภัยและความเรียบง่ายมากที่สุด</p>
+</div></details>
+
+<details class="qa"><summary>Cache stampede และ cache avalanche คืออะไร ต่างกันอย่างไร และแก้อย่างไร</summary>
+<div class="ans">
+<div class="skel">โครง: นิยามทั้งคู่ + ความต่าง → ทางแก้ของแต่ละอัน → ข้อควรระวังของทางแก้</div>
+<p><strong>Cache stampede</strong> คือกรณีที่ key ยอดนิยม<em>ตัวเดียว</em>หมดอายุในขณะที่มี request จำนวนมากกำลังขอข้อมูลนั้นอยู่ ทำให้ทุก request เกิด miss พร้อมกันและวิ่งไป query database ตัวเดียวกันพร้อมกันทั้งหมด ซึ่งอาจทำให้ database ล่มได้</p>
+<p>วิธีแก้คือให้มีเพียง request เดียวที่ได้ไป query database และเติม cache โดยใช้ <strong>distributed lock</strong> ผ่านคำสั่ง <code>SET key token EX ttl NX</code> ส่วน request ที่เหลือให้รอแล้วลองอ่าน cache ใหม่ ข้อควรระวังคือการรอนั้นต้องเป็น <strong>loop ที่จำกัดจำนวนครั้งพร้อม backoff และมี fallback ไปอ่าน database โดยตรงเมื่อครบกำหนด</strong> ไม่ใช่การเรียกฟังก์ชันตัวเองซ้ำแบบไม่มีขอบเขต เพราะหากผู้ถือ lock เกิดล่มไป request ที่เหลือจะวนไม่สิ้นสุดจนเกิด stack overflow</p>
+<p><strong>Cache avalanche</strong> ต่างออกไปตรงที่เป็นปัญหาของ key <em>จำนวนมาก</em> ที่หมดอายุพร้อมกัน มักเกิดหลังการ deploy หรือ warm-up ที่มีการ set key นับหมื่นตัวด้วย TTL เท่ากันในเวลาไล่เลี่ยกัน เมื่อถึงเวลา key ทั้งหมดจะหมดอายุพร้อมกันและ database ถูกถล่มเป็นระลอก</p>
+<p>วิธีแก้คือ <strong>เติม jitter แบบสุ่มลงใน TTL</strong> เช่นใช้ค่า 300 บวกกับเลขสุ่ม 0 ถึง 60 วินาที เพื่อกระจายเวลาหมดอายุออกจากกัน ซึ่งเป็นหลักการเดียวกับที่ใช้ใน retry ของ deadlock ในบท 03 และ retry ของ job ในบท 05 คือสิ่งใดก็ตามที่เกิดขึ้นพร้อมกันเป๊ะจะกลับมาชนกันซ้ำเป็นระลอก</p>
+</div></details>
+
+<details class="qa"><summary>ทำไมทุก cache key ต้องมี TTL ทั้งที่เราเขียน invalidation ไว้ครบแล้ว</summary>
+<div class="ans">
+<div class="skel">โครง: เหตุผลด้าน memory → เหตุผลด้าน correctness (สำคัญกว่า) → สรุปบทบาทของทั้งสองกลไก</div>
+<p>เหตุผลแรกเป็นเรื่อง memory เนื่องจาก Redis เก็บข้อมูลใน RAM ซึ่งมีจำกัดและมีต้นทุนสูงกว่าดิสก์มาก key ที่ไม่มี TTL จะคงอยู่ไปเรื่อย ๆ กลายเป็น memory leak จนกระทั่ง Redis ชน <code>maxmemory</code> แล้วเริ่มทำ eviction ซึ่งอาจไปลบข้อมูลที่ยังจำเป็นออกแทน</p>
+<p>เหตุผลที่สองสำคัญกว่าและเป็นเรื่องความถูกต้อง คือ <strong>TTL ทำหน้าที่เป็นตาข่ายนิรภัยของ invalidation</strong> ไม่ว่าจะเขียน invalidation รอบคอบเพียงใด ก็จะมีจังหวะที่พลาดเสมอ เช่น process ล่มระหว่างลบ key, ลืม invalidate key ที่ประกอบขึ้นจากข้อมูลนั้น เช่นลบ <code>user:1</code> แต่ลืม <code>users:list</code> หรือเกิด race ระหว่างการเขียน database กับการลบ cache</p>
+<p>ในกรณีเหล่านั้น หากไม่มี TTL ข้อมูลเก่าจะค้างอยู่ใน cache ตลอดกาลโดยไม่มีผู้ใดทราบ แต่หากมี TTL ความเสียหายจะถูกจำกัดอยู่เพียงช่วงเวลาที่กำหนดไว้เท่านั้น</p>
+<p>สรุปคือทั้งสองกลไกทำหน้าที่คนละอย่าง <strong>invalidation ทำให้ข้อมูลสดเร็ว</strong> ส่วน <strong>TTL รับประกันว่าข้อมูลเก่าจะไม่ค้างตลอดไป</strong> จึงต้องมีทั้งคู่ และควรกำหนด TTL ตามความถี่ในการเปลี่ยนแปลงของข้อมูล เช่น 30 วินาทีถึง 5 นาทีสำหรับข้อมูลที่เปลี่ยนบ่อย และหลายชั่วโมงสำหรับข้อมูลที่แทบไม่เปลี่ยน</p>
+</div></details>
+
+<details class="qa"><summary>จงอธิบายวิธีทำ distributed lock ด้วย Redis ให้ถูกต้อง พร้อมบอกว่าแต่ละองค์ประกอบป้องกันอะไร</summary>
+<div class="ans">
+<div class="skel">โครง: คำสั่งหลัก → อธิบายทีละองค์ประกอบว่ากันอะไร → ข้อจำกัดที่ต้องยอมรับ</div>
+<p>คำสั่งหลักคือ <code>SET lockKey &lt;uuid-token&gt; EX 10 NX</code> โดย <code>NX</code> ทำให้เขียนสำเร็จก็ต่อเมื่อยังไม่มี key นี้อยู่ ซึ่งเป็น atomic เพราะ Redis เป็น single-threaded ผู้ที่เขียนสำเร็จคือผู้ที่ได้ lock</p>
+<p><strong>TTL</strong> เป็นสิ่งที่ขาดไม่ได้ เพราะหาก worker ที่ถือ lock เกิดล่มโดยไม่ได้ปล่อย lock นั้นจะค้างอยู่ตลอดกาลและไม่มีผู้ใดทำงานนั้นได้อีกเลย</p>
+<p><strong>token ที่ไม่ซ้ำกันของแต่ละผู้ถือ</strong> ใช้ควบคู่กับการปล่อย lock ผ่าน Lua script ที่เปรียบเทียบ token ก่อนลบ เหตุผลคือ หากใช้ <code>DEL</code> เฉย ๆ จะเกิดกรณีที่ process A ทำงานช้าจน TTL หมด, process B ได้ lock ไปแล้ว, จากนั้น A ทำงานเสร็จแล้วสั่ง <code>DEL</code> ซึ่งกลายเป็นการ<strong>ลบ lock ของ B</strong> ทำให้ process ที่สามเข้ามาได้และเกิดการทำงานซ้อนกัน การแยกเป็น <code>GET</code> แล้วเปรียบเทียบแล้วจึง <code>DEL</code> ก็ยังคงมีช่องว่างระหว่างสองคำสั่ง จึงต้องรวมเป็น Lua script เดียวเพื่อให้เป็น atomic</p>
+<p>นอกจากนี้ต้องปล่อย lock ใน <code>finally</code> เพื่อให้ปล่อยแม้เกิด exception และควรตรวจสอบว่า token มีค่าจริงก่อนปล่อย เผื่อกรณีที่การขอ lock ล้มเหลวตั้งแต่ต้น ส่วนงานที่อาจใช้เวลานานกว่า TTL ต้องมีกลไก heartbeat เพื่อต่ออายุ lock ระหว่างทำงาน</p>
+<p>ข้อจำกัดสำคัญที่ต้องยอมรับคือ <strong>distributed lock เป็นเพียง best-effort ไม่ใช่การรับประกันความถูกต้อง</strong> เพราะ GC pause หรือ clock drift อาจทำให้ process เชื่อว่ายังถือ lock อยู่ทั้งที่หมดอายุไปแล้ว ดังนั้นความถูกต้องที่แท้จริงต้องมาจาก <strong>การออกแบบให้ operation เป็น idempotent และมี unique constraint ที่ database</strong> โดยให้ lock ทำหน้าที่เพียงลดการทำงานซ้ำเท่านั้น</p>
+</div></details>
+
+<details class="qa"><summary>ทำไมห้ามใช้คำสั่ง <code>KEYS</code> ใน production</summary>
+<div class="ans">
+<div class="skel">โครง: โยงกับสถาปัตยกรรมของ Redis → ผลที่เกิด → ทางเลือก</div>
+<p>เพราะ <code>KEYS pattern</code> มีความซับซ้อน O(N) คือต้องไล่ตรวจ key ทุกตัวใน database และที่สำคัญกว่านั้นคือ <strong>Redis เป็น single-threaded</strong> จึงประมวลผลได้ทีละคำสั่งเท่านั้น</p>
+<p>ผลคือระหว่างที่ <code>KEYS</code> ทำงานอยู่ คำสั่งอื่นทั้งหมดจากทุก client จะถูกบล็อกไว้ บน Redis ที่มี key หลักล้านตัวอาจใช้เวลาเป็นวินาที ซึ่งหมายความว่าทุก request ในระบบที่ต้องพึ่ง cache จะค้างพร้อมกันหมด กลายเป็น outage ที่เราสร้างขึ้นเอง</p>
+<p>ทางเลือกคือใช้ <code>SCAN</code> ซึ่งทำงานเป็นชุดย่อยพร้อม cursor <span class="g">(ตัวคั่นหน้าว่าไล่ถึงไหนแล้ว รอบหน้าไปต่อจากตรงนั้น)</span> จึงไม่บล็อก server แม้จะไม่รับประกันภาพ snapshot <span class="g">(ภาพนิ่งของข้อมูลทั้งก้อน ณ วินาทีเดียว)</span> ที่สมบูรณ์ หรือทางที่ดีกว่าคือ<strong>ออกแบบไม่ให้ต้องค้นหา key ตั้งแต่แรก</strong> โดยเก็บรายการ key ที่เกี่ยวข้องไว้ใน SET ของตัวเอง แล้วอ่าน SET นั้นเมื่อต้อง invalidate เป็นกลุ่ม</p>
+</div></details>
+
+<details class="qa"><summary>ถ้า Redis ล่ม ระบบควรมีพฤติกรรมอย่างไร และควรออกแบบโค้ดอย่างไร</summary>
+<div class="ans">
+<div class="skel">โครง: หลักการ → โค้ด → ผลที่ยอมรับได้ → เชื่อมกับกรณีที่ Redis ไม่ใช่แค่ cache</div>
+<p>หลักการคือ <strong>cache เป็นการ optimize ไม่ใช่ dependency ที่ขาดไม่ได้</strong> ระบบต้องทำงานต่อได้เมื่อ Redis ล่ม เพียงแต่ช้าลง หากระบบล่มตามไปด้วย แสดงว่าเราได้เพิ่ม single point of failure เข้าไปโดยไม่ตั้งใจ</p>
+<p>ในทางปฏิบัติคือทุกการเรียก cache ต้องอยู่ใน <code>try/catch</code> ที่เมื่อเกิด error จะบันทึก log ไว้แล้ว <strong>fallback ไปอ่านจาก database</strong> แทน ไม่ใช่โยน error ออกไปยังผู้ใช้ และควรครอบ try เฉพาะส่วนที่ติดต่อกับ cache เท่านั้น ไม่ปะปนกับการอ่าน database เพื่อไม่ให้เกิดการ query ซ้ำโดยไม่ตั้งใจเมื่อการเขียน cache ล้มเหลว</p>
+<p>ผลที่ยอมรับได้คือ latency สูงขึ้นและภาระที่ database เพิ่มขึ้นชั่วคราว จึงต้องเผื่อ capacity ของ database ไว้ระดับหนึ่งสำหรับกรณีนี้</p>
+<p>ข้อควรระวังคือหลักการนี้ใช้ได้เฉพาะเมื่อ Redis ทำหน้าที่เป็น cache เท่านั้น หากเราเก็บ <strong>session</strong> หรือ <strong>queue</strong> ไว้ใน Redis ด้วย ข้อมูลเหล่านั้นไม่มีที่ให้ fallback Redis จะกลายเป็น single point of failure จริง ๆ จึงต้องวางแผน high availability ด้วย Sentinel หรือใช้ managed Redis และควรแยก instance ระหว่าง cache กับ queue เพราะ eviction policy แบบ <code>allkeys-lru</code> จะลบ job ในคิวทิ้งเมื่อ memory เต็ม</p>
+</div></details>
+
+<details class="qa"><summary>ระบบขายสินค้าจำกัดจำนวน ควรใช้ Redis cache เก็บจำนวนสต็อกเพื่อลดภาระ DB หรือไม่</summary>
+<div class="ans">
+<div class="skel">โครง: แยกสองการใช้งานของ "สต็อก" ให้ชัด → ตอบคนละแบบ → เหตุผลเชิงกลไก</div>
+<p>ต้องแยกให้ชัดก่อนว่า "สต็อก" ถูกใช้ในสองบริบทที่มีข้อกำหนดต่างกันโดยสิ้นเชิง</p>
+<p><strong>สต็อกสำหรับแสดงผลบนหน้าเว็บ</strong> สามารถ cache ได้และควร cache ด้วย เพราะเป็นงาน read-heavy อย่างมาก และการที่ผู้ใช้เห็นตัวเลขคลาดเคลื่อนไปเล็กน้อยในช่วงไม่กี่วินาทีนั้นยอมรับได้ ควรกำหนด TTL สั้นประมาณ 30 วินาทีถึง 1 นาทีพร้อม jitter</p>
+<p><strong>สต็อกที่ใช้ตัดตอนกดซื้อจริง</strong> <strong>ห้ามใช้ cache โดยเด็ดขาด</strong> ต้องอ่านจาก database ภายใต้ transaction และ pessimistic lock <span class="g">(ล็อกแถวไว้ตั้งแต่ตอนอ่าน ไม่ให้ใครแตะจนกว่าจะเสร็จ)</span> ตามบท 03</p>
+<p>เหตุผลเชิงกลไกคือ cache ไม่มี transaction ไม่มี lock และไม่มี constraint การอ่านค่าจาก cache แล้วตัดสินใจขายก็คือรูปแบบ <strong>read-check-write</strong> ที่มีช่องว่างของเวลาแบบเดียวกับที่ทำให้เกิด oversell ตั้งแต่แรก และร้ายแรงกว่าเดิมเพราะค่าใน cache อาจเก่ากว่าความเป็นจริงด้วย</p>
+<p>หลักการสรุปคือ <strong>cache แก้ปัญหาเรื่องความช้า ไม่ได้แก้ปัญหาเรื่องความถูกต้อง</strong> สิ่งที่ต้องถูกต้องเสมอต้องมาจาก database ที่มีคุณสมบัติ ACID <span class="g">(คุณสมบัติ 4 ข้อที่การันตีว่า transaction จะไม่ทำข้อมูลเพี้ยน)</span> เท่านั้น</p>
+<p>เพิ่มเติมคือ ก่อนตัดสินใจใส่ cache ควรตรวจสอบก่อนว่า query ที่ช้านั้นมี index ครบและไม่มีปัญหา N+1 หรือไม่ เพราะการวาง cache ทับ query ที่เขียนไม่ดีเป็นเพียงการซ่อนปัญหาไว้ และจะปรากฏขึ้นทันทีที่เกิด cache miss</p>
+</div></details>
+
+
+<h2 id="s10">10. ✅ เช็คตัวเองก่อนปิดบท</h2>
+
+<ul>
+<li>อธิบายได้ว่า "single-threaded" ของ Redis ทำให้เกิดทั้ง<em>ข้อดี</em> (atomic) และ<em>ข้อห้าม</em> (KEYS) ยังไง</li>
+<li>บอกได้ว่า TTL มีไว้ 2 เหตุผล ไม่ใช่เหตุผลเดียว</li>
+<li>แยก stampede กับ avalanche ออกจากกันได้ และรู้ว่าแก้คนละวิธี</li>
+<li>เขียน distributed lock ได้ครบทั้ง NX + TTL + token + Lua release และเล่าบั๊ก "ลบ lock ของคนอื่น" ได้</li>
+<li>ตอบได้ทันทีว่า "เอา cache ไปตัดสต็อกได้ไหม" พร้อมเหตุผล</li>
+<li>รู้ว่าทำไมต้องแยก Redis ของ cache กับของ queue</li>
+</ul>
+
+<div class="pager">
+  <a href="03-database.html">← บทที่ 3</a>
+  <a href="05-async-queue.html">บทที่ 5 — Async &amp; Queue →</a>
+</div>
+
+</main>
+
+<aside class="toc">
+<h4>ในบทนี้</h4>
+<a href="#s0">0. จุดที่เรื่องเดินมาถึง</a>
+<a href="#s1">1. ควร cache อะไร</a>
+<a href="#s2">2. Cache Strategy 3 แบบ</a>
+<a href="#s3">3. TTL &amp; Invalidation</a>
+<a href="#s4">4. Stampede &amp; Avalanche</a>
+<a href="#s5">5. Atomic Operations</a>
+<a href="#s6">6. Distributed Lock</a>
+<a href="#s7">7. Memory &amp; Ops</a>
+<a href="#s8">8. 🔗 เชื่อมกับบทอื่น</a>
+<a href="#s9">9. 📝 คลังคำตอบอัตนัย</a>
+<a href="#s10">10. ✅ เช็คตัวเอง</a>
+</aside>
+</div>
+</body>
+</html>

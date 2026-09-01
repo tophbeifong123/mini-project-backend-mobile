@@ -1,0 +1,623 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>บทที่ 3 — Database Engineering</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" aria-hidden="true" style="position:absolute"><defs>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-i"/></marker>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-r"/></marker>
+<marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-g"/></marker>
+<marker id="ara" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-a"/></marker>
+</defs></svg>
+
+<nav class="topnav"><div class="topnav-inner">
+  <a class="home" href="00-index.html">◆ สารบัญ</a>
+  <a href="01-architecture-docker.html">01 Docker</a>
+  <a href="02-nestjs-di.html">02 NestJS</a>
+  <a class="here" href="03-database.html">03 Database</a>
+  <a href="04-redis.html">04 Redis</a>
+  <a href="05-async-queue.html">05 Queue</a>
+  <a href="06-scaling.html">06 Scaling</a>
+</div></nav>
+
+<div class="wrap">
+<main>
+
+<div class="hero">
+  <div class="kicker">Backend 03</div>
+  <h1>Database Engineering</h1>
+  <p>บทนี้ตอบคำถามเดียว: <strong>ทำยังไงให้ข้อมูลถูกต้องเมื่อมีคนใช้พร้อมกันเป็นพัน และเปลี่ยนโครงสร้างตารางได้โดยไม่ทำข้อมูลหาย</strong></p>
+</div>
+
+<div class="chips">
+  <span class="chip">TypeORM / Data Mapper <span class="g">(ตัวแปลงระหว่าง object ในโค้ดกับตารางใน DB)</span></span>
+  <span class="chip">Migration <span class="g">(ไฟล์เวอร์ชันของโครงสร้างตาราง DB ที่รันตามลำดับได้)</span></span>
+  <span class="chip">ACID <span class="g">(คุณสมบัติ 4 ข้อที่การันตีว่ากลุ่มคำสั่ง DB จะไม่ทำข้อมูลเพี้ยน)</span></span>
+  <span class="chip">Race Condition <span class="g">(สองคำขอเข้ามาพร้อมกันแล้วแย่งข้อมูลก้อนเดียวกันจนผลเพี้ยน)</span></span>
+  <span class="chip">Pessimistic vs Optimistic Lock <span class="g">(ล็อกกันไว้ก่อน vs ปล่อยให้ชนแล้วค่อยตรวจตอนเขียน)</span></span>
+  <span class="chip">Deadlock <span class="g">(สองฝ่ายรอ lock ของกันและกันจนค้างทั้งคู่)</span></span>
+  <span class="chip">N+1 <span class="g">(ยิง query ซ้ำทีละแถวจนกลายเป็นร้อยรอบ)</span></span>
+  <span class="chip">Connection Pool <span class="g">(ถังเก็บ connection DB ไว้ใช้ซ้ำ ไม่ต้องเปิดใหม่ทุกครั้ง)</span></span>
+</div>
+
+<h2 id="s0">0. จุดที่เรื่องเดินมาถึง</h2>
+
+<p>Flash Sale เปิดขาย iPhone ราคาถูก มีของ <strong>100 เครื่อง</strong> โค้ดเราเขียนไว้แบบนี้:</p>
+
+<pre><code>async buy(productId: string) {
+  const p = await this.repo.findOne({ where: { id: productId } });
+  if (p.stock &lt; 1) throw new BadRequestException('ของหมด');   // ① อ่านและตรวจ
+  p.stock -= 1;
+  await this.repo.save(p);                                     // ② เขียน
+  return this.orderRepo.save({ productId });
+}</code></pre>
+
+<p>ทดสอบคนเดียวผ่านฉลุย พอขึ้น production เปิดขาย 10 วินาทีแรกมีคนกด 5,000 คน ผลคือ <strong>ขายไป 130 เครื่อง ทั้งที่มีของ 100</strong> แถมไม่มี error สักตัวใน log ให้ตามด้วย</p>
+
+<div class="box base"><span class="lab">ทำไมมันพัง</span>
+<p>ระหว่างบรรทัด ① กับ ② มี<strong>ช่องว่างของเวลา</strong> ในช่องว่างนั้นมี request อีก 30 ตัวที่อ่านค่า <code>stock</code> ตัวเดียวกันไปแล้ว ทุกตัวเลยผ่าน <code>if</code> ไปได้หมด แล้วมาเขียนทับกันเป็น <code>stock = 0</code></p>
+<p>รูปแบบ <strong>"อ่าน → ตรวจ → เขียน" (read-check-write)</strong> คือหน้าตาของ race condition ทุกตัวในโลก บทนี้คือวิธีปิดช่องว่างนั้น</p></div>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 270" role="img" aria-label="ไทม์ไลน์แสดง race condition ที่ทำให้ขายของเกินจำนวน">
+  <text x="14" y="20" class="t-b t-r">Race condition: ทั้งสอง request อ่านค่าเดียวกันก่อนที่ใครจะเขียน</text>
+
+  <text x="14" y="70" class="t-sm t-b">Request A</text>
+  <rect x="88" y="44" width="122" height="42" rx="6" class="bx"/>
+  <text x="149" y="62" text-anchor="middle" class="t-xs">SELECT stock</text>
+  <text x="149" y="78" text-anchor="middle" class="t-mono t-a">ได้ 1</text>
+
+  <rect x="272" y="44" width="122" height="42" rx="6" class="bx"/>
+  <text x="333" y="62" text-anchor="middle" class="t-xs">if (1 &lt; 1) ?</text>
+  <text x="333" y="78" text-anchor="middle" class="t-mono t-g">ผ่าน</text>
+
+  <rect x="456" y="44" width="122" height="42" rx="6" class="bx-r"/>
+  <text x="517" y="62" text-anchor="middle" class="t-xs">UPDATE</text>
+  <text x="517" y="78" text-anchor="middle" class="t-mono t-r">stock = 0</text>
+
+  <text x="14" y="140" class="t-sm t-b">Request B</text>
+  <rect x="180" y="114" width="122" height="42" rx="6" class="bx"/>
+  <text x="241" y="132" text-anchor="middle" class="t-xs">SELECT stock</text>
+  <text x="241" y="148" text-anchor="middle" class="t-mono t-a">ได้ 1 ← ค่าเดิม!</text>
+
+  <rect x="364" y="114" width="122" height="42" rx="6" class="bx"/>
+  <text x="425" y="132" text-anchor="middle" class="t-xs">if (1 &lt; 1) ?</text>
+  <text x="425" y="148" text-anchor="middle" class="t-mono t-g">ผ่าน</text>
+
+  <rect x="548" y="114" width="122" height="42" rx="6" class="bx-r"/>
+  <text x="609" y="132" text-anchor="middle" class="t-xs">UPDATE</text>
+  <text x="609" y="148" text-anchor="middle" class="t-mono t-r">stock = 0</text>
+
+  <line x1="80" y1="180" x2="686" y2="180" class="ln" marker-end="url(#ar)"/>
+  <text x="676" y="198" text-anchor="end" class="t-xs">เวลา →</text>
+  <line x1="149" y1="86" x2="149" y2="180" class="ln-d"/>
+  <line x1="241" y1="156" x2="241" y2="180" class="ln-d"/>
+  <line x1="517" y1="86" x2="517" y2="180" class="ln-d"/>
+  <line x1="609" y1="156" x2="609" y2="180" class="ln-d"/>
+
+  <rect x="88" y="206" width="290" height="52" rx="7" class="bx-r"/>
+  <text x="233" y="226" text-anchor="middle" class="t-xs t-r t-b">ขายไป 2 เครื่อง แต่ stock ลดแค่ 1</text>
+  <text x="233" y="245" text-anchor="middle" class="t-xs">คูณด้วย 5,000 request ก็ได้ 130 จาก 100</text>
+
+  <rect x="396" y="206" width="290" height="52" rx="7" class="bx-w"/>
+  <text x="541" y="226" text-anchor="middle" class="t-xs t-b">ช่องว่างระหว่าง "อ่าน" กับ "เขียน" คือรูรั่ว</text>
+  <text x="541" y="245" text-anchor="middle" class="t-xs">ปิดได้ 2 ทาง: ล็อกช่วงนั้น หรือรวมเป็นคำสั่งเดียว</text>
+</svg>
+<figcaption>สังเกตว่าไม่มีขั้นตอนไหนผิดเลยสักขั้นเมื่อดูทีละ request — มันผิดเพราะสองอันนี้ทำงานสลับกันอยู่</figcaption>
+</figure>
+
+
+<h2 id="s1">1. ปูพื้นฐาน: ORM คืออะไร แลกอะไร</h2>
+
+<p>ORM (Object-Relational Mapping) ทำหน้าที่แปลง object ใน TypeScript ↔ แถวในตาราง SQL ให้อัตโนมัติ เราเขียน <code>repo.findOne(...)</code> แทนที่จะต่อ SQL string เอง</p>
+
+<div class="tbl"><table>
+<tr><th>ได้อะไร</th><th>แลกอะไร</th></tr>
+<tr><td>type safety + auto-complete + refactor แล้วชื่อตามไปเอง</td><td><strong>abstraction leak</strong> <span class="g">(ของที่ ORM ซ่อนไว้ โผล่ทะลุออกมาให้เห็นอยู่ดี)</span> — ตอน tune performance ยังต้องรู้ SQL อยู่ดี</td></tr>
+<tr><td>ไม่ต้องต่อ SQL string เอง กัน SQL injection ได้ระดับหนึ่ง</td><td>สร้าง SQL ที่แย่ได้ง่ายมาก (N+1, cartesian join <span class="g">(JOIN ที่ทำให้แถวคูณกันจนบานปลาย)</span>) ทั้งที่โค้ดดูสวย</td></tr>
+<tr><td>entity <span class="g">(คลาสในโค้ดที่แทน 1 ตารางใน DB)</span> + repository <span class="g">(ตัวกลางที่รับหน้าที่อ่าน/เขียน entity ลง DB)</span> + migration อยู่ในระบบเดียวกัน</td><td>มี overhead จากการแปลงแถวเป็น object</td></tr>
+</table></div>
+
+<p><strong>Data Mapper vs Active Record:</strong> TypeORM ใช้ Data Mapper เป็นหลัก คือ entity เป็นข้อมูลล้วน ๆ ส่วน repository เป็นคนรับผิดชอบเรื่องการบันทึก เหมาะกับแอปใหญ่เพราะแยกความรับผิดชอบชัด (ตรงกับชั้น Repository ในบท 02) ส่วน Active Record คือ entity มี <code>.save()</code> ติดมาในตัว เหมาะกับ CRUD ง่าย ๆ</p>
+
+<div class="box why"><span class="lab">ประโยคที่ต้องพูดได้</span>
+<p>ORM <strong>ซ่อน SQL ไว้ แต่ไม่ได้ทำให้ SQL หายไป</strong> — ยังต้องเปิด <code>logging: true</code> ใน dev เพื่อดูว่ามันยิงอะไรออกไปจริง ๆ และใช้ <code>EXPLAIN ANALYZE</code> <span class="g">(สั่งให้ DB โชว์ว่าจริง ๆ มันหา query นี้ยังไง ใช้เวลาเท่าไร)</span> กับ query ที่ช้า</p></div>
+
+
+<h2 id="s2">2. Migration — version control ของ schema <span class="g">(โครงสร้างตารางกับคอลัมน์ของ DB)</span></h2>
+
+<h3 id="s2-1">2.1 <code>synchronize: true</code> คือความเสี่ยงอันดับหนึ่งของบทนี้</h3>
+
+<p><code>synchronize: true</code> สั่งให้ TypeORM "ทำให้ schema ในฐานข้อมูลตรงกับ entity" ซึ่งฟังดูสะดวกดี แต่คำว่า "ตรงกัน" รวมถึง <strong><code>DROP COLUMN</code> และ <code>DROP TABLE</code></strong> ด้วย</p>
+
+<div class="box trap"><span class="lab">สถานการณ์จริง</span>
+<p>เราลบ field <code>phoneNumber</code> ออกจาก entity เพราะไม่ใช้แล้ว → TypeORM เห็นว่า DB มีคอลัมน์นี้แต่ entity ไม่มี → สั่ง <code>ALTER TABLE users DROP COLUMN phone_number</code> → <strong>เบอร์โทรของผู้ใช้ทุกคนหายถาวร</strong> ไม่มีการถาม ไม่มี backup ไม่มีคำเตือน</p>
+<p>นี่ไม่ใช่ downtime ที่รอเดี๋ยวก็กลับมา แต่เป็น <strong>data loss</strong> ที่กู้ไม่ได้ถ้าไม่มี backup</p></div>
+
+<p>ทางที่ถูกคือ <code>synchronize: false</code> เสมอ แล้วใช้ migration ทุก environment</p>
+
+<h3 id="s2-2">2.2 กฎของ migration</h3>
+
+<div class="tbl"><table>
+<tr><th>กฎ</th><th>เหตุผล</th></tr>
+<tr><td>เขียนทั้ง <code>up()</code> และ <code>down()</code> <span class="g">(คำสั่งย้อนสิ่งที่ up() ทำ)</span> แล้ว<strong>ทดสอบ revert จริง</strong></td><td>ถ้า deploy แล้วพังตอนตี 2 ต้อง rollback <span class="g">(ย้อน DB กลับไปสถานะก่อนหน้า)</span> ได้ทันที ไม่ใช่มานั่งเขียน SQL แก้สดตอนนั้น</td></tr>
+<tr><td><strong>ห้ามแก้ migration ที่ deploy ไปแล้ว</strong></td><td>migration ที่รันแล้วถูกบันทึกไว้ในตาราง <code>migrations</code> การไปแก้ไฟล์เก่าทำให้ environment ที่รันไปแล้วกับที่ยังไม่รัน <strong>มี schema ต่างกันถาวร</strong> เรียกว่า schema drift ซึ่งหาสาเหตุยากมาก</td></tr>
+<tr><td>1 migration = 1 การเปลี่ยนแปลงเชิงตรรกะ</td><td>review ง่าย rollback แม่นยำ และหาตัวที่ทำพังได้เร็ว</td></tr>
+<tr><td>อ่าน migration ที่ generate มา<strong>ก่อน commit เสมอ</strong></td><td>generator เดาจาก diff ของ entity — การ <em>rename</em> คอลัมน์มักถูกตีความเป็น <code>DROP</code> แล้ว <code>CREATE</code> ใหม่ ซึ่งข้อมูลหาย</td></tr>
+<tr><td>รัน migration เป็น <strong>job แยกก่อน deploy app</strong></td><td>ถ้ารันตอน app boot แล้วมี 3 instance <span class="g">(ตัวสำเนาของแอปที่กำลังรันอยู่จริง 1 ตัว)</span> ขึ้นพร้อมกัน (บท 06) ทั้งสามจะแย่งกันรัน migration ตัวเดียวกัน</td></tr>
+<tr><td>ทดสอบบน<strong>สำเนาข้อมูลจริง</strong></td><td>migration ที่ผ่านฉลุยบน DB เปล่า อาจใช้เวลา 40 นาทีและล็อกตารางบน DB จริงที่มี 50 ล้านแถว</td></tr>
+</table></div>
+
+<h3 id="s2-3">2.3 Migration ที่ล็อกตาราง</h3>
+
+<p><code>ALTER TABLE orders ADD COLUMN status VARCHAR NOT NULL DEFAULT 'pending'</code> ดูไม่มีพิษภัย แต่บน PostgreSQL รุ่นเก่ามันจะ <strong>เขียนตารางใหม่ทั้งตาราง</strong> และถือ <code>ACCESS EXCLUSIVE</code> <span class="g">(ล็อกแรงสุด ห้ามแม้แต่คนที่จะมาอ่าน)</span> lock ระหว่างนั้น ผลคือ API ค้างทั้งระบบ</p>
+
+<div class="box why"><span class="lab">รูปแบบปลอดภัย (จำโครงนี้)</span>
+<ol>
+<li>เพิ่มคอลัมน์เป็น <strong>nullable</strong> ก่อน — เร็ว ไม่ต้องเขียนตารางใหม่</li>
+<li><strong>backfill ทีละ batch</strong> <span class="g">(ไล่เติมค่าให้แถวเก่าที่ยังว่างอยู่)</span> ครั้งละหมื่นแถว</li>
+<li>ค่อยเติม <code>NOT NULL</code> constraint <span class="g">(กฎที่ DB บังคับเองว่าข้อมูลต้องเป็นแบบไหน)</span> ทีหลัง</li>
+</ol></div>
+
+<h3 id="s2-4">2.4 Expand-and-Contract</h3>
+
+<p>ปัญหาคือ ตอน rolling update <span class="g">(ทยอยเปลี่ยน instance ทีละตัว ไม่ดับทั้งระบบ)</span> จะมีโค้ดสองเวอร์ชันรันพร้อมกันเสมอ (บท 06) ถ้า migration ลบคอลัมน์ไปแล้ว แต่ instance เก่ายังอ่านคอลัมน์นั้นอยู่ ก็ 500 ทันที</p>
+
+<div class="tbl"><table>
+<tr><th>ระยะ</th><th>ทำอะไร</th></tr>
+<tr><td><strong>Expand</strong></td><td>เพิ่มของใหม่เข้าไป โดยยังไม่ลบของเก่า (มีทั้งสองคอลัมน์อยู่ด้วยกัน)</td></tr>
+<tr><td><strong>Migrate</strong></td><td>deploy โค้ดที่<strong>อ่านได้ทั้งเก่าและใหม่</strong> และเขียนลงทั้งสองที่</td></tr>
+<tr><td><strong>Contract</strong></td><td>release ถัดไปค่อยลบของเก่า เมื่อแน่ใจแล้วว่าไม่มี instance เก่าเหลืออยู่</td></tr>
+</table></div>
+
+
+<h2 id="s3">3. Transaction &amp; ACID</h2>
+
+<h3 id="s3-1">3.1 Transaction คืออะไรจริง ๆ</h3>
+
+<p>Transaction คือการบอก database ว่า "คำสั่งกลุ่มนี้ให้นับเป็นก้อนเดียว" หน้าตาจริง ๆ ของมันคือ:</p>
+
+<pre><code>BEGIN;                                    -- เปิดก้อน
+  UPDATE products SET stock = stock - 1 WHERE id = 'x';
+  INSERT INTO orders (...) VALUES (...);
+COMMIT;                                   -- ปิดก้อน ยืนยันทั้งหมด
+-- หรือ ROLLBACK; ถ้าอยากยกเลิกทั้งก้อน
+</code></pre>
+
+<p>ระหว่าง <code>BEGIN</code> กับ <code>COMMIT</code> คนอื่นจะยังมองไม่เห็นสิ่งที่เราทำ และถ้าเกิดอะไรผิดพลาดก็ <code>ROLLBACK</code> ให้ทุกอย่างกลับไปเหมือนไม่เคยเกิดขึ้น</p>
+
+<h3 id="s3-2">3.2 ACID ทีละตัว</h3>
+
+<div class="tbl"><table>
+<tr><th>ตัวอักษร</th><th>ความหมาย</th><th>ถ้าไม่มีจะเป็นยังไงในระบบเรา</th></tr>
+<tr><td><strong>A</strong>tomicity</td><td>ทำหมดหรือไม่ทำเลย</td><td>ตัดสต็อกสำเร็จ แต่สร้าง order ไม่สำเร็จ → ของหายไปเฉย ๆ</td></tr>
+<tr><td><strong>C</strong>onsistency</td><td>constraint ถูกบังคับเสมอ</td><td><code>stock</code> ติดลบได้ / order ชี้ไปหา product ที่ไม่มีอยู่จริง</td></tr>
+<tr><td><strong>I</strong>solation</td><td>transaction ไม่กวนกัน</td><td>คนอื่นเห็นข้อมูลครึ่ง ๆ กลาง ๆ ที่ยังไม่ commit</td></tr>
+<tr><td><strong>D</strong>urability</td><td>commit แล้วอยู่ถาวร</td><td>ไฟดับแล้ว order ที่ยืนยันไปแล้วหายไป</td></tr>
+</table></div>
+
+<h3 id="s3-3">3.3 กฎเหล็ก 3 ข้อ</h3>
+
+<h4>① transaction ต้องสั้นที่สุด</h4>
+<p>ยิ่งเปิดนาน ยิ่งถือ lock นาน คนอื่นก็รอ แถม connection ใน pool ถูกจองค้าง และโอกาสเกิด deadlock ก็สูงขึ้น</p>
+
+<h4>② ห้ามเรียก external API / ส่งอีเมล / ตัดบัตรใน transaction</h4>
+<div class="box trap"><span class="lab">เหตุผล 2 ชั้น — ต้องตอบให้ครบทั้งคู่</span>
+<p><strong>ชั้นที่ 1 (performance):</strong> HTTP call ใช้เวลา 5–30 วินาที ระหว่างนั้น DB ถือ lock ค้างไว้ทั้งหมด</p>
+<p><strong>ชั้นที่ 2 (correctness — ข้อนี้สำคัญกว่า):</strong> ถ้า transaction rollback ทีหลัง เรา <strong>"ยกเลิกอีเมลที่ส่งออกไปแล้ว" ไม่ได้</strong> และ "คืนเงินที่ตัดบัตรไปแล้ว" ก็ทำไม่ได้ด้วยการ rollback เพราะ side effect <span class="g">(ผลข้างเคียงที่เกิดนอก DB เช่นอีเมลที่ส่งไปแล้ว)</span> ที่เกิดข้างนอกไม่ได้อยู่ในขอบเขตของ transaction</p>
+<p>ทางแก้: <strong>โยนเข้า queue แทน</strong> <span class="g">(queue = ที่พักงาน ให้ worker ซึ่งเป็นโปรเซสแยก มาหยิบไปทำทีหลัง)</span> แล้วให้ worker ทำหลัง commit สำเร็จ → นี่คือเหตุผลตรง ๆ ที่ทำให้บท 05 มีอยู่</p></div>
+
+<h4>③ ต้องใช้ <code>manager</code> <span class="g">(ตัวจัดการ DB ของ transaction ก้อนนั้นโดยเฉพาะ)</span> ที่ transaction ส่งมาให้</h4>
+<pre><code>await this.dataSource.transaction(async (manager) =&gt; {
+  await manager.save(order);        // ✅ อยู่ใน transaction
+  await this.repo.save(payment);    // ❌ วิ่งนอก transaction เงียบ ๆ ไม่ถูก rollback
+});</code></pre>
+<p>บั๊กนี้หายากมาก เพราะโค้ดดูถูกต้องทุกอย่าง ไม่มี error ให้เห็น และจะโผล่ก็ต่อเมื่อเกิด rollback จริงเท่านั้น</p>
+
+<h3 id="s3-4">3.4 Isolation Level <span class="g">(ตั้งว่า transaction ที่รันพร้อมกันจะมองเห็นงานของกันมากแค่ไหน)</span></h3>
+
+<div class="tbl"><table>
+<tr><th>Level</th><th>ป้องกันอะไร</th><th>ใช้เมื่อไร</th></tr>
+<tr><td>READ UNCOMMITTED</td><td>แทบไม่ป้องกันอะไร (อ่าน dirty data <span class="g">(= dirty read คืออ่านของที่อีกฝั่งยังไม่ commit แล้วอาจ rollback ทีหลัง)</span> ได้)</td><td>แทบไม่ใช้</td></tr>
+<tr><td><strong>READ COMMITTED</strong></td><td>ไม่อ่านข้อมูลที่ยังไม่ commit</td><td><strong>ค่าเริ่มต้นของ PostgreSQL ใช้อันนี้เป็นหลัก</strong></td></tr>
+<tr><td>REPEATABLE READ</td><td>อ่านซ้ำใน transaction เดียวได้ค่าเดิมเสมอ</td><td>รายงานที่ต้องอ่านหลายตารางให้เห็นภาพ ณ เวลาเดียวกัน</td></tr>
+<tr><td>SERIALIZABLE</td><td>เสมือนรันทีละ transaction</td><td><strong>เฉพาะธุรกรรมการเงิน</strong> — แลกกับ throughput <span class="g">(จำนวนงานที่ระบบทำได้ต่อวินาที)</span> ที่ตกชัดเจน และมี serialization failure <span class="g">(DB ยอมแพ้แล้วสั่งให้ลองใหม่ เมื่อสองงานสลับกันไม่ลงตัว)</span> ที่ต้อง retry</td></tr>
+</table></div>
+
+
+<h2 id="s4">4. Race Condition &amp; Locking — หัวใจของบทนี้</h2>
+
+<h3 id="s4-1">4.1 Lock คืออะไร</h3>
+
+<p>Lock คือป้าย "มีคนใช้อยู่" ที่ database แปะไว้บนแถว ใครมาขอแถวนั้นแบบที่จะแก้ไข ต้องรอจนกว่าเจ้าของป้ายจะ <code>COMMIT</code> หรือ <code>ROLLBACK</code></p>
+
+<p>สำคัญ: <strong>lock ผูกกับ transaction ไม่ได้ผูกกับคำสั่ง</strong> — มันถูกปล่อยตอนจบ transaction เท่านั้น นี่คือเหตุผลที่การ lock นอก transaction ไม่มีความหมายอะไรเลย</p>
+
+<h3 id="s4-2">4.2 Pessimistic Lock (มองโลกในแง่ร้าย)</h3>
+
+<p>สมมติไว้ก่อนเลยว่า "ต้องมีคนแย่งแน่ ๆ" → <strong>ล็อกแถวไว้ตั้งแต่ตอนอ่าน</strong> ใครมาทีหลังต้องรอ</p>
+
+<pre><code>await this.dataSource.transaction(async (manager) =&gt; {
+  const p = await manager.findOne(Product, {
+    where: { id },
+    lock: { mode: 'pessimistic_write' },   // = SELECT ... FOR UPDATE
+  });
+  if (p.stock &lt; 1) throw new BadRequestException('ของหมด');
+  p.stock -= 1;
+  await manager.save(p);
+});   // ← lock ถูกปล่อยตอน COMMIT</code></pre>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 250" role="img" aria-label="ไทม์ไลน์แสดงการทำงานของ pessimistic lock ที่ทำให้ Request B ต้องรอ">
+  <text x="14" y="20" class="t-b t-g">Pessimistic lock: B ถูกบังคับให้รอจนกว่า A จะ COMMIT</text>
+
+  <text x="14" y="66" class="t-sm t-b">Request A</text>
+  <rect x="88" y="40" width="140" height="42" rx="6" class="bx-g"/>
+  <text x="158" y="58" text-anchor="middle" class="t-xs">SELECT … FOR UPDATE</text>
+  <text x="158" y="74" text-anchor="middle" class="t-mono t-g">ได้ 1 + ยึด lock 🔒</text>
+
+  <rect x="248" y="40" width="120" height="42" rx="6" class="bx"/>
+  <text x="308" y="58" text-anchor="middle" class="t-xs">UPDATE</text>
+  <text x="308" y="74" text-anchor="middle" class="t-mono">stock = 0</text>
+
+  <rect x="388" y="40" width="110" height="42" rx="6" class="bx-g"/>
+  <text x="443" y="58" text-anchor="middle" class="t-xs">COMMIT</text>
+  <text x="443" y="74" text-anchor="middle" class="t-mono t-g">ปล่อย lock 🔓</text>
+
+  <text x="14" y="140" class="t-sm t-b">Request B</text>
+  <rect x="128" y="114" width="366" height="42" rx="6" class="bx-w"/>
+  <text x="311" y="132" text-anchor="middle" class="t-xs">SELECT … FOR UPDATE → <tspan class="t-b">ถูกบล็อก รออยู่ตรงนี้</tspan></text>
+  <text x="311" y="148" text-anchor="middle" class="t-xs">(ยังไม่ได้อ่านค่าอะไรเลย)</text>
+
+  <rect x="504" y="114" width="176" height="42" rx="6" class="bx"/>
+  <text x="592" y="132" text-anchor="middle" class="t-xs">ได้ lock แล้วอ่านใหม่</text>
+  <text x="592" y="148" text-anchor="middle" class="t-mono t-r">ได้ 0 → ตอบ "ของหมด"</text>
+
+  <line x1="80" y1="180" x2="686" y2="180" class="ln" marker-end="url(#ar)"/>
+  <text x="676" y="198" text-anchor="end" class="t-xs">เวลา →</text>
+  <line x1="443" y1="82" x2="443" y2="180" class="ln-d"/>
+  <line x1="498" y1="156" x2="498" y2="180" class="ln-d"/>
+
+  <rect x="88" y="204" width="592" height="38" rx="7" class="bx-g"/>
+  <text x="384" y="228" text-anchor="middle" class="t-xs">B อ่านค่า <tspan class="t-b">หลัง</tspan> A เขียนเสร็จ จึงเห็นความจริง — ช่องว่างที่เคยมีถูกปิดสนิท</text>
+</svg>
+<figcaption>หัวใจอยู่ที่ B ไม่ได้อ่านค่าเก่าไปคิดเอง แต่ถูกบังคับให้รออ่านค่าหลังสุด</figcaption>
+</figure>
+
+<div class="box trap"><span class="lab">2 จุดที่พลาดกันบ่อย</span>
+<ol>
+<li><strong>lock ต้องอยู่ใน transaction เดียวกับการเขียน</strong> เพราะ lock ถูกปล่อยตอน COMMIT ถ้าอ่านนอก transaction แล้วไปเขียนใน transaction lock ไม่มีผลอะไรเลย</li>
+<li><strong>สไลด์เขียนว่า <code>pessimistic_write</code> "blocks both reads and writes" ซึ่งผิดบน PostgreSQL</strong> — เพราะ PostgreSQL ใช้ MVCC (แต่ละ transaction เห็น "ภาพถ่าย" ของข้อมูลคนละใบ) ทำให้ <code>SELECT</code> ธรรมดายังอ่านเวอร์ชันเก่าได้ตามปกติ <code>FOR UPDATE</code> <span class="g">(SELECT ที่จองแถวนั้นไว้จนจบ transaction)</span> บล็อกเฉพาะ <code>FOR UPDATE</code> / <code>FOR SHARE</code> / <code>UPDATE</code> / <code>DELETE</code> เท่านั้น</li>
+</ol></div>
+
+<h3 id="s4-3">4.3 Optimistic Lock (มองโลกในแง่ดี)</h3>
+
+<p>สมมติไว้ว่า "คงไม่ค่อยมีใครแย่งหรอก" → ไม่ล็อกอะไรเลย แต่<strong>ตรวจตอนจะเขียนว่ามีใครแก้ไปก่อนหรือเปล่า</strong> โดยดูจาก <code>@VersionColumn</code> ที่เพิ่มขึ้นทุกครั้งที่ save</p>
+
+<figure class="fig">
+<svg viewBox="0 0 640 210" role="img" aria-label="การทำงานของ optimistic lock เมื่อสองคนแก้ข้อมูลเดียวกัน">
+  <text x="14" y="20" class="t-b">Optimistic lock: ไม่ล็อก แต่ตรวจ version ตอนเขียน</text>
+
+  <text x="14" y="62" class="t-sm t-b">A</text>
+  <rect x="50" y="40" width="150" height="38" rx="6" class="bx"/>
+  <text x="125" y="63" text-anchor="middle" class="t-xs">อ่านเอกสาร <tspan class="t-mono">version = 5</tspan></text>
+  <rect x="360" y="40" width="180" height="38" rx="6" class="bx-g"/>
+  <text x="450" y="58" text-anchor="middle" class="t-xs">เขียน (ต้องยัง = 5)</text>
+  <text x="450" y="72" text-anchor="middle" class="t-mono t-g">สำเร็จ → version = 6</text>
+
+  <text x="14" y="132" class="t-sm t-b">B</text>
+  <rect x="50" y="110" width="150" height="38" rx="6" class="bx"/>
+  <text x="125" y="133" text-anchor="middle" class="t-xs">อ่านเอกสาร <tspan class="t-mono">version = 5</tspan></text>
+  <rect x="440" y="110" width="185" height="38" rx="6" class="bx-r"/>
+  <text x="532" y="128" text-anchor="middle" class="t-xs">เขียน (คิดว่ายัง = 5)</text>
+  <text x="532" y="142" text-anchor="middle" class="t-mono t-r">affected = 0 → 409 Conflict</text>
+
+  <line x1="45" y1="168" x2="626" y2="168" class="ln" marker-end="url(#ar)"/>
+  <text x="616" y="186" text-anchor="end" class="t-xs">เวลา →</text>
+  <text x="230" y="186" class="t-xs">ไม่มีใครถูกบล็อกเลยระหว่างนี้ — B รู้ตัวก็ตอนจะเขียน</text>
+</svg>
+<figcaption>ไม่มีใครต้องรอ แต่คนที่มาช้าต้องยอมโหลดใหม่แล้วทำซ้ำ</figcaption>
+</figure>
+
+<div class="box errata"><span class="lab">⚠ สไลด์ 30 เขียนตัวอย่างผิด — ข้อนี้น่าจะเป็นข้อสอบ</span>
+<pre><code>// ❌ แบบในสไลด์ — ยังมี race อยู่ (TOCTOU)
+const doc = await repo.findOne({ where: { id } });
+if (doc.version !== expectedVersion)          // ← ตรวจ
+  throw new ConflictException();
+doc.content = content;
+await repo.save(doc);                          // ← เขียน (ช่องว่างตรงนี้ยังมีคนแทรกได้)</code></pre>
+<p>การเช็ค version ด้วยมือแบบนี้<strong>ไม่ใช่ optimistic locking จริง</strong> — มันคือ read-check-write อีกรอบ แค่ย้ายที่เท่านั้นเอง</p>
+<pre><code>// ✅ แบบที่ถูก — ให้ DB ตรวจในคำสั่งเดียวแบบ atomic
+const r = await repo.update({ id, version: expectedVersion }, { content });
+if (r.affected === 0) throw new ConflictException('Document was modified');</code></pre>
+<p>หรือปล่อยให้ TypeORM ตรวจเองผ่าน <code>@VersionColumn</code> แล้วดัก <code>OptimisticLockVersionMismatchError</code></p></div>
+
+<h3 id="s4-4">4.4 เลือกอันไหน</h3>
+
+<div class="tbl"><table>
+<tr><th></th><th>Pessimistic</th><th>Optimistic</th></tr>
+<tr><td><strong>ใช้เมื่อ</strong></td><td>ชนกันบ่อย, งานสำคัญที่ผิดไม่ได้</td><td>ชนกันนาน ๆ ที, ผู้ใช้เปิดฟอร์มค้างนาน</td></tr>
+<tr><td><strong>ตัวอย่าง</strong></td><td>สต็อก Flash Sale, ที่นั่งคอนเสิร์ต, ยอดเงินในบัญชี</td><td>แก้เอกสาร, แก้โปรไฟล์, ระบบ CMS</td></tr>
+<tr><td><strong>ข้อดี</strong></td><td>กันชนได้แน่นอน เขียน logic ง่าย</td><td>ไม่มี DB lock, scale ดี, ไม่มีใครต้องรอ</td></tr>
+<tr><td><strong>ข้อเสีย</strong></td><td>ถือ lock = คนอื่นรอ, เสี่ยง deadlock, ไม่เหมาะกับ session ยาว</td><td>ต้องเขียน logic จัดการ conflict + UX บอกผู้ใช้ให้ refresh; ถ้าชนบ่อยจะ retry ไม่จบ</td></tr>
+</table></div>
+
+<div class="box why"><span class="lab">วิธีเลือกในหนึ่งประโยค</span>
+<p>ถามว่า "โอกาสที่สองคนจะแก้แถวเดียวกันพร้อมกันมีมากแค่ไหน" — <strong>บ่อย → pessimistic</strong> (เพราะ optimistic จะ retry จนไม่จบ) / <strong>นาน ๆ ที → optimistic</strong> (เพราะ pessimistic จะทำให้คนรอฟรี ๆ)</p></div>
+
+<h3 id="s4-5">4.5 Deadlock</h3>
+
+<figure class="fig">
+<svg viewBox="0 0 620 220" role="img" aria-label="deadlock เกิดจาก transaction สองตัวรอ lock ของกันและกันเป็นวงกลม">
+  <rect x="60" y="44" width="150" height="46" rx="7" class="bx-a"/>
+  <text x="135" y="64" text-anchor="middle" class="t-b">Transaction A</text>
+  <text x="135" y="80" text-anchor="middle" class="t-xs">ถือ 🔒 User</text>
+
+  <rect x="400" y="44" width="150" height="46" rx="7" class="bx-a"/>
+  <text x="475" y="64" text-anchor="middle" class="t-b">Transaction B</text>
+  <text x="475" y="80" text-anchor="middle" class="t-xs">ถือ 🔒 Account</text>
+
+  <rect x="185" y="140" width="110" height="42" rx="6" class="bx-p"/>
+  <text x="240" y="166" text-anchor="middle" class="t-sm">แถว User</text>
+  <rect x="325" y="140" width="110" height="42" rx="6" class="bx-p"/>
+  <text x="380" y="166" text-anchor="middle" class="t-sm">แถว Account</text>
+
+  <path d="M160,94 L225,136" class="ln"/>
+  <path d="M450,94 L392,136" class="ln"/>
+  <path d="M200,96 L330,140" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M420,96 L292,140" class="ln-r" marker-end="url(#arr)"/>
+  <text x="310" y="112" text-anchor="middle" class="t-xs t-r">ต่างฝ่ายต่างขอของที่อีกฝ่ายถืออยู่</text>
+
+  <rect x="60" y="192" width="490" height="24" rx="6" class="bx-w"/>
+  <text x="305" y="209" text-anchor="middle" class="t-xs">PostgreSQL ตรวจเจอวงกลมนี้ แล้ว <tspan class="t-b">ฆ่าตัวหนึ่งทิ้ง</tspan> พร้อม error <tspan class="t-mono">40P01</tspan></text>
+</svg>
+<figcaption>สาเหตุคือ "วงกลมของการรอ" (circular wait) — ถ้าทำให้วงกลมเกิดไม่ได้ deadlock ก็เกิดไม่ได้</figcaption>
+</figure>
+
+<div class="tbl"><table>
+<tr><th>ป้องกัน</th><th>เหตุผล</th></tr>
+<tr><td><strong>ล็อก resource ตามลำดับเดียวกันเสมอ</strong> เช่นล็อก User ก่อน Account ทุกที่</td><td>ถ้าทุกคนล็อกเรียงลำดับเหมือนกัน วงกลมจะเกิดขึ้นไม่ได้เลยตั้งแต่ต้น</td></tr>
+<tr><td>retry เมื่อเจอ <code>40P01</code> <span class="g">(error code ของ PostgreSQL ที่แปลว่าเจอ deadlock)</span> ด้วย <strong>exponential backoff + jitter</strong> <span class="g">(รอนานขึ้นเรื่อย ๆ ก่อนลองใหม่ + สุ่มบวกลบเวลานิดหน่อย กันกลับมาชนพร้อมกันอีก)</span></td><td>deadlock เป็นเรื่องปกติของระบบที่มี concurrency ไม่ใช่บั๊ก ตัวที่ถูกฆ่าควรลองใหม่</td></tr>
+</table></div>
+
+<div class="box errata"><span class="lab">⚠ สไลด์ใช้ <code>sleep(100)</code> คงที่</span>
+<p>ถ้าทุก transaction ที่ชนกันรอ 100ms เท่ากันหมด มันจะ<strong>กลับมาชนกันซ้ำที่จังหวะเดิม</strong> ต้องใช้ exponential backoff (100ms → 200ms → 400ms) <strong>บวก jitter แบบสุ่ม</strong> เพื่อกระจายไม่ให้กลับมาพร้อมกัน — เป็นหลักการเดียวกับ retry ในบท 05 และ TTL jitter ในบท 04</p></div>
+
+
+<h2 id="s5">5. Query Optimization</h2>
+
+<h3 id="s5-1">5.1 Index</h3>
+
+<p>ก่อนอื่น index คืออะไร: มันคือ<strong>ดัชนีท้ายเล่มหนังสือ</strong> ถ้าไม่มี เวลาจะหาคำว่า "transaction" ต้องเปิดอ่านทีละหน้าตั้งแต่ต้นจนจบ (นี่คือ full table scan) แต่ถ้ามีดัชนี ก็เปิดไปดูว่าอยู่หน้า 142 แล้วกระโดดไปเลย</p>
+
+<p>บนตาราง 10 ล้านแถว ความต่างคือ <span class="big-num">2ms</span> กับ <span class="big-num">8s</span></p>
+
+<ul>
+<li>สร้าง index บนทุกคอลัมน์ที่ใช้ใน <strong>WHERE / JOIN / ORDER BY</strong> <span class="g">(JOIN = ดึงหลายตารางมาต่อกันในคำสั่งเดียว)</span></li>
+<li>แต่<strong>ไม่ใช่ทุกคอลัมน์</strong> เพราะ index ทำให้ write ช้าลงและกินพื้นที่ (ทุกครั้งที่เขียนต้องไปอัปเดตดัชนีด้วย)</li>
+<li><strong>Composite index มีกฎ left-most prefix:</strong> index <code>(authorId, createdAt)</code> ใช้ได้กับ query ที่กรอง <code>authorId</code> หรือกรองทั้งคู่ แต่<strong>ใช้ไม่ได้</strong>กับ query ที่กรอง <code>createdAt</code> อย่างเดียว — เหมือนสมุดโทรศัพท์ที่เรียงตาม "นามสกุล แล้วชื่อ" หาจากนามสกุลได้ แต่หาจากชื่ออย่างเดียวไม่ได้</li>
+</ul>
+
+<h3 id="s5-2">5.2 ปัญหา N+1</h3>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 210" role="img" aria-label="เปรียบเทียบ N+1 query กับการใช้ JOIN ครั้งเดียว">
+  <text x="165" y="18" text-anchor="middle" class="t-b t-r">❌ N+1 — 101 รอบ</text>
+  <text x="520" y="18" text-anchor="middle" class="t-b t-g">✅ JOIN — 1 รอบ</text>
+
+  <rect x="30" y="40" width="86" height="110" rx="7" class="bx-a"/>
+  <text x="73" y="100" text-anchor="middle" class="t-sm">App</text>
+  <rect x="244" y="40" width="86" height="110" rx="7" class="bx-p"/>
+  <text x="287" y="100" text-anchor="middle" class="t-sm">DB</text>
+
+  <path d="M120,52 L240,52" class="ln" marker-end="url(#ar)"/>
+  <text x="180" y="46" text-anchor="middle" class="t-xs">หา user 100 คน</text>
+  <path d="M120,70 L240,70" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M120,82 L240,82" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M120,94 L240,94" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M120,106 L240,106" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M120,118 L240,118" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M120,130 L240,130" class="ln-r" marker-end="url(#arr)"/>
+  <text x="180" y="146" text-anchor="middle" class="t-xs t-r">× อีก 100 ครั้ง (posts ของแต่ละคน)</text>
+  <text x="165" y="176" text-anchor="middle" class="t-xs t-r">แต่ละลูกศรมี network latency ของตัวเอง</text>
+  <text x="165" y="194" text-anchor="middle" class="t-xs t-r">ไม่กี่ ms กลายเป็นหลายวินาที</text>
+
+  <rect x="390" y="40" width="86" height="110" rx="7" class="bx-a"/>
+  <text x="433" y="100" text-anchor="middle" class="t-sm">App</text>
+  <rect x="600" y="40" width="86" height="110" rx="7" class="bx-p"/>
+  <text x="643" y="100" text-anchor="middle" class="t-sm">DB</text>
+  <path d="M480,92 L596,92" class="ln-g" marker-end="url(#arg)"/>
+  <text x="538" y="84" text-anchor="middle" class="t-xs t-g">relations: ['posts']</text>
+  <text x="538" y="112" text-anchor="middle" class="t-xs">= 1 JOIN</text>
+  <text x="520" y="176" text-anchor="middle" class="t-xs">แต่ระวัง: JOIN ลึกหลายชั้นทำให้ข้อมูลซ้ำ</text>
+  <text x="520" y="194" text-anchor="middle" class="t-xs">(cartesian product) ซึ่งอาจแย่กว่าเดิม</text>
+</svg>
+<figcaption>N+1 ไม่ได้แพงเพราะ query หนัก แต่แพงเพราะ "จำนวนรอบไป-กลับ" — ทุกรอบต้องรอ network</figcaption>
+</figure>
+
+<pre><code>// ❌ N+1
+const users = await repo.find();
+for (const u of users) u.posts = await postRepo.find({ where: { userId: u.id } });
+
+// ✅ 1 query
+const users = await repo.find({ relations: ['posts'] });</code></pre>
+
+<div class="box trap"><span class="lab">แต่ eager loading ก็มีกับดักของมัน</span>
+<p><code>relations: ['posts', 'posts.comments']</code> <span class="g">(eager loading = สั่งดึง relation มาพร้อมกันตั้งแต่แรก ต่างจาก lazy ที่ค่อยดึงตอนใช้)</span> บน user ที่มี 500 post คูณ 20 comment จะสร้าง <strong>cartesian product</strong> คือได้ 10,000 แถวที่ข้อมูล user ถูกทำซ้ำในทุกแถว กินทั้ง network และ memory มากกว่าเดิม</p>
+<p>ในกรณีแบบนี้ <strong>ยิง 2 query แยกแล้ว map ในแอป (DataLoader pattern) เร็วกว่า</strong></p>
+<p>บทเรียนคือ "แก้ N+1 ด้วย relations" ไม่ใช่กฎสากล — มันคือการแลก <em>จำนวนรอบ</em> กับ <em>ปริมาณข้อมูลที่ดึงมา</em></p></div>
+
+<h3 id="s5-3">5.3 select และ pagination</h3>
+
+<ul>
+<li><strong>ระบุ <code>select: [...]</code> เสมอ</strong> — ลด I/O ลด payload และเปิดโอกาสให้ DB ใช้ index-only scan <span class="g">(ตอบได้จากดัชนีอย่างเดียว ไม่ต้องแตะตารางจริง)</span></li>
+<li><strong>list endpoint ต้อง paginate เสมอ</strong> — <code>find()</code> เปล่า ๆ บนตารางที่โตไม่จำกัด = OOM <span class="g">(โปรเซสถูกฆ่าเพราะใช้ RAM เกิน)</span> ของทั้ง process</li>
+<li><strong>offset ลึก ๆ ให้ใช้ keyset/cursor pagination</strong> <span class="g">(เลื่อนหน้าด้วย "ค่าสุดท้ายที่อ่านไป" แทนการนับข้ามทีละแถว)</span> — เพราะ <code>OFFSET 100000</code> ยังต้องอ่านและทิ้ง 100,000 แถวแรกทุกครั้ง มันไม่ได้ "กระโดด" ไปอย่างที่ชื่อชวนให้คิด</li>
+</ul>
+
+<h3 id="s5-4">5.4 <code>onDelete: 'CASCADE'</code> เป็นดาบสองคม</h3>
+<p>ลบ user คนเดียวอาจลบ post กับ comment เป็นแสนแถวโดยไม่มีใครรู้ตัว และ <strong>rollback ไม่ได้หลัง commit</strong> สำหรับข้อมูลสำคัญให้พิจารณา <code>RESTRICT</code> <span class="g">(ห้ามลบถ้ายังมีลูกอ้างอยู่)</span> หรือ soft delete <span class="g">(ทำเครื่องหมายว่าลบแล้ว แต่ยังเก็บแถวไว้)</span> แทน</p>
+
+
+<h2 id="s6">6. Connection Pool</h2>
+
+<p>การเปิด connection ใหม่ทุกครั้งแพงมาก (ต้อง TCP handshake + authenticate ใหม่) pool เลยเปิดค้างไว้จำนวนหนึ่งแล้วให้ request หมุนเวียนกันใช้</p>
+
+<div class="box why"><span class="lab">สูตรที่ต้องจำ (จะโผล่ซ้ำในบท 06)</span>
+<p><strong>connection ทั้งหมด = จำนวน instance × pool size</strong> และต้องไม่เกิน <code>max_connections</code> ของ PostgreSQL</p>
+<p>ค่าแนะนำ: dev ~10 / prod 20–50 / traffic สูง 50–100 <strong>ต่อ instance</strong></p></div>
+
+<div class="box errata"><span class="lab">⚠ สูตร <code>(core × 2) + spindle</code> ในสไลด์</span>
+<p>สูตรนี้เป็นสูตรกำหนดขนาดของ <strong>DB server</strong> ไม่ใช่ของ pool ในแอป และไม่ได้คิดเรื่องหลาย instance เลย ต้องอ่านคู่กับบท 06 เสมอ ซึ่งจะบอกอีกว่าถ้ามี read replica <span class="g">(สำเนา DB ที่ใช้อ่านอย่างเดียว แบ่งโหลดจากตัวหลัก)</span> ด้วย ตัวเลขจริงคือ <strong>instances × (1 + replicas) × poolSize</strong> เพราะ TypeORM สร้าง pool แยกต่อ master และต่อ slave แต่ละตัว</p></div>
+
+<div class="box trap"><span class="lab">อาการที่ต้องรู้จัก</span>
+<p><strong>Long transaction ทำให้ pool หมดทั้งที่ DB ยังว่าง</strong> — ถ้ามี 20 request เปิด transaction ค้างพร้อมกันบน pool size 20 request ที่ 21 จะรอจน timeout ทั้งที่ CPU ของ DB แทบไม่ทำงานเลย นี่เป็นอีกเหตุผลที่ transaction ต้องสั้น</p></div>
+
+
+<h2 id="s7">7. Map error code เป็น HTTP status</h2>
+
+<div class="tbl"><table>
+<tr><th>PostgreSQL code</th><th>ความหมาย</th><th>ตอบกลับ</th></tr>
+<tr><td><code>23505</code></td><td>unique violation <span class="g">(ใส่ค่าซ้ำในคอลัมน์ที่ห้ามซ้ำ)</span></td><td><strong>409 Conflict</strong> <span class="g">(HTTP status ที่แปลว่า "ข้อมูลชนกัน")</span></td></tr>
+<tr><td><code>23503</code></td><td>foreign key violation</td><td>400 Bad Request</td></tr>
+<tr><td><code>23502</code></td><td>not null violation</td><td>400 Bad Request</td></tr>
+<tr><td><code>23514</code></td><td>check violation</td><td>400 Bad Request</td></tr>
+<tr><td><code>40P01</code></td><td>deadlock detected</td><td><strong>retry</strong> ไม่ใช่ตอบ error ทันที</td></tr>
+</table></div>
+
+<p>เหตุผล: ถ้าปล่อยเป็น 500 ดิบ ๆ ฝั่ง client แก้ปัญหาตัวเองไม่ได้เลย และทีมเราก็แยกไม่ออกว่า error ตัวไหนคือ "ผู้ใช้ส่งมาผิด" กับ "ระบบเราพัง" — ต่อยอดจากหลัก "โยน exception ไม่ return null" ในบท 02</p>
+
+
+<h2 id="s8">8. 🔗 บทนี้ต่อกับบทอื่นตรงไหน</h2>
+
+<div class="box link-box"><span class="lab">เส้นเชื่อม</span>
+<ul>
+<li><strong>← บท 01:</strong> "ACID ข้าม service ทำไม่ได้" — พอเข้าใจ transaction แล้วจะเห็นชัดว่าการแตก microservices <span class="g">(แยกระบบเป็นบริการย่อยหลายตัว ต่างคนต่างมี DB)</span> ทำให้เสียอะไรไป</li>
+<li><strong>← บท 02:</strong> ชั้น Repository + การโยน exception ขยายมาเป็นการ map error code ในบทนี้</li>
+<li><strong>→ บท 04:</strong> "query ช้า" คือเหตุผลที่ต้องมี cache — แต่ระวังให้ดี <strong>cache ไม่ได้แก้ race condition</strong> ความถูกต้องยังต้องมาจาก lock กับ constraint ที่ DB</li>
+<li><strong>→ บท 05:</strong> "ห้ามส่งอีเมล/ตัดบัตรใน transaction ให้ enqueue แทน" คือ<strong>ประโยคที่ทำให้บท 05 มีอยู่</strong></li>
+<li><strong>→ บท 05:</strong> exponential backoff + jitter ที่ใช้ retry deadlock คือหลักการเดียวกับ retry job ที่ล้มเหลว</li>
+<li><strong>→ บท 06:</strong> สูตร connection pool ที่นี่ยังไม่ครบ บท 06 จะเติมตัวคูณ replica เข้าไป และนั่นคือสาเหตุอันดับหนึ่งของ "too many connections" หลัง scale out <span class="g">(เพิ่มจำนวน instance ให้รับโหลดได้มากขึ้น)</span></li>
+<li><strong>→ บท 06:</strong> expand-and-contract จำเป็นเพราะ rolling update ทำให้มีโค้ดสองเวอร์ชันรันพร้อมกัน</li>
+</ul></div>
+
+
+<h2 id="s9">9. 📝 คลังคำตอบอัตนัย</h2>
+
+<details class="qa"><summary>อธิบาย race condition ในระบบขายสินค้าจำนวนจำกัด และวิธีแก้ที่ถูกต้อง</summary>
+<div class="ans">
+<div class="skel">โครง: อธิบายกลไกด้วยลำดับเวลา → ทำไมโค้ดเดิมพัง → ทางแก้ + เงื่อนไขที่ต้องครบ → เลือก lock แบบไหน</div>
+<p>Race condition เกิดจากรูปแบบ <strong>"อ่าน → ตรวจ → เขียน"</strong> ที่มีช่องว่างของเวลาระหว่างการอ่านกับการเขียน</p>
+<p>เช่นโค้ดที่เรียก <code>findOne()</code> มาดูค่า <code>stock</code> แล้วตรวจด้วย <code>if (stock &lt; 1) throw</code> จากนั้นจึง <code>save()</code> หากมี request จำนวนมากเข้ามาพร้อมกันในช่วงเวลานั้น ทุก request จะอ่านค่า <code>stock</code> เดียวกันและผ่านเงื่อนไขไปได้ทั้งหมด แล้วเขียนทับกัน ผลคือขายเกินจำนวนของที่มีจริง โดยไม่มี error ปรากฏใน log ซึ่งเป็นอาการที่อันตรายเพราะการทดสอบตอนพัฒนาโดยผู้ใช้คนเดียวจะไม่มีทางพบ</p>
+<p>วิธีแก้คือทำให้ช่วง "อ่าน–ตรวจ–เขียน" เป็น atomic ด้วย <strong>transaction ร่วมกับ pessimistic lock</strong></p>
+<pre><code>await dataSource.transaction(async (manager) =&gt; {
+  const p = await manager.findOne(Product, {
+    where: { id }, lock: { mode: 'pessimistic_write' },
+  });
+  if (p.stock &lt; 1) throw new BadRequestException('ของหมด');
+  p.stock -= 1;
+  await manager.save(p);
+});</code></pre>
+<p>เงื่อนไขสำคัญคือ <strong>lock ต้องอยู่ใน transaction เดียวกับการเขียน</strong> เนื่องจาก lock จะถูกปล่อยเมื่อ COMMIT หากอ่านนอก transaction แล้วเขียนภายใน lock จะไม่มีผลใด ๆ และต้องใช้ <code>manager</code> ที่ transaction ส่งมาให้ ไม่ใช่ <code>this.repo</code> มิฉะนั้นคำสั่งนั้นจะวิ่งนอก transaction โดยไม่มีสัญญาณเตือน</p>
+<p>เลือก pessimistic lock เพราะกรณี flash sale มีการแย่งกันสูงมาก หากใช้ optimistic locking ผู้ใช้เกือบทั้งหมดจะพบ conflict และต้อง retry จนไม่สิ้นสุด นอกจากนี้ควรมี check constraint หรือ unique constraint ที่ระดับ database เป็นแนวป้องกันสุดท้ายด้วย</p>
+</div></details>
+
+<details class="qa"><summary>Pessimistic กับ Optimistic locking ต่างกันอย่างไร ควรเลือกใช้อันไหนในสถานการณ์ใด</summary>
+<div class="ans">
+<div class="skel">โครง: กลไกทั้งสอง → ข้อดี/ข้อเสีย → เกณฑ์เลือก (contention + ระยะเวลา) → ตัวอย่าง → ข้อควรระวังของ optimistic</div>
+<p><strong>Pessimistic locking</strong> ตั้งสมมติฐานว่าจะมีการแย่งกันแน่ จึงล็อกแถวทันทีตั้งแต่ตอนอ่านด้วย <code>SELECT ... FOR UPDATE</code> ซึ่งใน TypeORM คือ <code>lock: { mode: 'pessimistic_write' }</code> ผู้ที่เข้ามาภายหลังต้องรอจนกว่าจะ COMMIT</p>
+<p><strong>Optimistic locking</strong> ตั้งสมมติฐานว่าคงไม่ค่อยชนกัน จึงไม่ล็อกสิ่งใดเลย แต่ใช้ <code>@VersionColumn</code> ซึ่งเพิ่มค่าทุกครั้งที่บันทึก แล้วตรวจตอนเขียนว่า version ยังตรงกับตอนที่อ่านมาหรือไม่ หากไม่ตรงแสดงว่ามีผู้อื่นแก้ไขไปก่อน ต้องโยน conflict ให้ผู้ใช้โหลดข้อมูลใหม่</p>
+<p>เกณฑ์การเลือกพิจารณาสองปัจจัย คือ <strong>ความถี่ของการชนกัน</strong> และ <strong>ระยะเวลาที่ผู้ใช้ถือข้อมูลไว้</strong></p>
+<p>ใช้ pessimistic เมื่อมีการแย่งกันสูงและเป็นการปรับปรุงข้อมูลสำคัญที่ผิดพลาดไม่ได้ เช่น การตัดสต็อกใน flash sale การจองที่นั่ง หรือการตัดยอดเงิน เพราะหากใช้ optimistic ในกรณีเช่นนี้ ผู้ใช้ส่วนใหญ่จะพบ conflict และต้อง retry ซ้ำจนไม่สิ้นสุด ข้อเสียคือผู้อื่นต้องรอและมีความเสี่ยงเกิด deadlock</p>
+<p>ใช้ optimistic เมื่อการชนกันเกิดขึ้นน้อยและผู้ใช้ถือข้อมูลไว้นาน เช่น การแก้ไขเอกสารหรือแก้ไขโปรไฟล์ที่เปิดฟอร์มค้างไว้หลายนาที เนื่องจากการล็อกแถวไว้ตลอดเวลานั้นจะบล็อกผู้อื่นโดยไม่จำเป็น ข้อเสียคือต้องเขียน logic จัดการ conflict และต้องออกแบบ UX ให้แจ้งผู้ใช้</p>
+<p>ข้อควรระวังคือการเขียน optimistic lock ต้องให้ database เป็นผู้ตรวจ version ภายในคำสั่งเดียว เช่น <code>repo.update({ id, version }, patch)</code> แล้วตรวจว่า <code>affected === 0</code> ไม่ใช่การ <code>findOne</code> มาเปรียบเทียบ version ด้วยตนเองแล้วจึง <code>save()</code> เพราะวิธีหลังยังคงมีช่องว่างแบบ TOCTOU <span class="g">(ตรวจตอนหนึ่ง แต่ใช้จริงอีกตอน ระหว่างนั้นมีคนแทรกได้)</span> เหลืออยู่</p>
+</div></details>
+
+<details class="qa"><summary>ทำไมห้ามใช้ <code>synchronize: true</code> ใน production และควรใช้อะไรแทน</summary>
+<div class="ans">
+<div class="skel">โครง: มันทำอะไร → เหตุการณ์จริงที่เกิด → ทำไมร้ายแรงกว่า downtime → migration + กฎของมัน</div>
+<p><code>synchronize: true</code> สั่งให้ TypeORM ปรับ schema ในฐานข้อมูลให้ตรงกับ entity โดยอัตโนมัติทุกครั้งที่แอปพลิเคชันเริ่มทำงาน ซึ่งการทำให้ตรงกันนั้นรวมถึงคำสั่ง <code>DROP COLUMN</code> และ <code>DROP TABLE</code> ด้วย</p>
+<p>ตัวอย่างที่เกิดขึ้นจริงคือ เมื่อลบ field ออกจาก entity เพราะเข้าใจว่าไม่ได้ใช้แล้ว TypeORM จะสั่งลบคอลัมน์นั้นทิ้งพร้อมข้อมูลทั้งหมด โดยไม่ถามและไม่มีคำเตือนใด ๆ</p>
+<p>เหตุที่ร้ายแรงเป็นพิเศษคือ นี่ไม่ใช่เพียง downtime ที่รอให้ระบบกลับมาทำงานได้ แต่เป็น <strong>data loss ถาวร</strong> ที่กู้คืนไม่ได้เลยหากไม่มี backup</p>
+<p>สิ่งที่ควรใช้แทนคือ <strong>migration</strong> ซึ่งเป็น version control ของ schema โดยเขียนเป็นไฟล์ที่มี <code>up()</code> และ <code>down()</code> เรียงตาม timestamp และบันทึกไว้ว่ารันไปแล้วในตาราง <code>migrations</code></p>
+<p>กฎที่ต้องปฏิบัติตามคือ เขียน <code>down()</code> เสมอและทดสอบ revert จริง, ห้ามแก้ไข migration ที่ deploy ไปแล้วเพราะจะทำให้เกิด schema drift ระหว่าง environment, ให้หนึ่ง migration ต่อหนึ่งการเปลี่ยนแปลงเชิงตรรกะ, อ่านไฟล์ที่ <code>migration:generate</code> สร้างขึ้นก่อน commit เสมอเพราะ generator มักตีความการ rename เป็นการ drop แล้ว create ใหม่ และควรรัน migration เป็น job แยกก่อน deploy แอปพลิเคชัน ไม่ใช่รันตอน boot เนื่องจากเมื่อมีหลาย instance ขึ้นพร้อมกันจะแย่งกันรัน</p>
+</div></details>
+
+<details class="qa"><summary>ทำไมห้ามเรียก external API หรือส่งอีเมลภายใน database transaction</summary>
+<div class="ans">
+<div class="skel">โครง: เหตุผลชั้น performance → เหตุผลชั้น correctness (สำคัญกว่า) → ทางแก้ที่ถูก</div>
+<p>เหตุผลแรกเป็นเรื่อง performance การเรียก HTTP ไปยังบริการภายนอกอาจใช้เวลา 5 ถึง 30 วินาที และตลอดเวลานั้น transaction ยังคงเปิดค้างอยู่ ทำให้ database ถือ lock ไว้ทั้งหมด ผู้อื่นที่ต้องการแถวเดียวกันต้องรอ และ connection ใน pool ถูกจองค้าง ซึ่งอาจทำให้ pool หมดทั้งที่ database ยังว่างอยู่</p>
+<p>เหตุผลที่สองสำคัญกว่าและเป็นเรื่องความถูกต้อง คือ <strong>side effect ที่เกิดขึ้นนอก database ไม่อยู่ในขอบเขตของ transaction</strong> หากหลังจากส่งอีเมลหรือตัดบัตรไปแล้ว transaction เกิด rollback การ rollback นั้นย้อนคืนเฉพาะข้อมูลใน database เท่านั้น อีเมลที่ส่งออกไปแล้วเรียกคืนไม่ได้ และเงินที่ตัดไปแล้วก็ไม่ได้ถูกคืนโดยอัตโนมัติ ผลคือข้อมูลใน database กับสิ่งที่เกิดขึ้นจริงในโลกภายนอกไม่ตรงกัน</p>
+<p>วิธีที่ถูกต้องคือทำเฉพาะงานที่เกี่ยวกับ database ภายใน transaction แล้ว <strong>ส่งงานที่มี side effect ภายนอกเข้า queue</strong> ให้ worker ดำเนินการหลังจาก commit สำเร็จแล้ว ตามที่กล่าวถึงในบท 05 ซึ่งนอกจากจะแก้ปัญหาทั้งสองข้อแล้ว ยังได้กลไก retry อัตโนมัติเมื่อบริการภายนอกล้มเหลวด้วย โดยมีเงื่อนไขว่า handler ต้องเขียนให้ idempotent <span class="g">(ทำซ้ำกี่รอบผลก็เท่าเดิม ไม่เกิดของซ้ำ)</span> เพราะระบบคิวรับประกันแบบ at-least-once <span class="g">(งานถึงอย่างน้อย 1 ครั้ง แต่อาจซ้ำได้)</span></p>
+</div></details>
+
+<details class="qa"><summary>N+1 problem คืออะไร แก้อย่างไร และการแก้นั้นมีข้อควรระวังอะไร</summary>
+<div class="ans">
+<div class="skel">โครง: กลไก → ตัวเลข → ทางแก้ → กับดักของทางแก้ (จุดที่ได้คะแนนพิเศษ)</div>
+<p>N+1 เกิดขึ้นเมื่อเราดึงรายการหลักด้วย query หนึ่งครั้ง แล้ววน loop ยิง query เพื่อหา relation ของแต่ละแถวอีก N ครั้ง เช่นการดึง user 100 คนแล้ววนหา post ของแต่ละคน ผลคือมีการติดต่อ database ถึง 101 รอบ ซึ่งแต่ละรอบมี network latency ของตัวเอง ทำให้ endpoint ที่ควรใช้เวลาเพียงไม่กี่มิลลิวินาทีกลายเป็นหลายวินาที</p>
+<p>วิธีแก้พื้นฐานคือใช้ <code>relations: ['posts']</code> เพื่อให้ TypeORM ทำ JOIN ในคำสั่งเดียว ลดจาก 101 query เหลือเพียง 1</p>
+<p>ข้อควรระวังที่สำคัญคือการทำ eager loading ลึกหลายชั้น เช่น <code>relations: ['posts', 'posts.comments']</code> จะสร้าง <strong>cartesian product</strong> หาก user หนึ่งคนมี 500 post และแต่ละ post มี 20 comment ผลลัพธ์จะมี 10,000 แถวโดยที่ข้อมูลของ user ถูกทำซ้ำในทุกแถว ซึ่งกินทั้ง network และ memory มากกว่าเดิม</p>
+<p>ในกรณีเช่นนั้นการยิงสอง query แยกกันแล้วจับคู่ความสัมพันธ์ในแอปพลิเคชันตามแนวคิด DataLoader จะเร็วกว่า สรุปคือการแก้ N+1 เป็นการแลกเปลี่ยนระหว่าง <em>จำนวนรอบการติดต่อ</em> กับ <em>ปริมาณข้อมูลที่ดึงมา</em> ไม่ใช่กฎตายตัว จึงต้องตรวจสอบจาก SQL log จริงว่าวิธีใดเหมาะสมกว่าในแต่ละกรณี</p>
+</div></details>
+
+<details class="qa"><summary>Deadlock คืออะไร เกิดจากอะไร และป้องกันอย่างไร</summary>
+<div class="ans">
+<div class="skel">โครง: นิยาม + ตัวอย่างคู่ → DB ทำอะไร → ป้องกัน 2 ชั้น → ทำไม fixed delay ไม่พอ</div>
+<p>Deadlock คือสถานการณ์ที่ transaction สองตัวรอ lock ของกันและกันจนไม่มีฝ่ายใดดำเนินการต่อได้ ตัวอย่างเช่น transaction A ล็อกแถว User ไว้แล้วขอ lock ของ Account ในขณะที่ transaction B ล็อก Account ไว้แล้วขอ lock ของ User</p>
+<p>PostgreSQL มีกลไกตรวจจับ deadlock ซึ่งจะเลือก<strong>ยกเลิก transaction หนึ่งทิ้ง</strong>พร้อมคืน error code <code>40P01</code> เพื่อให้อีกตัวดำเนินการต่อได้ ดังนั้น deadlock จึงไม่ใช่ข้อบกพร่องของ database แต่เป็นเรื่องปกติของระบบที่มีการทำงานพร้อมกัน</p>
+<p>การป้องกันมีสองชั้น ชั้นแรกคือ <strong>ล็อก resource ตามลำดับเดียวกันเสมอทั้งระบบ</strong> เช่นกำหนดว่าต้องล็อก User ก่อน Account ทุกกรณี เนื่องจาก deadlock เกิดจาก circular wait หากทุกฝ่ายล็อกเรียงลำดับเหมือนกัน วงรอบของการรอจะเกิดขึ้นไม่ได้ตั้งแต่ต้น</p>
+<p>ชั้นที่สองคือมี <strong>retry logic</strong> สำหรับ error <code>40P01</code> เพราะยังมีกรณีที่หลีกเลี่ยงไม่ได้ แต่ต้องใช้ <strong>exponential backoff ร่วมกับ jitter</strong> ไม่ใช่การหน่วงเวลาคงที่ เพราะหาก transaction ที่ชนกันรอเป็นเวลาเท่ากันแล้วกลับมาพร้อมกัน จะชนกันซ้ำที่จังหวะเดิมไปเรื่อย ๆ ส่วน jitter แบบสุ่มทำหน้าที่กระจายเวลาที่กลับมาให้ไม่ตรงกัน ซึ่งเป็นหลักการเดียวกับ retry ของ job ในบท 05 และ TTL jitter ในบท 04</p>
+<p>นอกจากนี้การทำให้ transaction สั้นที่สุดยังช่วยลดโอกาสเกิด deadlock โดยตรง เพราะช่วงเวลาที่ถือ lock สั้นลง</p>
+</div></details>
+
+<details class="qa"><summary>Connection pool คืออะไร และตั้งค่าอย่างไรจึงจะไม่ทำให้ระบบล่ม</summary>
+<div class="ans">
+<div class="skel">โครง: ทำไมต้องมี pool → สูตร → เล็กไป/ใหญ่ไปเป็นยังไง → กับดัก long transaction</div>
+<p>การเปิด connection ใหม่ไปยัง database ทุกครั้งที่มี request มีต้นทุนสูง เพราะต้องทำ TCP handshake และ authentication ใหม่ connection pool จึงเปิด connection ค้างไว้จำนวนหนึ่งแล้วให้ request หมุนเวียนกันใช้</p>
+<p>หลักการตั้งค่าที่สำคัญที่สุดคือต้องคิดจากภาพรวมทั้งระบบ ไม่ใช่คิดต่อ instance กล่าวคือ <strong>จำนวน connection ทั้งหมดเท่ากับจำนวน instance คูณด้วย pool size</strong> และค่านี้ต้องไม่เกิน <code>max_connections</code> ของ PostgreSQL โดยควรอยู่ราว 80% เพื่อสำรอง connection สำหรับงานดูแลระบบ หากมี read replica ด้วยต้องคูณเพิ่มเป็น <code>instances × (1 + replicas) × poolSize</code> เนื่องจาก TypeORM สร้าง pool แยกสำหรับ master และสำหรับ slave แต่ละตัว</p>
+<p>หากตั้ง pool เล็กเกินไป request จะเข้าคิวรอ connection ทำให้ latency สูงขึ้นทั้งที่ database ยังว่าง หากตั้งใหญ่เกินไปโดยเฉพาะเมื่อ scale out หลาย instance database จะปฏิเสธ connection ใหม่ทั้งหมด ซึ่งทำให้ระบบล่มทั้งระบบพร้อมกัน นี่เป็นสาเหตุอันดับหนึ่งของอาการ "too many connections" หลังจากเพิ่มจำนวน instance</p>
+<p>ค่าอ้างอิงคือ dev ประมาณ 10, production 20–50 และระบบที่มี traffic สูง 50–100 ต่อ instance ส่วนสูตร <code>(core × 2) + spindle</code> ที่มักถูกอ้างถึงนั้นเป็นสูตรสำหรับกำหนดขนาดของ DB server ไม่ใช่ของ pool ในแอปพลิเคชัน</p>
+<p>กับดักที่ต้องระวังคือ <strong>long transaction</strong> หากมี request จำนวนเท่ากับ pool size ที่เปิด transaction ค้างไว้พร้อมกัน request ถัดไปจะรอจน timeout ทั้งที่ CPU ของ database แทบไม่ทำงานเลย ในระบบที่มี instance จำนวนมากควรพิจารณาใช้ PgBouncer <span class="g">(ตัวรวม connection กลาง ให้หลาย instance ใช้ชุดเดียวกัน)</span> เป็น connection pooler กลาง</p>
+</div></details>
+
+
+<h2 id="s10">10. ✅ เช็คตัวเองก่อนปิดบท</h2>
+
+<ul>
+<li>วาดไทม์ไลน์ของ race condition ให้เพื่อนดูได้ โดยไม่ต้องเปิดชีท</li>
+<li>รู้ว่า lock ต้องอยู่ใน<strong>transaction เดียวกับการเขียน</strong> เพราะอะไร</li>
+<li>เขียน optimistic lock แบบที่<strong>ถูกจริง</strong> ได้ (conditional update แล้วเช็ค <code>affected</code>)</li>
+<li>อธิบายได้ว่าทำไม external call ใน transaction ผิดทั้งด้าน performance และ correctness</li>
+<li>ท่องสูตร connection ได้ และรู้ว่าบท 06 จะเติมอะไรเข้าไปในสูตร</li>
+<li>รู้ว่า <code>synchronize: true</code> ทำให้เกิด <em>data loss</em> ไม่ใช่แค่ downtime</li>
+</ul>
+
+<div class="pager">
+  <a href="02-nestjs-di.html">← บทที่ 2</a>
+  <a href="04-redis.html">บทที่ 4 — Redis →</a>
+</div>
+
+</main>
+
+<aside class="toc">
+<h4>ในบทนี้</h4>
+<a href="#s0">0. จุดที่เรื่องเดินมาถึง</a>
+<a href="#s1">1. ปูพื้นฐาน: ORM</a>
+<a href="#s2">2. Migration</a>
+<a href="#s3">3. Transaction &amp; ACID</a>
+<a href="#s4">4. Race Condition &amp; Lock ⚠️</a>
+<a href="#s5">5. Query Optimization</a>
+<a href="#s6">6. Connection Pool</a>
+<a href="#s7">7. Error code → HTTP</a>
+<a href="#s8">8. 🔗 เชื่อมกับบทอื่น</a>
+<a href="#s9">9. 📝 คลังคำตอบอัตนัย</a>
+<a href="#s10">10. ✅ เช็คตัวเอง</a>
+</aside>
+</div>
+</body>
+</html>

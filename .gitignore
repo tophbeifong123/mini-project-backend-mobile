@@ -16,9 +16,13 @@ build/
 coverage/
 .nyc_output/
 
-# Load test output
+# Load test files (keep only loadtest.js)
+loadtest/
+loadtest-*/
+loadtest-*.json
+*-summary.json
 *.k6-summary.json
-loadtest-results/
+!loadtest.js
 
 # Logs
 logs/

@@ -1,0 +1,614 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>บทที่ 1 — Architecture &amp; Docker</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<svg width="0" height="0" aria-hidden="true" style="position:absolute"><defs>
+<marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-i"/></marker>
+<marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-r"/></marker>
+<marker id="arg" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-g"/></marker>
+<marker id="ara" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" class="f-a"/></marker>
+</defs></svg>
+
+<nav class="topnav"><div class="topnav-inner">
+  <a class="home" href="00-index.html">◆ สารบัญ</a>
+  <a class="here" href="01-architecture-docker.html">01 Docker</a>
+  <a href="02-nestjs-di.html">02 NestJS</a>
+  <a href="03-database.html">03 Database</a>
+  <a href="04-redis.html">04 Redis</a>
+  <a href="05-async-queue.html">05 Queue</a>
+  <a href="06-scaling.html">06 Scaling</a>
+</div></nav>
+
+<div class="wrap">
+<main>
+
+<div class="hero">
+  <div class="kicker">Backend 01</div>
+  <h1>Architecture &amp; Containerization</h1>
+  <p>บทนี้ตอบคำถามเดียว: <strong>ก่อนจะเขียนโค้ดสักบรรทัด เราต้องตัดสินใจอะไรบ้าง แล้วจะส่งโค้ดนั้นไปรันบนเครื่องอื่นยังไงให้มันไม่พัง</strong></p>
+</div>
+
+<div class="chips">
+  <span class="chip">Monolith vs Microservices <span class="g">(แอปก้อนเดียว vs แยกเป็นหลายบริการเล็ก)</span></span>
+  <span class="chip">DevOps / CI-CD <span class="g">(dev กับ ops ทีมเดียวกัน / ทดสอบ-ดีพลอยอัตโนมัติ)</span></span>
+  <span class="chip">Infrastructure as Code <span class="g">(เขียนโครงสร้างพื้นฐานเป็นไฟล์ที่เก็บใน git ได้)</span></span>
+  <span class="chip">Container vs VM <span class="g">(แชร์ kernel ของเครื่องแม่ vs ยกทั้ง OS มาใหม่)</span></span>
+  <span class="chip">Image / Layer / Cache <span class="g">(แม่พิมพ์ / ชั้นของแต่ละคำสั่ง / จำผลไว้ไม่ build ซ้ำ)</span></span>
+  <span class="chip">Multi-stage build <span class="g">(build ในสเตจหนึ่ง แล้วหยิบเฉพาะผลลัพธ์ไปอิมเมจจริง)</span></span>
+  <span class="chip">Secrets <span class="g">(ค่าลับ เช่นรหัส DB หรือ API key)</span></span>
+</div>
+
+<h2 id="s0">0. เรื่องที่จะเดินยาวทั้ง 6 บท</h2>
+
+<p>ก่อนอื่นขอปูภาพรวมให้ก่อน เพราะปัญหาของนายไม่ใช่ "ไม่รู้จัก Redis" แต่คือ "ไม่รู้ว่า Redis ไปโผล่ตรงไหนของภาพ" วิธีแก้ที่ตรงจุดที่สุดคือใช้<strong>ระบบเดียว</strong>ตลอดทั้ง 6 บท แล้วให้มันค่อย ๆ เจ็บทีละแบบ เราก็แก้ทีละบท พอเดินครบภาพมันจะต่อกันเอง</p>
+
+<p>ระบบที่ว่าคือ <strong>Flash Sale</strong> — ขายของลดราคาแรง ๆ จำนวนจำกัด คนแห่เข้ามาพร้อมกันเป็นพัน (ตรงกับ mini-project ที่นายทำพอดี)</p>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 190" role="img" aria-label="เส้นทางของระบบ Flash Sale ตลอด 6 บท">
+  <line x1="30" y1="58" x2="670" y2="58" class="ln-t"/>
+  <g>
+    <rect x="18" y="40" width="96" height="36" rx="7" class="bx-a"/>
+    <text x="66" y="63" text-anchor="middle" class="t-b">01 Docker</text>
+    <text x="66" y="97" text-anchor="middle" class="t-xs">รันบนเครื่องเรา</text>
+    <text x="66" y="111" text-anchor="middle" class="t-xs">ได้ บนเซิร์ฟเวอร์</text>
+    <text x="66" y="125" text-anchor="middle" class="t-xs">ไม่ได้</text>
+  </g>
+  <g>
+    <rect x="126" y="40" width="96" height="36" rx="7" class="bx-a"/>
+    <text x="174" y="63" text-anchor="middle" class="t-b">02 NestJS</text>
+    <text x="174" y="97" text-anchor="middle" class="t-xs">โค้ดพันกัน</text>
+    <text x="174" y="111" text-anchor="middle" class="t-xs">เทสไม่ได้</text>
+  </g>
+  <g>
+    <rect x="234" y="40" width="96" height="36" rx="7" class="bx-a"/>
+    <text x="282" y="63" text-anchor="middle" class="t-b">03 Database</text>
+    <text x="282" y="97" text-anchor="middle" class="t-xs">ของมี 100</text>
+    <text x="282" y="111" text-anchor="middle" class="t-xs">ขายไป 130</text>
+  </g>
+  <g>
+    <rect x="342" y="40" width="96" height="36" rx="7" class="bx-a"/>
+    <text x="390" y="63" text-anchor="middle" class="t-b">04 Redis</text>
+    <text x="390" y="97" text-anchor="middle" class="t-xs">DB ตายเพราะ</text>
+    <text x="390" y="111" text-anchor="middle" class="t-xs">โดนถามซ้ำ ๆ</text>
+  </g>
+  <g>
+    <rect x="450" y="40" width="96" height="36" rx="7" class="bx-a"/>
+    <text x="498" y="63" text-anchor="middle" class="t-b">05 Queue</text>
+    <text x="498" y="97" text-anchor="middle" class="t-xs">กดซื้อแล้ว</text>
+    <text x="498" y="111" text-anchor="middle" class="t-xs">รอ 8 วินาที</text>
+  </g>
+  <g>
+    <rect x="558" y="40" width="110" height="36" rx="7" class="bx-a"/>
+    <text x="613" y="63" text-anchor="middle" class="t-b">06 Scaling</text>
+    <text x="613" y="97" text-anchor="middle" class="t-xs">เพิ่มเครื่องแล้ว</text>
+    <text x="613" y="111" text-anchor="middle" class="t-xs">พังหนักกว่าเดิม</text>
+  </g>
+  <path d="M114,58 L124,58" class="ln" marker-end="url(#ar)"/>
+  <path d="M222,58 L232,58" class="ln" marker-end="url(#ar)"/>
+  <path d="M330,58 L340,58" class="ln" marker-end="url(#ar)"/>
+  <path d="M438,58 L448,58" class="ln" marker-end="url(#ar)"/>
+  <path d="M546,58 L556,58" class="ln" marker-end="url(#ar)"/>
+  <text x="30" y="20" class="t-sm">ระบบเดียวกัน โตขึ้นเรื่อย ๆ →</text>
+  <line x1="18" y1="150" x2="668" y2="150" class="ln-d"/>
+  <text x="343" y="172" text-anchor="middle" class="t-sm">แถวล่าง = "อาการเจ็บ" ที่ทำให้บทนั้นต้องมีอยู่ · ถ้าเข้าใจอาการ จะเดาวิธีแก้ออกเองโดยไม่ต้องท่อง</text>
+</svg>
+<figcaption>เส้นทางของ Flash Sale ตลอด 6 บท — ทุกบทคือยาแก้อาการหนึ่งตัว</figcaption>
+</figure>
+
+<div class="box base"><span class="lab">อ่านบทนี้จบแล้วต้องได้อะไร</span>
+<p>ต้องตอบได้สองข้อโดยไม่ต้องท่อง: <em>"ทำไมไม่แตก microservices ตั้งแต่วันแรก"</em> <span class="g">(แตกระบบเป็นหลายบริการเล็ก ๆ ที่ deploy แยกกันได้)</span> และ <em>"ทำไม Dockerfile ต้องเรียงบรรทัดแบบนั้น"</em></p></div>
+
+
+<h2 id="s1">1. ปูพื้นฐาน: ปัญหาจริงคืออะไร</h2>
+
+<h3 id="s1-1">1.1 "บนเครื่องผมมันรันได้นะ"</h3>
+
+<p>สมมติเขียน Flash Sale API เสร็จบนโน้ตบุ๊กตัวเอง ใช้ Node 20 กับ PostgreSQL 16 บน macOS พอส่งไฟล์ให้เพื่อนไปรัน มันพัง เพราะเพื่อนใช้ Node 18 บน Windows แถมยังไม่ได้ลง PostgreSQL</p>
+
+<p>ปัญหานี้ไม่ได้อยู่ที่โค้ด แต่อยู่ที่<strong>สภาพแวดล้อม (environment)</strong> ที่โค้ดวางอยู่บนนั้น ซึ่งมีของอยู่หลายชั้น:</p>
+
+<ul>
+<li>เวอร์ชันของ runtime (Node 18 กับ 20 พฤติกรรมต่างกันจริง)</li>
+<li>library ระดับระบบปฏิบัติการ (พวก <code>openssl</code>, <code>libc</code> ที่ native module ต้องใช้)</li>
+<li>ตัวแปร environment (<code>DATABASE_URL</code>, <code>REDIS_URL</code>)</li>
+<li>บริการข้างเคียงที่ต้องมี (PostgreSQL, Redis)</li>
+</ul>
+
+<p>สรุปคือ<strong>โค้ดไม่ได้รันอยู่ในสุญญากาศ มันรันอยู่บนกองของพวกนี้</strong></p>
+
+<div class="box why"><span class="lab">ความคิดตั้งต้นของทั้งบท</span>
+<p>ถ้าส่งแค่ "โค้ด" มันไม่พอ ต้องส่ง <strong>"โค้ด + สภาพแวดล้อมทั้งกอง"</strong> ไปด้วยกันเป็นก้อนเดียว นี่แหละคือเหตุผลที่ container มีอยู่ เรื่องที่เหลือในบทนี้เป็นแค่รายละเอียดของความคิดข้อนี้</p></div>
+
+<h3 id="s1-2">1.2 ทางเลือกยุคก่อน: Virtual Machine</h3>
+
+<p>วิธีเดิมคือใช้ VM — จำลองคอมพิวเตอร์ขึ้นมาทั้งเครื่อง มีระบบปฏิบัติการของตัวเองเต็มรูปแบบ (เรียกว่า Guest OS) แล้วเอาแอปเราไปวางข้างใน มันแก้ปัญหาได้จริง แต่แพงมาก: image ขนาดหลาย GB, boot ทีนึงเป็นนาที, แล้วเครื่องหนึ่งรันได้ไม่กี่ตัว</p>
+
+<h3 id="s1-3">1.3 แล้ว container ต่างจาก VM ยังไง</h3>
+
+<p>Container ไม่ได้จำลองเครื่อง มันคือ <strong>process ธรรมดาที่รันบน kernel ของเครื่องแม่</strong> <span class="g">(kernel = แกนกลางของ OS ที่คุมฮาร์ดแวร์ให้ทุกโปรแกรม)</span> แต่ถูกกั้นไว้ด้วยฟีเจอร์ของ Linux สองตัว:</p>
+
+<ul>
+<li><strong>namespace</strong> — ทำให้ process มองเห็นโลกแคบลง เห็นแค่ process ของตัวเอง ไฟล์ของตัวเอง network ของตัวเอง เปรียบเหมือนการ<em>ปิดตาไม่ให้เห็นของคนอื่น</em></li>
+<li><strong>cgroups</strong> — จำกัดว่าใช้ CPU กับ RAM ได้เท่าไร เปรียบเหมือน<em>ล่ามโซ่ไม่ให้กินเกินโควตา</em></li>
+</ul>
+
+<p>สองตัวนี้รวมกันก็ให้ความรู้สึกเหมือนอยู่คนละเครื่อง ทั้งที่จริง ๆ ยังอยู่บน kernel เดียวกัน</p>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 300" role="img" aria-label="เปรียบเทียบโครงสร้าง Virtual Machine กับ Container">
+  <text x="170" y="20" text-anchor="middle" class="t-b">Virtual Machine</text>
+  <text x="530" y="20" text-anchor="middle" class="t-b">Container</text>
+
+  <!-- VM side -->
+  <rect x="20" y="34" width="145" height="122" rx="6" class="bx-n"/>
+  <text x="92" y="50" text-anchor="middle" class="t-xs">VM 1</text>
+  <rect x="28" y="56" width="129" height="26" rx="4" class="bx-a"/>
+  <text x="92" y="73" text-anchor="middle" class="t-sm">App</text>
+  <rect x="28" y="86" width="129" height="24" rx="4" class="bx"/>
+  <text x="92" y="102" text-anchor="middle" class="t-xs">Libraries</text>
+  <rect x="28" y="114" width="129" height="36" rx="4" class="bx-r"/>
+  <text x="92" y="130" text-anchor="middle" class="t-sm">Guest OS</text>
+  <text x="92" y="144" text-anchor="middle" class="t-xs">(kernel ของตัวเอง)</text>
+
+  <rect x="175" y="34" width="145" height="122" rx="6" class="bx-n"/>
+  <text x="247" y="50" text-anchor="middle" class="t-xs">VM 2</text>
+  <rect x="183" y="56" width="129" height="26" rx="4" class="bx-a"/>
+  <text x="247" y="73" text-anchor="middle" class="t-sm">App</text>
+  <rect x="183" y="86" width="129" height="24" rx="4" class="bx"/>
+  <text x="247" y="102" text-anchor="middle" class="t-xs">Libraries</text>
+  <rect x="183" y="114" width="129" height="36" rx="4" class="bx-r"/>
+  <text x="247" y="130" text-anchor="middle" class="t-sm">Guest OS</text>
+  <text x="247" y="144" text-anchor="middle" class="t-xs">(kernel ของตัวเอง)</text>
+
+  <rect x="20" y="164" width="300" height="28" rx="4" class="bx"/>
+  <text x="170" y="183" text-anchor="middle" class="t-sm">Hypervisor</text>
+  <rect x="20" y="196" width="300" height="28" rx="4" class="bx"/>
+  <text x="170" y="215" text-anchor="middle" class="t-sm">Host OS + Kernel</text>
+  <rect x="20" y="228" width="300" height="28" rx="4" class="bx"/>
+  <text x="170" y="247" text-anchor="middle" class="t-sm">Hardware</text>
+  <text x="170" y="278" text-anchor="middle" class="t-xs">หนักหลาย GB · boot เป็นนาที · รันได้หลักสิบตัว</text>
+
+  <!-- Container side -->
+  <rect x="380" y="86" width="95" height="70" rx="6" class="bx-n"/>
+  <text x="427" y="102" text-anchor="middle" class="t-xs">Container 1</text>
+  <rect x="387" y="108" width="81" height="42" rx="4" class="bx-a"/>
+  <text x="427" y="126" text-anchor="middle" class="t-sm">App</text>
+  <text x="427" y="141" text-anchor="middle" class="t-xs">+ libs</text>
+
+  <rect x="482" y="86" width="95" height="70" rx="6" class="bx-n"/>
+  <text x="529" y="102" text-anchor="middle" class="t-xs">Container 2</text>
+  <rect x="489" y="108" width="81" height="42" rx="4" class="bx-a"/>
+  <text x="529" y="126" text-anchor="middle" class="t-sm">App</text>
+  <text x="529" y="141" text-anchor="middle" class="t-xs">+ libs</text>
+
+  <rect x="584" y="86" width="96" height="70" rx="6" class="bx-n"/>
+  <text x="632" y="102" text-anchor="middle" class="t-xs">Container 3</text>
+  <rect x="591" y="108" width="82" height="42" rx="4" class="bx-a"/>
+  <text x="632" y="126" text-anchor="middle" class="t-sm">App</text>
+  <text x="632" y="141" text-anchor="middle" class="t-xs">+ libs</text>
+
+  <rect x="380" y="164" width="300" height="28" rx="4" class="bx"/>
+  <text x="530" y="183" text-anchor="middle" class="t-sm">Container Engine (Docker)</text>
+  <rect x="380" y="196" width="300" height="28" rx="4" class="bx-r"/>
+  <text x="530" y="215" text-anchor="middle" class="t-sm">Host OS + Kernel ← แชร์กันทุก container</text>
+  <rect x="380" y="228" width="300" height="28" rx="4" class="bx"/>
+  <text x="530" y="247" text-anchor="middle" class="t-sm">Hardware</text>
+  <text x="530" y="278" text-anchor="middle" class="t-xs">หนักหลัก MB · start ระดับวินาที · รันได้หลักร้อยตัว</text>
+
+  <path d="M330,120 L372,120" class="ln-a" marker-end="url(#ara)"/>
+  <text x="351" y="112" text-anchor="middle" class="t-xs t-a">ตัดทิ้ง</text>
+</svg>
+<figcaption>ความต่างทั้งหมดอยู่ที่ชั้นสีแดง — VM แบกระบบปฏิบัติการของตัวเองไปด้วยทุกตัว ส่วน container ใช้ kernel ร่วมกัน</figcaption>
+</figure>
+
+<div class="box trap"><span class="lab">จุดที่ข้อสอบชอบถาม</span>
+<p>เพราะ container <strong>แชร์ kernel</strong> กัน ถ้ามีช่องโหว่ระดับ kernel ผู้โจมตีก็ทะลุจาก container ออกไปถึงเครื่องแม่ได้ (เรียกว่า <em>container escape</em>) ฉะนั้นถ้ามีใครบอกว่า "container ปลอดภัยเท่า VM" อันนั้น<strong>ผิด</strong></p>
+<p>ถ้าต้องการกั้นระดับที่รันโค้ดของคนแปลกหน้าได้จริง (multi-tenant) ต้องใช้ gVisor / Kata / Firecracker <span class="g">(ตัวรัน container ที่กั้นแน่นกว่า เกือบเท่า VM)</span> หรือแยกเครื่องกันไปเลย และนี่คือเหตุผลตรง ๆ ที่ต้องใส่ <code>USER node</code> ใน Dockerfile — เพื่อลดสิทธิ์ที่ผู้โจมตีจะได้ตั้งแต่ก้าวแรก ถ้าเจาะเข้ามาแล้วเจอว่าตัวเองเป็น root มันไปต่อได้ง่ายกว่ามาก</p></div>
+
+
+<h2 id="s2">2. Image, Layer และ Cache — หัวใจของ Dockerfile</h2>
+
+<h3 id="s2-1">2.1 แยกให้ออกก่อน: image ≠ container</h3>
+
+<p>เทียบกับสิ่งที่นายคุ้นอยู่แล้ว: <strong>image คือ class ส่วน container คือ instance ที่ <code>new</code> ออกมา</strong> จาก image ก้อนเดียวจะสร้าง container กี่ตัวก็ได้ แต่ละตัวมีชีวิตแยกกัน — และนี่แหละคือสิ่งที่ทำให้เรา scale ออกได้ในบทที่ 6</p>
+
+<div class="box base"><span class="lab">คำศัพท์ที่จะเจอตลอดบท</span>
+<ul>
+<li><strong>Dockerfile</strong> — สูตรอาหาร บอกว่าจะประกอบ image ยังไง</li>
+<li><strong>build</strong> — เอาสูตรไปทำจริงจนได้ image</li>
+<li><strong>image</strong> — ก้อนที่ประกอบเสร็จแล้ว พร้อมเอาไปรัน</li>
+<li><strong>registry</strong> — ที่เก็บ image ส่วนกลาง (Docker Hub, GitHub Container Registry) เอาไว้ <code>push</code> ขึ้นแล้วให้เครื่อง production <code>pull</code> ลงไปรัน</li>
+<li><strong>container</strong> — image ที่กำลังรันอยู่จริง</li>
+<li><strong>tag</strong> — ป้ายชื่อเวอร์ชันของ image เช่น <code>node:20-alpine</code></li>
+</ul></div>
+
+<h3 id="s2-2">2.2 ทุกบรรทัดใน Dockerfile = 1 layer</h3>
+
+<p>Docker build ไล่ทีละบรรทัด แต่ละบรรทัดสร้าง "ชั้น" ของ filesystem ซ้อนทับกัน (นึกถึงแผ่นใสวางซ้อน) แล้ว<strong>แต่ละชั้นถูก cache ไว้</strong> เพื่อไม่ต้องทำซ้ำในการ build ครั้งหน้า</p>
+
+<p>กฎของ cache มีข้อเดียว แต่เป็นข้อที่อธิบายทุกอย่างในหัวข้อนี้:</p>
+
+<div class="box why"><span class="lab">กฎ cache ข้อเดียวที่ต้องจำ</span>
+<p>ถ้า layer ที่ N เปลี่ยน → <strong>layer ที่ N+1 เป็นต้นไปต้อง build ใหม่หมด</strong> ต่อให้เนื้อหาเหมือนเดิมเป๊ะก็ตาม</p>
+<p>เหตุผลคือแต่ละชั้นวางทับกัน ถ้าชั้นล่างเปลี่ยน Docker ก็รับประกันไม่ได้ว่าชั้นบนจะออกมาเหมือนเดิม เลยต้องทำใหม่ให้หมด</p></div>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 280" role="img" aria-label="เปรียบเทียบการเรียงบรรทัดใน Dockerfile ที่ทำให้ cache หลุดกับที่ไม่หลุด">
+  <text x="165" y="18" text-anchor="middle" class="t-b t-r">❌ เรียงผิด</text>
+  <text x="530" y="18" text-anchor="middle" class="t-b t-g">✅ เรียงถูก</text>
+
+  <!-- wrong -->
+  <rect x="20" y="32" width="290" height="32" rx="5" class="bx"/>
+  <text x="32" y="52" class="t-mono">FROM node:20-alpine</text>
+  <text x="298" y="52" text-anchor="end" class="t-xs t-g">HIT</text>
+
+  <rect x="20" y="70" width="290" height="32" rx="5" class="bx"/>
+  <text x="32" y="90" class="t-mono">WORKDIR /app</text>
+  <text x="298" y="90" text-anchor="end" class="t-xs t-g">HIT</text>
+
+  <rect x="20" y="108" width="290" height="32" rx="5" class="bx-r"/>
+  <text x="32" y="128" class="t-mono">COPY . .</text>
+  <text x="298" y="128" text-anchor="end" class="t-xs t-r">MISS</text>
+
+  <rect x="20" y="146" width="290" height="32" rx="5" class="bx-r"/>
+  <text x="32" y="166" class="t-mono">RUN npm ci</text>
+  <text x="298" y="166" text-anchor="end" class="t-xs t-r">MISS</text>
+
+  <path d="M330,124 L330,170" class="ln-r" marker-end="url(#arr)"/>
+  <text x="14" y="205" class="t-xs t-r">แก้โค้ด 1 ตัวอักษร → layer COPY เปลี่ยน</text>
+  <text x="14" y="221" class="t-xs t-r">→ ลาก npm ci ให้พังตาม → ติดตั้งใหม่หมด</text>
+  <rect x="20" y="234" width="290" height="30" rx="5" class="bx-r"/>
+  <text x="165" y="254" text-anchor="middle" class="t-b t-r">build ~5 นาที ทุกครั้ง</text>
+
+  <!-- right -->
+  <rect x="385" y="32" width="290" height="32" rx="5" class="bx"/>
+  <text x="397" y="52" class="t-mono">FROM node:20-alpine</text>
+  <text x="663" y="52" text-anchor="end" class="t-xs t-g">HIT</text>
+
+  <rect x="385" y="70" width="290" height="32" rx="5" class="bx"/>
+  <text x="397" y="90" class="t-mono">COPY package*.json ./</text>
+  <text x="663" y="90" text-anchor="end" class="t-xs t-g">HIT</text>
+
+  <rect x="385" y="108" width="290" height="32" rx="5" class="bx-g"/>
+  <text x="397" y="128" class="t-mono">RUN npm ci</text>
+  <text x="663" y="128" text-anchor="end" class="t-xs t-g">HIT</text>
+
+  <rect x="385" y="146" width="290" height="32" rx="5" class="bx-r"/>
+  <text x="397" y="166" class="t-mono">COPY . .</text>
+  <text x="663" y="166" text-anchor="end" class="t-xs t-r">MISS</text>
+
+  <text x="379" y="205" class="t-xs t-g">แก้โค้ดกระทบแค่ layer สุดท้าย</text>
+  <text x="379" y="221" class="t-xs t-g">เพราะ package.json ไม่ได้เปลี่ยน npm ci เลยยัง HIT</text>
+  <rect x="385" y="234" width="290" height="30" rx="5" class="bx-g"/>
+  <text x="530" y="254" text-anchor="middle" class="t-b t-g">build ~30 วินาที</text>
+</svg>
+<figcaption>เรียงจาก "เปลี่ยนน้อยที่สุด" ลงไปหา "เปลี่ยนบ่อยที่สุด" เสมอ — นี่ไม่ใช่ trick แต่เป็นผลลัพธ์ตรง ๆ ของกฎ cache</figcaption>
+</figure>
+
+<p>เพราะฉะนั้นถ้าจำกฎข้อเดียวข้างบนได้ นายจะ<strong>คิดคำตอบเรื่องการเรียง Dockerfile ออกมาเองได้</strong> ไม่ต้องท่องว่า "ต้อง COPY package.json ก่อน"</p>
+
+<h3 id="s2-3">2.3 Multi-stage build <span class="g">(แบ่ง Dockerfile เป็นหลายช่วง แล้วหยิบแค่ผลลัพธ์ไป image สุดท้าย)</span></h3>
+
+<p>ปัญหาคือ ตอน build เราต้องใช้ของเยอะ — TypeScript compiler, devDependencies <span class="g">(แพ็กเกจที่ใช้แค่ตอน build/test ไม่ต้องมีตอนรันจริง)</span>, source code ทั้งหมด แต่ตอนรันจริงเราอยากได้แค่ <code>dist/</code> กับ dependency ที่จำเป็นตอนรันเท่านั้น</p>
+
+<p>ถ้า build ใน image เดียว ของที่ใช้ตอน build จะติดไปอยู่ใน image สุดท้ายด้วย image เลยบวมไปประมาณ 1.2GB แถมมีของให้โจมตีเยอะโดยไม่จำเป็น</p>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 240" role="img" aria-label="Multi-stage build คัดลอกเฉพาะผลลัพธ์จาก stage builder ไปยัง stage production">
+  <rect x="20" y="34" width="270" height="164" rx="8" class="bx-n"/>
+  <text x="155" y="24" text-anchor="middle" class="t-b">stage 1: builder</text>
+  <rect x="34" y="48" width="242" height="26" rx="4" class="bx"/>
+  <text x="155" y="65" text-anchor="middle" class="t-sm">node:20-alpine</text>
+  <rect x="34" y="78" width="242" height="26" rx="4" class="bx"/>
+  <text x="155" y="95" text-anchor="middle" class="t-sm">source code (.ts)</text>
+  <rect x="34" y="108" width="242" height="26" rx="4" class="bx"/>
+  <text x="155" y="125" text-anchor="middle" class="t-sm">devDependencies (tsc, jest)</text>
+  <rect x="34" y="138" width="242" height="26" rx="4" class="bx"/>
+  <text x="155" y="155" text-anchor="middle" class="t-sm">prod dependencies</text>
+  <rect x="34" y="168" width="242" height="26" rx="4" class="bx-a"/>
+  <text x="155" y="185" text-anchor="middle" class="t-sm t-a t-b">dist/ ← ผลลัพธ์ที่เราต้องการ</text>
+
+  <path d="M296,181 L400,181" class="ln-a" marker-end="url(#ara)"/>
+  <text x="348" y="160" text-anchor="middle" class="t-xs t-a">COPY --from=builder</text>
+  <text x="348" y="173" text-anchor="middle" class="t-xs t-a">/app/dist ./dist</text>
+
+  <rect x="410" y="98" width="270" height="100" rx="8" class="bx-n"/>
+  <text x="545" y="88" text-anchor="middle" class="t-b">stage 2: production</text>
+  <rect x="424" y="112" width="242" height="26" rx="4" class="bx"/>
+  <text x="545" y="129" text-anchor="middle" class="t-sm">node:20-alpine</text>
+  <rect x="424" y="142" width="242" height="26" rx="4" class="bx"/>
+  <text x="545" y="159" text-anchor="middle" class="t-sm">prod dependencies</text>
+  <rect x="424" y="172" width="242" height="22" rx="4" class="bx-a"/>
+  <text x="545" y="188" text-anchor="middle" class="t-sm t-a t-b">dist/</text>
+
+  <text x="155" y="222" text-anchor="middle" class="t-b t-r">image ~1.2 GB ถ้าใช้ก้อนนี้</text>
+  <text x="545" y="222" text-anchor="middle" class="t-b t-g">image ~150 MB</text>
+</svg>
+<figcaption>ของที่ใช้ตอน build อยู่แค่ใน stage แรก แล้วถูกทิ้งไป — image สุดท้ายเอาไปเฉพาะสิ่งที่ต้องใช้ตอนรัน</figcaption>
+</figure>
+
+<pre><code># ---- stage 1: builder ----
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci                    # ติดตั้งครบ รวม devDependencies เพราะต้องใช้ tsc
+COPY . .
+RUN npm run build             # ได้ dist/
+
+# ---- stage 2: production ----
+FROM node:20-alpine
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --omit=dev         # เอาเฉพาะ dependency ที่ใช้ตอนรัน
+COPY --from=builder /app/dist ./dist   # ← หยิบมาแค่ผลลัพธ์
+USER node
+EXPOSE 3000
+CMD ["node", "dist/main.js"]</code></pre>
+
+<p>ผลที่ได้คือ <span class="big-num">~1.2GB → ~150MB</span> ซึ่งข้อดีไม่ได้มีแค่ "เล็กลง" อย่างเดียว มันแปลว่า pull เร็วขึ้น, cold start <span class="g">(เวลาตั้งแต่สตาร์ทตัวใหม่จนพร้อมรับงาน)</span> เร็วขึ้น, ตอน scale ออกก็เร็วขึ้น, ค่า network ถูกลง และช่องโหว่น้อยลงเพราะมีแพ็กเกจติดมาน้อยลง</p>
+
+<div class="box errata"><span class="lab">⚠ สไลด์เขียนผิด — ระวังตอนตอบข้อสอบ</span>
+<ol>
+<li><strong>สไลด์ 20</strong> ที่ตั้งชื่อว่า "optimized" ใช้ไม่ได้จริง: stage builder รัน <code>npm ci --only=production</code> แล้ว <code>COPY . .</code> แต่<strong>ไม่มี <code>npm run build</code></strong> แถม stage สุดท้ายทำ <code>COPY --from=builder /app .</code> ซึ่งลากทั้ง source และ node_modules มาหมด สรุปคือ multi-stage ไม่ได้ประโยชน์อะไรเลย ให้ยึดแบบสไลด์ 21 (โครงเดียวกับโค้ดข้างบน)</li>
+<li><strong><code>--only=production</code> เลิกใช้แล้ว</strong> ตั้งแต่ npm 7 ให้เปลี่ยนเป็น <code>--omit=dev</code></li>
+<li><strong>สไลด์ 29</strong> multi-target อ้างถึง <code>COPY --from=builder</code> ทั้งที่นิยามไว้แค่ stage base / development / production → build ไม่ผ่าน</li>
+<li><code>version: '3.8'</code> ใน docker-compose <span class="g">(ไฟล์เดียวสั่งรันหลาย container พร้อมกัน)</span> เลิกใช้แล้วใน Compose v2 ใส่ไปก็ถูกเมินเฉย ๆ</li>
+</ol></div>
+
+<h3 id="s2-4">2.4 <code>.dockerignore</code> สำคัญกว่าที่คิด</h3>
+
+<p>คนส่วนใหญ่คิดว่ามันมีไว้ทำให้ build เร็ว ซึ่งก็จริง แต่<strong>เหตุผลที่สำคัญที่สุดคือความปลอดภัย</strong>: <code>COPY . .</code> จะลาก <code>.env</code> เข้าไปอยู่ใน image layer ด้วย และ layer นั้นลบไม่ได้ ใครที่ pull image นี้ได้ก็รัน <code>docker history</code> อ่าน secret <span class="g">(ค่าลับ เช่น รหัสผ่าน DB, API key, token)</span> ได้เลย</p>
+
+<pre><code>node_modules
+.git
+.env*
+dist
+coverage</code></pre>
+
+
+<h2 id="s3">3. Secrets: กฎเดียวที่ต้องจำ</h2>
+
+<div class="box why"><span class="lab">กฎ</span>
+<p><strong>Secret เข้ามาตอน runtime เท่านั้น ห้ามอยู่ใน image</strong> — เพราะอะไรที่ถูก build เข้าไปใน layer แล้วมันจะอยู่ตรงนั้นถาวรและอ่านย้อนได้</p></div>
+
+<div class="tbl"><table>
+<tr><th>ถ้าทำแบบนี้</th><th>อันตรายยังไง</th><th>ให้ทำแทน</th></tr>
+<tr><td><code>ENV DB_PASSWORD=xxx</code> ใน Dockerfile</td><td>ติดใน layer ถาวร ใครก็รัน <code>docker history</code> อ่านได้</td><td>ส่งผ่าน env ตอน <code>docker run</code> หรือให้ orchestrator <span class="g">(ตัวจัดการ container อัตโนมัติ เช่น Kubernetes)</span> ฉีดให้</td></tr>
+<tr><td>commit <code>.env</code></td><td>อยู่ใน git history ตลอดกาล — <strong>ลบไฟล์ไม่พอ ต้อง rotate</strong> <span class="g">(rotate = เปลี่ยนไปใช้ค่าลับชุดใหม่ ให้ของเก่าใช้ไม่ได้)</span></td><td><code>.gitignore</code> แล้ว commit <code>.env.example</code> แทน</td></tr>
+<tr><td>ใช้ secret ชุดเดียวกันทั้ง dev และ prod</td><td>ฝั่ง dev หลุดง่ายกว่ามาก และพอหลุดแล้ว prod หลุดตามทันที</td><td>แยกคนละชุดเด็ดขาด</td></tr>
+<tr><td><code>--env-file .env.production</code></td><td><code>docker inspect</code> อ่านค่าออกมาได้ แถมติดใน shell history</td><td>dev ใช้ได้ / prod ต้องใช้ secrets manager <span class="g">(บริการเก็บค่าลับส่วนกลาง แจกให้แอปตอนรัน)</span></td></tr>
+</table></div>
+
+<p><strong>แล้วทำไมต้อง secrets manager ใน production:</strong> ไม่ใช่แค่ "มันปลอดภัยกว่า" ลอย ๆ แต่ได้ของ 2 อย่างที่ไฟล์ให้ไม่ได้ — (1) <em>audit log</em> ว่าใครอ่าน secret ตอนไหน (2) <em>rotate ได้โดยไม่ต้อง redeploy</em> ซึ่งจำเป็นมากตอนเกิดเหตุจริง</p>
+
+<div class="box errata"><span class="lab">⚠ สไลด์ขัดกันเอง</span>
+<p>สไลด์ 24 แนะนำ <code>--env-file .env.production</code> แต่สไลด์ 25 บอกให้ใช้ secrets manager ถ้าข้อสอบถาม ให้ตอบตามสไลด์ 25 แล้วอธิบายว่า <code>--env-file</code> เหมาะกับ dev เท่านั้น เพราะค่ายังอ่านได้ผ่าน <code>docker inspect</code></p></div>
+
+
+<h2 id="s4">4. Monolith <span class="g">(ทั้งระบบเป็นก้อนเดียว deploy พร้อมกันทีเดียว)</span> vs Microservices</h2>
+
+<h3 id="s4-1">4.1 สองคำนี้ต่างกันที่ "ขอบเขตของการ deploy"</h3>
+
+<p>ไม่ได้ต่างกันที่จำนวนไฟล์หรือความสวยของโค้ดนะ แต่ต่างกันที่ <strong>หน่วยที่เรา deploy ออกไปพร้อมกัน</strong></p>
+
+<figure class="fig fig-wide">
+<svg viewBox="0 0 700 260" role="img" aria-label="เปรียบเทียบโครงสร้าง Monolith กับ Microservices">
+  <text x="160" y="18" text-anchor="middle" class="t-b">Monolith</text>
+  <text x="525" y="18" text-anchor="middle" class="t-b">Microservices</text>
+
+  <!-- monolith -->
+  <rect x="30" y="34" width="260" height="102" rx="8" class="bx-a"/>
+  <text x="160" y="52" text-anchor="middle" class="t-xs t-a">deploy เป็นก้อนเดียว</text>
+  <rect x="44" y="62" width="72" height="60" rx="5" class="bx"/>
+  <text x="80" y="97" text-anchor="middle" class="t-sm">Users</text>
+  <rect x="124" y="62" width="72" height="60" rx="5" class="bx"/>
+  <text x="160" y="97" text-anchor="middle" class="t-sm">Orders</text>
+  <rect x="204" y="62" width="72" height="60" rx="5" class="bx"/>
+  <text x="240" y="97" text-anchor="middle" class="t-sm">Payment</text>
+  <path d="M118,92 L122,92" class="ln"/>
+  <path d="M198,92 L202,92" class="ln"/>
+  <text x="160" y="152" text-anchor="middle" class="t-xs t-g">เรียกกันในหน่วยความจำเดียวกัน (นาโนวินาที ไม่มีวันพลาด)</text>
+
+  <path d="M160,158 L160,178" class="ln" marker-end="url(#ar)"/>
+  <rect x="86" y="180" width="148" height="36" rx="5" class="bx-p"/>
+  <text x="160" y="203" text-anchor="middle" class="t-sm">Database เดียว</text>
+  <text x="160" y="236" text-anchor="middle" class="t-xs t-g">ACID ข้ามโมดูลได้ฟรี</text>
+  <text x="160" y="250" text-anchor="middle" class="t-xs t-r">แต่พังจุดเดียว ล้มทั้งระบบ</text>
+
+  <!-- microservices -->
+  <rect x="380" y="40" width="88" height="52" rx="6" class="bx-a"/>
+  <text x="424" y="70" text-anchor="middle" class="t-sm">Users</text>
+  <rect x="481" y="40" width="88" height="52" rx="6" class="bx-a"/>
+  <text x="525" y="70" text-anchor="middle" class="t-sm">Orders</text>
+  <rect x="582" y="40" width="88" height="52" rx="6" class="bx-a"/>
+  <text x="626" y="70" text-anchor="middle" class="t-sm">Payment</text>
+
+  <path d="M470,66 L479,66" class="ln-r" marker-end="url(#arr)"/>
+  <path d="M571,66 L580,66" class="ln-r" marker-end="url(#arr)"/>
+  <text x="525" y="110" text-anchor="middle" class="t-xs t-r">คุยกันผ่าน network (มิลลิวินาที และล้มเหลวได้ตลอด)</text>
+
+  <path d="M424,118 L424,138" class="ln" marker-end="url(#ar)"/>
+  <path d="M525,118 L525,138" class="ln" marker-end="url(#ar)"/>
+  <path d="M626,118 L626,138" class="ln" marker-end="url(#ar)"/>
+  <rect x="380" y="140" width="88" height="36" rx="5" class="bx-p"/>
+  <text x="424" y="163" text-anchor="middle" class="t-sm">DB</text>
+  <rect x="481" y="140" width="88" height="36" rx="5" class="bx-p"/>
+  <text x="525" y="163" text-anchor="middle" class="t-sm">DB</text>
+  <rect x="582" y="140" width="88" height="36" rx="5" class="bx-p"/>
+  <text x="626" y="163" text-anchor="middle" class="t-sm">DB</text>
+  <text x="525" y="196" text-anchor="middle" class="t-xs t-g">deploy แยกกันได้ · scale เฉพาะตัวที่ร้อน · พังแยกส่วน</text>
+  <text x="525" y="216" text-anchor="middle" class="t-xs t-r">แต่ database-per-service ⇒ ACID ข้าม service ทำไม่ได้</text>
+  <text x="525" y="232" text-anchor="middle" class="t-xs t-r">ต้องใช้ Saga / compensating transaction แทน</text>
+  <text x="525" y="250" text-anchor="middle" class="t-xs t-r">+ ต้องมี service discovery, tracing, contract test…</text>
+</svg>
+<figcaption>ความต่างที่แท้จริงคือลูกศรระหว่างกล่อง — เปลี่ยนจาก "เรียกฟังก์ชัน" เป็น "ยิงข้าม network" ซึ่งช้ากว่าและล้มเหลวได้</figcaption>
+</figure>
+
+<h3 id="s4-2">4.2 กฎการตัดสินใจ</h3>
+
+<div class="box why"><span class="lab">คำตอบมาตรฐานของวิชานี้</span>
+<p><strong>เริ่มที่ monolith เสมอ</strong> แต่แบ่งโมดูลตาม domain ตั้งแต่วันแรก (เรียกว่า <em>modular monolith</em>) แล้วค่อยแตกออกเมื่อมี<strong>เหตุผลที่วัดได้</strong> เท่านั้น เช่น เจอ bottleneck เฉพาะจุดจากการวัดจริง หรือทีมโตเกิน 15–20 คนจนชนกันที่ codebase เดียว</p></div>
+
+<p>เหตุผลลึก ๆ มีสองข้อ:</p>
+
+<ol>
+<li><strong>วันแรกเรายังไม่รู้ domain boundary ที่แท้จริง</strong> <span class="g">(เส้นแบ่งว่าเรื่องไหนควรเป็นของ service ไหน ตามงานจริงของธุรกิจ)</span> — และการแตก service ผิดที่ แพงกว่าการรวมกลับมาก เพราะเราแตก database ไปแล้ว จะรวมกลับต้อง migrate ข้อมูลใหม่หมด</li>
+<li><strong>Microservices ไม่ได้แถม performance มาให้ฟรี</strong> — มันเอา in-process call <span class="g">(เรียกฟังก์ชันในโปรเซสเดียวกัน เร็วระดับนาโนวินาที ไม่มีทางพลาด)</span> ไปแลกกับ network call <span class="g">(ยิงข้ามเครื่อง ช้ากว่าเป็นพันเท่า และล้มเหลวได้ตลอด)</span> ซึ่ง<em>ช้ากว่า</em> เราจ่ายเงินก้อนนี้เพื่อซื้อ "ความเป็นอิสระของทีม" ไม่ใช่ซื้อความเร็ว ตรงนี้คนเข้าใจผิดกันเยอะ</li>
+</ol>
+
+<h3 id="s4-3">4.3 "Microservices tax" — ค่าใช้จ่ายที่มองไม่เห็น</h3>
+
+<p>พอแตก service ปุ๊บ เราได้ปัญหาชุดใหม่มาฟรี ๆ ที่ต้องมีคนดูแล: service discovery <span class="g">(ทำยังไงให้ service หากันเจอ เวลามันย้ายเครื่องหรือเปลี่ยน IP)</span>, distributed tracing <span class="g">(ตามรอย 1 request ว่าวิ่งผ่าน service ไหนบ้าง ช้าตรงไหน)</span>, contract testing <span class="g">(เทสว่า service ที่คุยกันยังส่งของตามสัญญาเดิม ไม่มีใครแอบเปลี่ยนฟอร์แมต)</span>, API versioning <span class="g">(ออก API เวอร์ชันใหม่โดยไม่ทำของเก่าที่คนยังใช้อยู่พัง)</span>, partial failure <span class="g">(บาง service ล่ม บางตัวยังอยู่ ระบบครึ่ง ๆ กลาง ๆ ที่ต้องตามเก็บ)</span>, retry storm <span class="g">(ทุกตัวลองใหม่พร้อมกันจนถล่มตัวที่กำลังจะฟื้น)</span>, saga <span class="g">(แตก transaction ยาวเป็นสเต็ปย่อย พลาดกลางทางก็ย้อนคืนทีละสเต็ป)</span></p>
+
+<p>ดูจากของจริง — <strong>Uber</strong> ใช้ microservices ตั้งแต่วันแรกจนมีประมาณ 2,200 service และต้องตั้ง <em>platform team</em> ทั้งทีมมาดูแลโครงสร้างพวกนี้โดยเฉพาะ ส่วน <strong>Instagram</strong> เริ่มด้วย Django monolith โตถึง 30 ล้านผู้ใช้แล้วค่อยแยก Feed / Stories / Messaging ออกมา</p>
+
+<div class="box trap"><span class="lab">คำถามทดสอบก่อนตัดสินใจแตก</span>
+<p>ถามตัวเองว่า <strong>"ธุรกิจรับ eventual consistency ได้ไหม"</strong> <span class="g">(ข้อมูลแต่ละที่ยังไม่ตรงกันชั่วคราว แต่เดี๋ยวก็ตรงกันเอง)</span> เพราะพอเป็น database-per-service <span class="g">(แต่ละ service มี DB ของตัวเอง ห้ามยุ่ง DB ของคนอื่น)</span> แล้ว ACID <span class="g">(คุณสมบัติ 4 ข้อที่การันตีว่า transaction จะไม่ทำข้อมูลเพี้ยน — transaction = กลุ่มคำสั่ง DB ที่ต้องสำเร็จทั้งหมดหรือไม่เกิดอะไรเลย)</span> ข้าม service <em>ทำไม่ได้</em> ถ้าคำตอบคือรับไม่ได้ (เช่น ตัดสต็อกกับตัดเงินต้องเกิดพร้อมกันเป๊ะ) → อย่าแตก จบ</p></div>
+
+
+<h2 id="s5">5. DevOps, CI/CD และ IaC — สามคำนี้ต่างกันยังไง</h2>
+
+<p>สามคำนี้มักถูกพูดปนกันจนงง แยกแบบนี้:</p>
+
+<div class="tbl"><table>
+<tr><th>คำ</th><th>คืออะไร</th><th>มาแก้ปัญหาอะไร</th></tr>
+<tr><td><strong>DevOps</strong></td><td>วัฒนธรรม/แนวปฏิบัติที่ลบกำแพงระหว่างคนเขียนโค้ดกับคนดูแลเครื่อง</td><td>เมื่อก่อน dev โยนโค้ดข้ามกำแพงให้ ops แล้วพอพังก็โทษกันไปมา</td></tr>
+<tr><td><strong>CI/CD</strong></td><td>pipeline อัตโนมัติ: Code → Build → Test → Deploy → Monitor</td><td>ทำมือแล้วช้า ลืมขั้นตอน และแต่ละครั้งทำไม่เหมือนกัน</td></tr>
+<tr><td><strong>IaC</strong></td><td>เขียนโครงสร้างพื้นฐานเป็นไฟล์ที่เก็บใน git ได้ เช่น <code>docker-compose.yml</code></td><td>SSH เข้าไปตั้งค่ามือ = ไม่มีใครรู้ว่าเซิร์ฟเวอร์ตั้งค่าไว้ยังไง และสร้างใหม่ให้เหมือนเดิมไม่ได้</td></tr>
+</table></div>
+
+<p>ทั้งสามอย่างเล็งไปที่เป้าเดียวกันคือ <strong>ทำให้ผลลัพธ์ทำซ้ำได้ (reproducible)</strong> ซึ่งเป็นเหตุผลเดียวกับที่ห้ามใช้ tag <code>latest</code></p>
+
+<p>เรื่อง <code>latest</code> ขยายหน่อย: มันไม่ใช่ "เวอร์ชันล่าสุดที่เสถียร" อย่างที่ชื่อชวนให้คิด มันเป็นแค่ป้ายธรรมดาที่ชี้ไป image ตัวไหนก็ได้และ<strong>เปลี่ยนได้ตลอดโดยที่เราไม่รู้</strong> ผลคือ build ไม่ reproducible (วันนี้ผ่าน พรุ่งนี้พัง ทั้งที่ไม่มีใครแก้อะไร) และ rollback ไม่ได้เพราะไม่รู้ว่าตัวที่เคยใช้ได้คือตัวไหน ทางที่ถูกคือ pin tag ให้ชัด แล้ว tag image ของเราด้วย commit SHA <span class="g">(รหัสประจำ commit ใช้ชี้ว่า image นี้มาจากโค้ดตัวไหน)</span> เพิ่มด้วย เพื่อให้ย้อนได้ว่า image ที่รันอยู่ตรงกับโค้ด commit ไหน</p>
+
+
+<h2 id="s6">6. เรื่อง runtime ที่มักถูกลืม</h2>
+
+<div class="tbl"><table>
+<tr><th>เรื่อง</th><th>ถ้าไม่ทำจะเป็นยังไง</th></tr>
+<tr><td><code>--memory --cpus --pids-limit</code></td><td><strong>noisy neighbor</strong> — container ตัวเดียวที่ memory leak จะดูดทรัพยากรจนเพื่อนบ้านตายหมด</td></tr>
+<tr><td>Node เก่ากว่า 18 + cgroup</td><td>Node รุ่นเก่าอ่าน cgroup limit ไม่เห็น เลยตั้ง heap <span class="g">(หน่วยความจำที่ Node ขอไว้เก็บ object)</span> ตาม RAM ของ<em>เครื่องแม่</em> แล้วโดน OOM-kill <span class="g">(ระบบฆ่าโปรเซสทิ้งเพราะใช้ RAM เกินโควตา)</span> ต้องตั้ง <code>NODE_OPTIONS=--max-old-space-size</code> ให้ตรงกับ <code>--memory</code></td></tr>
+<tr><td>custom network</td><td>container ที่อยู่ network เดียวกันคุยกันด้วย<strong>ชื่อ container</strong> ได้เลย เช่น <code>postgresql://db:5432</code> ไม่ต้องรู้ IP</td></tr>
+<tr><td><code>depends_on</code></td><td><strong>รอแค่ container "start" ไม่ได้รอ "พร้อมใช้งาน"</strong> แอปเลยไปต่อ DB ที่ยังไม่พร้อมแล้ว crash แก้ด้วย <code>condition: service_healthy</code> หรือใส่ retry ในแอป</td></tr>
+<tr><td><code>docker-compose down -v</code></td><td><code>-v</code> ลบ volume <span class="g">(พื้นที่เก็บข้อมูลนอกตัว container ที่ไม่หายตอนลบ container)</span> = ลบข้อมูล DB ทั้งหมด อย่าติดนิสัยพิมพ์ทุกครั้ง</td></tr>
+<tr><td>ไม่ validate env ตอน boot</td><td>สะกด env var <span class="g">(ค่า config ที่ส่งเข้าแอปจากข้างนอก ไม่ต้องแก้โค้ด)</span> ผิดแล้วแอปยังขึ้นได้ปกติ ไปพังตอนลูกค้าใช้งาน ควรให้มัน <strong>fail fast</strong> <span class="g">(พังตั้งแต่ตอนสตาร์ทไปเลย ดีกว่าปล่อยไปพังตอนลูกค้าใช้)</span> ตั้งแต่ boot</td></tr>
+</table></div>
+
+
+<h2 id="s7">7. 🔗 บทนี้ต่อกับบทอื่นตรงไหน</h2>
+
+<div class="box link-box"><span class="lab">เส้นเชื่อม</span>
+<ul>
+<li><strong>→ บท 02:</strong> "modular monolith" ในบทนี้ ก็คือ "แบ่ง module ตาม domain ไม่ใช่ตาม layer" <span class="g">(layer ตรงนี้ = แบ่งตามชนิดโค้ด controllers/ services/ คนละเรื่องกับ layer ของ Docker)</span> ใน NestJS แนวคิดเดียวกันแต่คนละระดับ — บทนี้พูดระดับสถาปัตยกรรม บท 02 พูดระดับโฟลเดอร์</li>
+<li><strong>→ บท 03:</strong> "ACID ข้าม service ทำไม่ได้" จะเข้าใจจริงก็ต่อเมื่อเข้าใจ transaction ในบท 03 ก่อน ถึงจะรู้ว่าเรากำลังจะเสียอะไรถ้าแตก service</li>
+<li><strong>→ บท 06:</strong> <code>HEALTHCHECK</code> <span class="g">(คำสั่งให้ Docker คอยเช็คเองว่า container ยังทำงานปกติอยู่ไหม)</span> ที่ใส่ในบทนี้ จะไปเจอความจริงในบท 06 ว่า <strong>Nginx อ่านสถานะ health ของ Docker ไม่ได้</strong> — บทนี้แค่วางเครื่องมือไว้ บท 06 เป็นคนบอกว่ามันทำงานจริงแค่ไหน</li>
+<li><strong>→ บท 06:</strong> image เล็ก 150MB ไม่ใช่แค่เรื่องสวยงาม มันคือเงื่อนไขที่ทำให้ auto-scale และ rolling update <span class="g">(ทยอยเปลี่ยนเวอร์ชันทีละตัว ระบบไม่ต้องดับ)</span> เร็วพอจะใช้งานได้จริง</li>
+<li><strong>→ ทุกบท:</strong> "config มาจาก env var" ทำให้ image ก้อนเดียวรันได้ทุก environment ซึ่งเป็นข้อกำหนดของ "ทุก instance ต้องรันเวอร์ชันเดียวกัน" <span class="g">(instance = ตัวสำเนาของแอปที่กำลังรันอยู่จริง 1 ตัว)</span> ในบท 06</li>
+</ul></div>
+
+
+<h2 id="s8">8. 📝 คลังคำตอบอัตนัย</h2>
+
+<p>ข้อสอบแนวอธิบายเหตุผลต้องการโครงคำตอบแบบเดิมเสมอ: <strong>นิยาม → กลไก → ตัวอย่างรูปธรรม → trade-off</strong> ลองปิดคำตอบแล้วเขียนเองก่อนนะ อ่านเฉย ๆ มันจะรู้สึกว่าเข้าใจแล้วทั้งที่เขียนออกมาไม่ได้</p>
+
+<details class="qa"><summary>ทำไมโปรเจกต์ใหม่ควรเริ่มด้วย monolith แทนที่จะเป็น microservices จงอธิบายพร้อมเหตุผล</summary>
+<div class="ans">
+<div class="skel">โครง: หลักการ → เหตุผล 3 ข้อ (ไม่รู้ boundary / ต้นทุน ops / เสีย ACID) → ทางสายกลาง → เงื่อนไขที่ควรแตกจริง</div>
+<p>เพราะในวันแรกเรายัง<strong>ไม่รู้ domain boundary ที่แท้จริง</strong> ของระบบ การแตก service ผิดที่มีต้นทุนสูงกว่าการรวมกลับมาก เนื่องจาก microservices มาพร้อม database-per-service ซึ่งย้อนกลับยาก</p>
+<p>ข้อสอง microservices มี <strong>ต้นทุน operation ที่มองไม่เห็น</strong> ("microservices tax") ได้แก่ service discovery, distributed tracing, contract testing, API versioning และการจัดการ partial failure ทั้งหมดนี้ต้องมีคนดูแล — Uber ที่มีประมาณ 2,200 service ต้องมี platform team โดยเฉพาะ ทีมเล็กจึงจ่ายค่านี้ก่อนที่จะได้ประโยชน์อะไรเลย</p>
+<p>ข้อสาม เมื่อแยก database แล้ว <strong>ACID transaction ข้าม service ทำไม่ได้</strong> ต้องเปลี่ยนไปใช้ Saga หรือ compensating transaction <span class="g">(คำสั่งย้อนผลของสเต็ปที่ทำไปแล้ว เช่น คืนสต็อก คืนเงิน)</span> และยอมรับ eventual consistency ซึ่งบางธุรกิจรับไม่ได้</p>
+<p>ทางที่ควรทำคือ <strong>modular monolith</strong> คือ deploy ก้อนเดียวแต่แบ่งโมดูลตาม domain ให้ชัดตั้งแต่วันแรก เมื่อถึงวันที่ต้องแตกจริงก็ "ยกโมดูล" ออกไปได้โดยไม่ต้อง rewrite และควรแตกเมื่อมีเหตุผลที่วัดได้เท่านั้น เช่น bottleneck เฉพาะจุดที่วัดเจอ หรือทีมโตเกิน 15–20 คนจนชนกันที่ codebase เดียว เทียบได้กับกรณี Instagram ที่ใช้ Django monolith จนถึง 30 ล้านผู้ใช้ก่อนค่อยแยก</p>
+</div></details>
+
+<details class="qa"><summary>อธิบายกลไก layer caching ของ Docker และเหตุผลที่ต้อง <code>COPY package*.json</code> ก่อน <code>COPY . .</code></summary>
+<div class="ans">
+<div class="skel">โครง: layer คืออะไร → กฎ invalidate → ผลลัพธ์ที่ตามมา → ตัวเลขจริง</div>
+<p>ทุกคำสั่งใน Dockerfile สร้าง filesystem layer หนึ่งชั้นที่ซ้อนทับกัน และ Docker จะ cache แต่ละ layer ไว้ กฎคือ <strong>เมื่อ layer ใดเปลี่ยน layer ที่อยู่ถัดลงมาทั้งหมดจะถูก invalidate และต้อง build ใหม่</strong> แม้เนื้อหาจะเหมือนเดิมก็ตาม</p>
+<p>ถ้าเขียน <code>COPY . .</code> ก่อน <code>RUN npm ci</code> การแก้โค้ดเพียงตัวอักษรเดียวจะทำให้ layer ของ <code>COPY</code> เปลี่ยน ส่งผลให้ <code>npm ci</code> ต้องรันใหม่และดาวน์โหลด dependency ทั้งหมดอีกครั้ง</p>
+<p>แต่ถ้า <code>COPY package*.json ./</code> แล้วตามด้วย <code>RUN npm ci</code> ก่อน จากนั้นค่อย <code>COPY . .</code> — layer ของ <code>npm ci</code> จะเปลี่ยนก็ต่อเมื่อ dependency เปลี่ยนจริงเท่านั้น การแก้โค้ดตามปกติจะยังได้ cache HIT ทำให้ build ลดจากประมาณ 5 นาทีเหลือประมาณ 30 วินาที</p>
+<p>หลักการทั่วไปที่สรุปได้จากกฎนี้คือ <strong>เรียงคำสั่งจากสิ่งที่เปลี่ยนน้อยที่สุดไปหาสิ่งที่เปลี่ยนบ่อยที่สุดเสมอ</strong></p>
+</div></details>
+
+<details class="qa"><summary>Multi-stage build คืออะไร แก้ปัญหาอะไร และให้ประโยชน์อะไรบ้าง</summary>
+<div class="ans">
+<div class="skel">โครง: ปัญหา → กลไก → ประโยชน์ 3 ด้าน (ขนาด/ความปลอดภัย/ความเร็ว) → ตัวเลข</div>
+<p>ปัญหาคือของที่จำเป็นตอน <em>build</em> ได้แก่ TypeScript compiler, devDependencies และ source code นั้นไม่จำเป็นตอน <em>run</em> ถ้า build ใน stage เดียวของเหล่านี้จะติดไปอยู่ใน image สุดท้าย</p>
+<p>Multi-stage แก้ด้วยการแบ่ง Dockerfile เป็นหลาย stage โดย stage <code>builder</code> ติดตั้ง dependency ครบและรัน <code>npm run build</code> ส่วน stage สุดท้ายเริ่มจาก base ใหม่ ติดตั้งเฉพาะ production dependency ด้วย <code>npm ci --omit=dev</code> แล้วใช้ <code>COPY --from=builder /app/dist ./dist</code> เพื่อหยิบมาเฉพาะ artifact <span class="g">(ไฟล์ผลลัพธ์ที่ได้จากการ build เช่น dist/)</span> ที่ต้องใช้จริง</p>
+<p>ประโยชน์มีสามด้าน หนึ่งคือ<strong>ขนาด</strong> ลดจากประมาณ 1.2GB เหลือประมาณ 150MB เมื่อใช้ร่วมกับ alpine base สองคือ<strong>ความปลอดภัย</strong> เพราะ attack surface <span class="g">(ช่องทางทั้งหมดที่ผู้โจมตีเอื้อมถึงได้ ยิ่งมีของติดมาเยอะยิ่งเสี่ยง)</span> เล็กลงจากการที่ไม่มี build tool และ source code ติดไปด้วย และสามคือ<strong>ความเร็วในการดำเนินงาน</strong> ทั้ง pull เร็วขึ้น cold start เร็วขึ้น rolling update และ auto-scale เร็วขึ้นตาม รวมถึงค่า network egress <span class="g">(ค่าข้อมูลขาออกจากคลาวด์ ที่คิดเงินตามปริมาณ)</span> ถูกลง</p>
+</div></details>
+
+<details class="qa"><summary>ทำไมห้าม hardcode secret ลงใน Docker image และควรจัดการ secret อย่างไรใน production</summary>
+<div class="ans">
+<div class="skel">โครง: กลไกที่ทำให้อันตราย → ทางที่ถูก → ทำไม secrets manager ไม่ใช่แค่ "ปลอดภัยกว่า"</div>
+<p>เพราะ image ประกอบด้วย layer ที่<strong>อ่านย้อนได้และลบไม่ได้</strong> ผู้ใดก็ตามที่ pull image ได้สามารถรัน <code>docker history</code> เพื่อดูค่าที่ถูก build เข้าไปทั้งหมด การลบ secret ออกใน layer ถัดมาไม่ช่วย เพราะ layer เดิมยังคงอยู่</p>
+<p>สิ่งที่ถูกต้องคือ <strong>ส่ง secret เข้ามาตอน runtime ผ่าน environment variable</strong> ซึ่งทำให้ image เดียวกันรันได้ทุก environment หมายความว่า binary ที่ผ่านการทดสอบบน staging คือตัวเดียวกับที่ขึ้น production</p>
+<p>ใน production ควรดึงจาก <strong>secrets manager</strong> เพราะได้สองอย่างที่ไฟล์ให้ไม่ได้ คือ audit log ว่าใครอ่าน secret ตอนไหน และความสามารถในการ rotate โดยไม่ต้อง redeploy ซึ่งจำเป็นมากเวลาเกิดเหตุ ส่วน <code>--env-file</code> ใช้ได้เฉพาะ dev เพราะค่ายังอ่านได้ผ่าน <code>docker inspect</code></p>
+<p>เพิ่มเติมคือต้องใส่ <code>.env</code> ทั้งใน <code>.gitignore</code> และ <code>.dockerignore</code> เสมอ และหากเผลอ commit ไปแล้ว <strong>การลบไฟล์ไม่เพียงพอ ต้อง rotate secret</strong> เพราะค่าเดิมยังคงอยู่ใน git history</p>
+</div></details>
+
+<details class="qa"><summary>Container กับ Virtual Machine ต่างกันอย่างไร และมีนัยอะไรต่อความปลอดภัย</summary>
+<div class="ans">
+<div class="skel">โครง: กลไกที่ต่างกัน → ผลด้าน performance → ผลด้าน security (จุดที่คนตอบไม่ครบ)</div>
+<p>VM จำลองเครื่องทั้งเครื่องและมี Guest OS พร้อม kernel ของตัวเอง ส่วน container คือ process ที่รันบน kernel ของ host โดยถูก isolate ด้วย <strong>namespace</strong> ซึ่งจำกัดสิ่งที่มองเห็น เช่น process, filesystem และ network และ <strong>cgroups</strong> ซึ่งจำกัดทรัพยากรที่ใช้ได้</p>
+<p>ผลด้าน performance คือ container ไม่มี Guest OS จึงมีขนาดระดับ MB แทนที่จะเป็น GB, start ในระดับวินาทีแทนที่จะเป็นนาที และรันได้หนาแน่นกว่ามากต่อเครื่อง</p>
+<p>ผลด้านความปลอดภัยเป็นจุดสำคัญ เนื่องจาก container <strong>แชร์ kernel เดียวกับ host</strong> ช่องโหว่ระดับ kernel จึงสามารถทะลุจาก container ไปถึง host ได้ ซึ่งเรียกว่า container escape ทำให้ระดับการแยกส่วนอ่อนกว่า VM อย่างมีนัยสำคัญ หากต้องการ isolation ระดับ multi-tenant จริง ๆ ต้องใช้ gVisor, Kata Containers หรือ Firecracker หรือแยก node <span class="g">(เครื่องเซิร์ฟเวอร์ 1 เครื่องในคลัสเตอร์ คนละความหมายกับ Node.js)</span> กันไปเลย ด้วยเหตุผลเดียวกันนี้จึงต้องรัน container ด้วย <code>USER node</code> ไม่ใช่ root เพื่อลดสิทธิ์ที่ผู้โจมตีจะได้รับหากเจาะเข้ามาทางแอปพลิเคชันได้</p>
+</div></details>
+
+<details class="qa"><summary>เพื่อนบอกว่า "ใส่ <code>depends_on: [db]</code> แล้ว แอปจะรอ database พร้อมก่อนค่อยเริ่ม" จริงหรือไม่ เพราะอะไร</summary>
+<div class="ans">
+<div class="skel">โครง: ปฏิเสธ → บอกว่ามันทำอะไรจริง ๆ → ผลที่เกิด → 2 ทางแก้</div>
+<p>ไม่จริง <code>depends_on</code> รับประกันเพียง<strong>ลำดับการ start ของ container</strong> เท่านั้น ไม่ได้รอให้ service ภายในพร้อมรับ connection ในทางปฏิบัติ PostgreSQL ใช้เวลาอีกหลายวินาทีหลัง container เริ่มทำงานกว่าจะยอมรับ connection ได้</p>
+<p>ผลคือแอปพลิเคชันจะพยายามเชื่อมต่อ database ที่ยังไม่พร้อมแล้ว crash ตั้งแต่ตอน boot ซึ่งอาการนี้จะปรากฏเป็นครั้งคราวขึ้นกับจังหวะ ทำให้วินิจฉัยได้ยาก</p>
+<p>แก้ได้สองทาง ทางแรกคือใช้ <code>depends_on</code> ร่วมกับ <code>condition: service_healthy</code> คู่กับการประกาศ <code>healthcheck</code> ของ service นั้น ทางที่สองคือใส่ retry logic ในแอปพลิเคชันเอง ซึ่งทนทานกว่าเพราะครอบคลุมกรณีที่ database ล่มระหว่างการทำงานด้วย ไม่ใช่เฉพาะตอน boot</p>
+</div></details>
+
+<details class="qa"><summary>ทำไมห้ามใช้ tag <code>latest</code> ใน production</summary>
+<div class="ans">
+<div class="skel">โครง: latest คืออะไรจริง ๆ → ผล 2 ข้อ → ทางแก้</div>
+<p><code>latest</code> ไม่ใช่ "เวอร์ชันล่าสุดที่เสถียร" ตามที่ชื่อสื่อ แต่เป็นเพียง tag ธรรมดาที่ชี้ไปยัง image ตัวใดก็ได้ และ<strong>เปลี่ยนได้ตลอดเวลาโดยที่เราไม่รู้</strong></p>
+<p>ผลที่ตามมามีสองข้อ ข้อแรกคือ <strong>build ไม่ reproducible</strong> — build วันนี้กับพรุ่งนี้อาจได้ผลต่างกันทั้งที่โค้ดเหมือนเดิม ทำให้เกิดกรณีที่ระบบพังโดยไม่มีใครแก้อะไร ซึ่งวินิจฉัยได้ยากมาก ข้อที่สองคือ <strong>rollback ไม่ได้</strong> เพราะไม่ทราบว่าเวอร์ชันที่เคยทำงานได้คือ image ตัวใด</p>
+<p>ทางที่ถูกต้องคือ pin tag ให้ชัดเจน เช่น <code>node:20.11-alpine</code> และ tag image ของเราเองด้วย <strong>commit SHA</strong> เพื่อให้ทราบว่า image ที่รันอยู่ตรงกับโค้ด commit ใด ซึ่งทำให้ rollback แม่นยำและตรวจสอบย้อนหลังได้ เรื่องนี้มีเป้าหมายเดียวกับหลัก Infrastructure as Code คือทำให้ทุกอย่าง reproducible</p>
+</div></details>
+
+
+<h2 id="s9">9. ✅ เช็คตัวเองก่อนปิดบท</h2>
+
+<ul>
+<li>พูด "กฎ cache ของ layer" ได้ในประโยคเดียว แล้วอธิบายเหตุผลของการเรียง Dockerfile ต่อจากกฎนั้นได้เอง</li>
+<li>บอกได้ว่า multi-stage ให้ประโยชน์ <strong>3 ด้าน</strong> ไม่ใช่แค่ "image เล็กลง"</li>
+<li>ตอบได้ว่าทำไม <code>.dockerignore</code> เป็นเรื่อง security ไม่ใช่แค่ performance</li>
+<li>บอกเงื่อนไขที่ <em>ควร</em> แตก microservices ได้ และเงื่อนไขที่ <em>ห้าม</em> แตก</li>
+<li>อธิบายได้ว่า <code>depends_on</code> ไม่พอเพราะอะไร</li>
+<li>รู้ว่าทำไม container ไม่ใช่ VM ในแง่ security</li>
+</ul>
+
+<div class="pager">
+  <a href="00-index.html">← สารบัญ</a>
+  <a href="02-nestjs-di.html">บทที่ 2 — NestJS &amp; DI →</a>
+</div>
+
+</main>
+
+<aside class="toc">
+<h4>ในบทนี้</h4>
+<a href="#s0">0. เรื่องที่เดินยาวทั้ง 6 บท</a>
+<a href="#s1">1. ปูพื้นฐาน: ปัญหาจริง</a>
+<a href="#s2">2. Image, Layer, Cache</a>
+<a href="#s3">3. Secrets</a>
+<a href="#s4">4. Monolith vs Microservices</a>
+<a href="#s5">5. DevOps / CI-CD / IaC</a>
+<a href="#s6">6. Runtime ที่มักถูกลืม</a>
+<a href="#s7">7. 🔗 เชื่อมกับบทอื่น</a>
+<a href="#s8">8. 📝 คลังคำตอบอัตนัย</a>
+<a href="#s9">9. ✅ เช็คตัวเอง</a>
+</aside>
+</div>
+</body>
+</html>
