@@ -1,39 +1,74 @@
 # 🎓 Architecture Primer — ปูพื้นฐาน Flash Sale System ตั้งแต่ศูนย์
 
-> **เอกสารนี้คืออะไร**: ฉบับ *ปูพื้นฐาน* สำหรับคนที่อ่าน [`architecture.md`](architecture.md) แล้วยังไม่เห็นภาพ
-> อธิบายว่า **ทำไม**ระบบต้องมีของเยอะขนาดนี้ ก่อนจะไปดูว่า**อะไร**อยู่ตรงไหน
-> **ไม่ใช่สเปก** — สเปกอยู่ที่ [`architecture.md`](architecture.md) ถ้าสองไฟล์ขัดกัน **ถือว่า `architecture.md` ถูก**
->
-> **อ่านเอกสารนี้ก่อน แล้วค่อยไปอ่าน [`architecture.md`](architecture.md)**
+> <สัญญาของเอกสาร>
+> - **เอกสารนี้ตอบ "ทำไม" ก่อน "อะไรอยู่ตรงไหน"**
+> - **ไม่ใช่สเปก** — สเปกอยู่ที่ [`architecture.md`](architecture.md) ถ้าสองไฟล์ขัดกัน **ถือว่า `architecture.md` ถูก**
+> - **อ่านจบแล้วต้องทำได้**: อธิบายสถาปัตยกรรม Flash Sale System, เข้าใจแก่นของ Concurrency & Race Conditions, รู้ลึกเทคนิค Locking แต่ละแบบ (Optimistic vs Pessimistic vs Distributed vs Row Lock), เข้าใจกลยุทธ์ Caching & Invalidation (Cache-Aside, Stock Overlay, Single-Flight, Jitter), และตอบได้ว่าทำไมระบบถึงเลือกวิธีนี้
+> - **เนื้อหาอ้างอิง**: [`architecture.md`](architecture.md), โค้ดเบสจริงในโฟลเดอร์ `src/`, และบทเรียน `Backend01` ถึง `Backend06`
+> </สัญญาของเอกสาร>
 
-> ⚠️ **หมายเหตุ (ตรวจล่าสุด 2026-08-30)** — เอกสารนี้เขียนขึ้น**ก่อนจะมีโค้ดจริง** จึงเป็นฉบับ *ปูพื้นแนวคิด* เท่านั้น
-> โค้ดตัวอย่างในนี้ถูกไล่แก้ให้ตรงกับ `src/` ที่มีอยู่จริงแล้ว แต่ถ้าเจอจุดไหนขัดกัน
-> **ให้ยึด [`architecture.md`](architecture.md) และ [`../Codebase/Separate/01-codebase-primer.md`](../Codebase/Separate/01-codebase-primer.md) เป็นหลัก**
-> (อันหลังอ้าง `file:line` ของโค้ดจริง)
->
-> **เอกสารนี้ตั้งใจไม่มี `file:line`** — มันอธิบายแนวคิด ไม่ใช่แผนที่โค้ด · แผนที่โค้ด (รวมโมดูล
-> `src/observability/` ที่เพิ่มมา 2026-08-30) อยู่ที่ [`01-codebase-primer.md`](../Codebase/Separate/01-codebase-primer.md) §9
+> ⚠️ **หมายเหตุการอ้างอิงโค้ดจริง**: โค้ดตัวอย่างในเอกสารนี้ได้รับการปรับปรุงให้ตรงกับโค้ดเบสที่รันจริงทุกจุด (รวมถึงโมดูล `src/observability/` และ `src/redis/lua/`) หากต้องการดูแผนที่โค้ดแบบระบุบรรทัดละเอียด ให้อ่านควบคู่กับ [`../Codebase/Separate/01-codebase-primer.md`](../Codebase/Separate/01-codebase-primer.md)
 
 ---
 
-## 🗺️ แผนที่การอ่าน
+## 🗺️ §0 แผนที่การอ่าน (Reading Map)
 
 | § | หัวข้อ | จำเป็นตอนนี้ไหม |
-| :--- | :--- | :--- |
-| [1](#1--โจทย์นี้ยากตรงไหน--แก่นเดียวของทั้งโปรเจกต์) | โจทย์นี้ยากตรงไหน — แก่นเดียวของทั้งโปรเจกต์ | ⭐ **ต้องอ่าน** |
-| [2](#2--ตัวละคร-7-ตัวในระบบ) | ตัวละคร 7 ตัวในระบบ | ⭐ **ต้องอ่าน** |
-| [3](#3--เส้นทางที่-1-read-path--get-apiv1products) | เส้นทางที่ 1: Read Path (คนดูสินค้า) | ⭐ **ต้องอ่าน** |
-| [4](#4--เส้นทางที่-2-write-path--post-apiv1orders) | เส้นทางที่ 2: Write Path (คนสั่งซื้อ) | ⭐ **ต้องอ่าน** |
-| [5](#5--ทำไมต้อง-4-ด่าน-ด่านเดียวไม่พอเหรอ) | ทำไมต้อง 4 ด่าน ด่านเดียวไม่พอเหรอ | ⭐ **ต้องอ่าน** |
-| [6](#6--ชีวิตของ-order-1-ใบ-state-machine) | ชีวิตของ order 1 ใบ (State Machine) | ⭐ **ต้องอ่าน** |
-| [7](#7--ตารางรวม-ถ้าทำผิดจะพังยังไง) | ถ้าทำผิดจะพังยังไง | อ่านตอนเริ่มเขียนโค้ด |
-| [8](#8-️-สิ่งที่เอกสารนี้ตัดออกไป-และทำไม) | สิ่งที่เอกสารนี้ตัดออก (+เหตุผล) | อ่านทีหลังได้ |
-| [9](#9--glossary) | Glossary | เปิดดูตอนเจอศัพท์ไม่รู้จัก |
-| [10](#10--คำถามทดสอบตัวเอง) | คำถามทดสอบตัวเอง 11 ข้อ | ⭐ ทำหลังอ่านจบ |
-| [11](#11--อ่านอะไรต่อ) | อ่านอะไรต่อ | — |
+| :---: | :--- | :---: |
+| [§0](#️-0-แผนที่การอ่าน-reading-map) | แผนที่การอ่าน, ขอบเขตความรู้ (FLOOR/FROM_ZERO), และบันไดความรู้ | ⭐ **ต้องอ่าน** |
+| [§1](#1--โจทย์นี้ยากตรงไหน--แก่นเดียวของทั้งโปรเจกต์) | โจทย์นี้ยากตรงไหน — แก่นเดียวของทั้งโปรเจกต์ | ⭐ **ต้องอ่าน** |
+| [§2](#2--ตัวละคร-7-ตัวในระบบ) | ตัวละคร 7 ตัวในระบบ และศัพท์ประจำตัวละคร | ⭐ **ต้องอ่าน** |
+| [§3](#3-️-เส้นทางหลักทั้งสองเส้น-the-two-critical-paths) | เส้นทางหลัก: Read Path (§3.1) และ Write Path (§3.2) | ⭐ **ต้องอ่าน** |
+| [§4](#4--เจาะลึกเทคนิค-concurrency--locking--optimistic-vs-pessimistic-vs-distributed-lock-vs-row-lock) | **เจาะลึกเทคนิค Concurrency & Locking**: Optimistic vs Pessimistic vs Distributed vs Row Lock | ⭐ **ต้องอ่าน** |
+| [§5](#5--เจาะลึกเทคนิค-caching--cache-invalidation--cache-aside-stampede-avalanche-single-flight-memo) | **เจาะลึกเทคนิค Caching & Cache Invalidation**: Cache-Aside, Stock Overlay, Stampede, Jitter | ⭐ **ต้องอ่าน** |
+| [§6](#6--ทำไมต้อง-4-ด่าน-ด่านเดียวไม่พอเหรอ) | ทำไมต้อง 4 ด่าน ด่านเดียวไม่พอเหรอ (หลายชั้น) | ⭐ **ต้องอ่าน** |
+| [§7](#7--ชีวิตของ-order-1-ใบ-state-machine) | ชีวิตของ order 1 ใบ (State Machine & Danger State) | ⭐ **ต้องอ่าน** |
+| [§8](#8--ตารางรวม-ถ้าทำผิดจะพังยังไง) | ตารางรวม: ถ้าทำผิดจะพังยังไง (พร้อมระดับการรู้ตัว) | อ่านตอนเริ่มเขียนโค้ด / Debug |
+| [§9](#9--สิ่งที่เอกสารนี้ตัดออกไป-และทำไม) | สิ่งที่เอกสารนี้ตัดออก (+เหตุผล) | อ่านเสริม |
+| [§10](#10--glossary) | Glossary รวมศัพท์จัดหมวดหมู่ | เปิดดูตอนเจอศัพท์ |
+| [§11](#11--คำถามทดสอบตัวเอง) | คำถามทดสอบตัวเอง 11 ข้อ (พร้อมเฉลยดักทางผิด) | ⭐ **ทำหลังอ่านจบ** |
+| [§12](#12--อ่านอะไรต่อ) | อ่านอะไรต่อ (ตารางเรียงลำดับ & ความสนใจ) | — |
 
-**พื้นฐานที่เอกสารนี้สมมติว่าคุณมี**: เขียน REST API + ต่อฐานข้อมูลเป็น, เข้าใจ HTTP status code
-**สิ่งที่จะอธิบายให้ตั้งแต่ต้น**: Redis, Message Queue, Load Balancer, Replication, Concurrency
+---
+
+### ขอบเขตความรู้เดิมและสิ่งที่จะสอน (Pedagogical Baseline)
+
+- **พื้นฐานที่สมมติว่าคุณมีอยู่แล้ว (FLOOR — เอกสารนี้จะไม่สอนซ้ำ)**:
+  1. การเขียน REST API ด้วย TypeScript / Node.js
+  2. HTTP Methods (`GET`, `POST`) และ HTTP Status Codes พื้นฐาน (`200 OK`, `400 Bad Request`, `401 Unauthorized`, `404 Not Found`, `500 Internal Server Error`)
+  3. คำสั่ง SQL พื้นฐาน (`SELECT`, `INSERT`, `UPDATE`, `WHERE`, `PRIMARY KEY`, `UNIQUE`)
+  4. ไวยากรณ์ภาษา TypeScript (`async/await`, `Promise`, `try/catch`, `Map`, `Set`, `JSON.parse`)
+  5. พื้นฐาน Node.js Event Loop (Single-threaded execution, Non-blocking I/O)
+
+- **สิ่งที่จะสอนให้ตั้งแต่ศูนย์ (FROM_ZERO — 18 ศัพท์สำคัญ)**:
+  1. *Race Condition*, 2. *TOCTOU*, 3. *Lost Update*, 4. *Optimistic Locking*, 5. *Pessimistic Locking*, 6. *Row-level Locking & Contention*, 7. *Deadlock (`40P01`) & Lock Hierarchy*, 8. *Atomic Operation / Decrement*, 9. *Cache-Aside*, 10. *Distributed In-Flight Lock*, 11. *Message Queue & Decoupling (202 Accepted)*, 12. *Stock Overlay Pattern*, 13. *Cache Invalidation*, 14. *Cache Stampede*, 15. *In-Process Single-Flight Promise Memoization*, 16. *Cache Avalanche & TTL Jitter*, 17. *Idempotency & Compensation*, 18. *Write-Through & Write-Behind*
+
+---
+
+### 🪜 ตารางบันไดความรู้ (Knowledge Ladder — กติกา ป1)
+
+ตารางนี้แสดงลำดับการพึ่งพาของศัพท์ทุกตัว เพื่อรับประกันว่า **"ศัพท์ทุกคำจะถูกสอนก่อนถูกนำไปใช้เสมอ"**:
+
+| ลำดับ | ศัพท์ (Term) | ต้องรู้อะไรก่อน (Prerequisites) | สอนที่ (Section) | ใช้ครั้งแรกที่ (First Used) |
+| :---: | :--- | :--- | :---: | :---: |
+| 1 | **Race Condition** | Node.js Event Loop (FLOOR), Concurrent Traffic (FLOOR) | §1.1 | §1.1 ✅ |
+| 2 | **TOCTOU** (Time-of-Check to Time-of-Use) | Race Condition, SQL SELECT / UPDATE (FLOOR) | §1.1 | §1.1 ✅ |
+| 3 | **Lost Update** | Race Condition, SQL UPDATE (FLOOR) | §1.1 | §1.1 ✅ |
+| 4 | **Optimistic Locking** (`@VersionColumn`) | Lost Update, SQL UPDATE ... WHERE (FLOOR) | §1.4, §4.2 | §1.4 ✅ |
+| 5 | **Pessimistic Locking** (`SELECT ... FOR UPDATE`) | TOCTOU, SQL Transaction (FLOOR) | §1.4, §4.3 | §1.4 ✅ |
+| 6 | **Row-level Locking & Contention** | Pessimistic Locking, PostgreSQL Row-level Lock | §1.4, §4.3 | §1.4 ✅ |
+| 7 | **Deadlock (`40P01`) & Lock Hierarchy** | Row-level Locking, SQL Transaction (FLOOR) | §1.4, §4.6 | §1.4 ✅ |
+| 8 | **Atomic Operation / Decrement** | TOCTOU, Lost Update | §1.4, §4.5 | §1.4 ✅ |
+| 9 | **Cache-Aside (Lazy Loading)** | REST GET (FLOOR), SQL SELECT (FLOOR) | §2.4, §5.2 | §2.4 ✅ |
+| 10 | **Distributed In-Flight Lock** (Redis Mutex) | Race Condition, Node.js Non-blocking I/O (FLOOR) | §2.5, §4.4 | §2.5 ✅ |
+| 11 | **Message Queue & Decoupling** (BullMQ) | HTTP Status Codes (FLOOR), Async Processing | §2.6, §3.2 | §2.6 ✅ |
+| 12 | **Stock Overlay Pattern** | Cache-Aside, Atomic Operation | §3.1, §5.3 | §3.1 ✅ |
+| 13 | **Cache Invalidation** | Cache-Aside, TTL (FLOOR) | §3.1, §5.4 | §3.1 ✅ |
+| 14 | **Cache Stampede (Thundering Herd)** | Cache-Aside, Concurrent Requests (FLOOR) | §3.1, §5.4 | §3.1 ✅ |
+| 15 | **In-Process Single-Flight Memoization** | Cache Stampede, JS Promise (FLOOR), Event Loop (FLOOR) | §3.1, §5.4 | §3.1 ✅ |
+| 16 | **Cache Avalanche & TTL Jitter** | Cache-Aside, Cache Stampede | §3.1, §5.4 | §3.1 ✅ |
+| 17 | **Idempotency & Compensation** | Message Queue, SQL UNIQUE constraint (FLOOR) | §3.2, §4.5 | §3.2 ✅ |
+| 18 | **Write-Through & Write-Behind** | Cache-Aside, SQL UPDATE (FLOOR) | §5.2 | §5.2 ✅ |
 
 ---
 
@@ -41,15 +76,15 @@
 
 ### 1.1 ปัญหา: ลองนึกว่าเขียนแบบธรรมดาที่สุด
 
-สมมติเขียน `POST /api/v1/orders` แบบตรงไปตรงมา — แบบที่ทุกคนเขียนตอนเรียน:
+สมมติเขียน `POST /api/v1/orders` แบบตรงไปตรงมา — แบบที่ทุกคนเขียนตอนเรียน CRUD ทั่วไป:
 
 ```typescript
-// ❌ โค้ดแบบธรรมดา — ใช้ในโปรเจกต์นี้ไม่ได้
+// ❌ โค้ดแบบธรรมดา — ใช้ในโปรเจกต์นี้ไม่ได้เด็ดขาด
 async createOrder(userId: string, productId: string) {
   const product = await this.repo.findOne({ where: { id: productId } });
-  if (product.remainingStock > 0) {                      // (1) เช็ค
-    product.remainingStock = product.remainingStock - 1;  // (2) ลด
-    await this.repo.save(product);                        // (3) เซฟ
+  if (product.remainingStock > 0) {                      // (1) Check: เช็คว่ามีของไหม
+    product.remainingStock = product.remainingStock - 1;  // (2) Modify: ลดค่าใน RAM
+    await this.repo.save(product);                        // (3) Use: บันทึกลงฐานข้อมูล
     await this.orderRepo.insert({ userId, productId });
     return { status: 'success' };
   }
@@ -57,83 +92,138 @@ async createOrder(userId: string, productId: string) {
 }
 ```
 
-โค้ดนี้ **ถูกต้อง 100%** ถ้ามีคนกดซื้อทีละคน
+โค้ดนี้ **ถูกต้อง 100%** ถ้ามีคนกดซื้อทีละคน (Sequential Requests)
 
-แต่โจทย์คือ `p-1001` (Limited Edition Sneaker) มีของ **50 ชิ้น** แล้วมี **500 คนกดพร้อมกัน**
-— ดู [`products-seed.json`](../Requirement/products-seed.json): `"availableStock": 50`
+แต่โจทย์ของวิชานี้คือ สินค้า `p-1001` (Limited Edition Sneaker) มีของตั้งต้นเพียง **50 ชิ้น** แล้วมี **500 คนกดซื้อพร้อมกันในเสี้ยววินาทีเดียวกัน** (ดู [`products-seed.json`](../Requirement/products-seed.json): `"availableStock": 50`)
 
-นี่คือสิ่งที่เกิดขึ้นจริง ตอนของเหลือชิ้นสุดท้าย:
+นี่คือภาพสิ่งที่เกิดขึ้นจริงในเสี้ยววินาทีที่ของเหลือชิ้นสุดท้าย (`remaining_stock = 1`):
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant A as user-101<br/>(บน app-1)
-    participant DB as PostgreSQL
-    participant B as user-102<br/>(บน app-2)
+    participant A as user-101 (บน app-1)
+    participant DB as PostgreSQL Database
+    participant B as user-102 (บน app-2)
 
-    A->>DB: SELECT remaining_stock
+    A->>DB: SELECT remaining_stock FROM products WHERE id = 'p-1001'
     DB-->>A: 1
-    B->>DB: SELECT remaining_stock
+    B->>DB: SELECT remaining_stock FROM products WHERE id = 'p-1001'
     DB-->>B: 1
-    Note over A: if (1 > 0) ✓ ผ่าน!
-    Note over B: if (1 > 0) ✓ ผ่าน!
-    A->>DB: UPDATE stock = 1 - 1 = 0
-    B->>DB: UPDATE stock = 1 - 1 = 0
-    A->>DB: INSERT order ✓
-    B->>DB: INSERT order ✓
-    Note over A,B: 💥 ขายไป 51 ชิ้น แต่มีของ 50<br/>ลูกค้า 1 คนไม่ได้ของ
+    Note over A: if (1 > 0) ✓ ผ่าน! สั่งลด 1 - 1 = 0
+    Note over B: if (1 > 0) ✓ ผ่าน! สั่งลด 1 - 1 = 0
+    A->>DB: UPDATE products SET remaining_stock = 0
+    B->>DB: UPDATE products SET remaining_stock = 0 (เขียนทับค่าเดิม)
+    A->>DB: INSERT INTO orders VALUES ('user-101', 'p-1001')
+    B->>DB: INSERT INTO orders VALUES ('user-102', 'p-1001')
+    Note over A,B: 💥 ความเสียหายเกิดขึ้นจริง: ขายไป 51 ชิ้นจากของ 50 ชิ้น!<br/>ลูกค้าคนที่ 51 จ่ายเงินสำเร็จแต่ไม่มีของส่ง (Oversell)
 ```
 
-ช่องว่างระหว่าง **"ตอนที่เช็ค"** กับ **"ตอนที่ใช้ผลของการเช็ค"** คือรูรั่ว
-ระหว่างไม่กี่มิลลิวินาทีนั้น ข้อมูลที่เช็คไป *เก่าไปแล้ว* แต่โค้ดไม่รู้
+> 📖 **กล่องสอนศัพท์ประจำ §1.1**
+> 
+> 1. **Race Condition**
+>    - *ปัญหาเดิม*: เมื่อผู้ใช้หลายคนส่งคำขอเข้ามาพร้อมกัน ระบบที่อ่าน-ตรวจ-เขียนแบบไม่รัดกุม จะได้ผลลัพธ์ขึ้นกับจังหวะเวลาที่ไม่แน่นอน
+>    - *นิยาม*: สภาวะผิดพลาดที่ผลลัพธ์ของระบบขึ้นอยู่กับลำดับหรือเวลาในการทำงานของเหตุการณ์ที่เกิดขึ้นพร้อมกัน
+>    - *อุปมา*: ลูกค้าสองคนดูหน้าเว็บพร้อมกัน เห็นสต็อก 1 เท่ากัน จึงกดยืนยันซื้อทั้งคู่ และระบบปล่อยผ่านทั้งคู่
+>    - *ในงานจริง*: เกิดขึ้นในโค้ดตัวอย่างข้างบนที่ `app-1` และ `app-2` รันขนานกัน
+>    - *กับดัก*: คิดว่า Node.js เป็น Single-threaded แล้วจะไม่มีทางเกิด Race Condition (ลืมไปว่า Node.js สลับงานตอน `await` I/O และเรามีถึง 6 instances)
+> 
+> 2. **TOCTOU (Time-of-Check to Time-of-Use)**
+>    - *ปัญหาเดิม*: การแยกคำสั่งเช็คข้อมูลออกจากคำสั่งใช้งานข้อมูล เปิดช่องว่างให้ข้อมูลเปลี่ยนไปก่อนถูกใช้งานจริง
+>    - *นิยาม*: ช่องโหว่เชิงลำดับเวลาที่ข้อมูลในระบบเปลี่ยนไประหว่างจังหวะที่ทำการตรวจสอบ กับจังหวะที่นำผลตรวจนั้นไปใช้
+>    - *อุปมา*: บรรทัดที่เช็ค `if (product.remainingStock > 0)` กับบรรทัดที่บันทึก `repo.save(product)` มีเวลาห่างกันไม่กี่มิลลิวินาที แต่ในมิลลิวินาทีนั้นของถูกคนอื่นตัดหน้าไปแล้ว
+>    - *ในงานจริง*: ช่องว่างระหว่าง `findOne()` และ `save()` ในโค้ดตัวอย่างข้างบน
+>    - *กับดัก*: คิดว่าโค้ดที่เขียนติดกันสองบรรทัดจะทำงานเร็วมากจนไม่มีใครแทรกทัน
+> 
+> 3. **Lost Update**
+>    - *ปัญหาเดิม*: สองคำขออ่านค่าเดียวกันไปคำนวณ แล้วต่างคนต่างเขียนค่าทับลงฐานข้อมูล ทำให้ยอดตัดสต็อกของคำขอแรกสูญหายไป
+>    - *นิยาม*: บั๊กความไม่สอดคล้องที่เกิดจากการที่ธุรกรรมหนึ่งบันทึกข้อมูลทับการเปลี่ยนแปลงของอีกธุรกรรมหนึ่งโดยไม่รู้ตัว
+>    - *อุปมา*: ของมี 10 ชิ้น A ซื้อ 1 ชิ้น (คิดในใจได้ 9) B ซื้อ 1 ชิ้น (คิดในใจได้ 9) ทั้งคู่ส่งเลข 9 ไปบันทึกใน DB สต็อกจึงลดไปแค่ 1 ทั้งที่ขายได้ 2 ชิ้น
+>    - *ในงานจริง*: การส่งค่าสัมบูรณ์ `save(product)` แทนที่จะส่งคำสั่งสัมพัทธ์ `SET remaining_stock = remaining_stock - 1` ให้ฐานข้อมูล
 
-> 📖 **ศัพท์ที่จะเจอ**
-> | คำ | ความหมาย |
-> | :--- | :--- |
-> | **Race Condition** | บั๊กที่ผลลัพธ์ขึ้นกับว่า "ใครวิ่งถึงก่อน" ซึ่งควบคุมไม่ได้ |
-> | **TOCTOU** (Time-Of-Check to Time-Of-Use) | ชื่อเฉพาะของรูรั่วอันนี้: ช่องว่างระหว่างเวลาที่เช็ค กับเวลาที่ใช้ผล |
-> | **Oversell** | ขายเกินของที่มี (คำที่โจทย์ใช้: *Zero Overselling*) |
-> | **Concurrent** | เกิดขึ้น *พร้อมกัน* ไม่ใช่ต่อคิวกัน |
+---
 
 ### 1.2 เพราะฉะนั้นทั้งโปรเจกต์นี้กำลังตอบคำถามเดียว
 
 > ### 🎯 "ทำยังไงให้ 500 คำขอที่มาพร้อมกัน ตัดสินใจถูกทุกคำขอ **และ** ตอบกลับเร็วด้วย"
 
-ทุกกล่องใน architecture diagram มีอยู่เพื่อตอบคำถามนี้ ไม่มีกล่องไหนใส่มาเพราะเท่
+ทุกกล่องใน architecture diagram, ทุกคอนฟิกใน Redis, ทุกตารางใน PostgreSQL และทุกบรรทัดของ Lua Script มีอยู่เพื่อตอบคำถามนี้ ไม่มีกล่องไหนใส่มาเพื่อความเท่
 
-### 1.3 เกณฑ์ตัดสินคือ SQL 3 บรรทัดนี้
+---
 
-จาก [`architecture.md` §9.3](architecture.md) — นี่คือสิ่งที่บอกว่างานผ่านหรือไม่ผ่าน:
+### 1.3 เกณฑ์ตัดสินคือ SQL 3 บรรทัดนี้ (รันได้จริง)
+
+จาก [`architecture.md` §9.3](architecture.md) — นี่คือสิ่งที่บอกว่าระบบของคุณผ่านการทดสอบหรือไม่ผ่าน (Ground Truth):
 
 ```sql
+-- 1. ตรวจสอบสต็อกคงเหลือ
 SELECT remaining_stock FROM products WHERE id = 'p-1001';
--- ต้องได้ 0 พอดี
---   -1 = oversell (ขายเกิน)
---    3 = undersell (ขายไม่หมดทั้งที่คนแย่งกัน = สต็อกหายไปไหน?)
+-- ค่าที่ถูกต้องเป๊ะ: ต้องได้ 0 พอดี
+--   < 0 (เช่น -1): 💥 OVERSELL (ขายของเกินสต็อกที่มีจริง — ข้อสอบตกทันที!)
+--   > 0 (เช่น  3): 💥 UNDERSELL (ขายของไม่หมดทั้งที่คนแย่งซื้อล้นหลาม — สต็อกรั่วหายไปไหน?)
 
+-- 2. ตรวจสอบจำนวนออเดอร์และจำนวนผู้ซื้อ
 SELECT COUNT(*), COUNT(DISTINCT user_id) FROM orders WHERE product_id = 'p-1001';
--- ต้องได้ 50, 50 พอดี  (50 ออเดอร์ จาก 50 คนไม่ซ้ำ)
+-- ค่าที่ถูกต้องเป๊ะ: ต้องได้ 50, 50 พอดี
+--   COUNT(*) = 50: มีออเดอร์สำเร็จครบ 50 ชิ้น
+--   COUNT(DISTINCT user_id) = 50: มาจากลูกค้า 50 คนไม่ซ้ำหน้ากัน (ห้ามมีใครได้ของเกิน 1 ชิ้น)
 ```
 
-**จำ 3 บรรทัดนี้ไว้** ทุกอย่างที่อธิบายต่อจากนี้ คือความพยายามทำให้ 3 บรรทัดนี้ผ่าน
+**จำ 3 บรรทัดนี้ไว้ให้ดี** — ทุกกลไกวิศวกรรมที่กำลังจะอธิบาย มีเป้าหมายสูงสุดเพียงอย่างเดียวคือทำให้ SQL 3 บรรทัดนี้ออกมาเป็น `(0)` และ `(50, 50)` เสมอ
 
-> 💡 **ไม่ต้องพิมพ์ SQL เองก็ได้ (ตั้งแต่ 2026-08-30)** — `GET /admin/insights` รันคำถามชุดนี้ให้อัตโนมัติ
-> (อ่าน `remaining_stock` จาก **primary** แล้วเทียบกับ counter ใน Redis) แล้วสรุปเป็น `ok` / `warn` / `critical`
-> ⚠️ มัน **อ่านอย่างเดียว ไม่ซ่อมอะไรให้** — การ `INCR` ซ่อม drift เองอันตรายกว่าปัญหาเดิม
-> เพราะจะปล่อยคนที่ 51 เข้ามา รายละเอียดอยู่ที่ [`01-codebase-primer.md`](../Codebase/Separate/01-codebase-primer.md) §9
+> 💡 **ไม่ต้องพิมพ์ SQL เองก็ได้**: ระบบของเรามีหน้า Dashboard และ Endpoint อัตโนมัติ `GET /admin/insights` ที่รันคำสั่งตรวจสอบชุดนี้ให้ตลอดเวลา พร้อมเปรียบเทียบกับ Counter ใน Redis ให้แบบเรียลไทม์
 
-### 1.4 แล้วใส่ lock ธรรมดาไม่จบเหรอ?
+---
 
-จบเรื่อง*ความถูกต้อง* แต่ไม่จบเรื่อง*ความเร็ว* — ซึ่งเป็นครึ่งหนึ่งของคะแนน:
+### 1.4 แล้วใส่ lock ธรรมดาไม่จบเหรอ? (ปูพื้นฐานสู่การตัดสินใจ)
 
-| ทางเลือก | ถูกต้อง? | เร็ว? | ปัญหา |
+คำถามแรกที่ทุกคนสงสัย: *"ในเมื่อมันเกิด Race Condition ก็แค่สั่งล็อกตารางหรือล็อกแถวไว้ตอนซื้อ ไม่จบเหรอ?"*
+
+คำตอบคือ: **จบเรื่องความถูกต้อง แต่พังเรื่องความเร็ว** (ตามข้อกำหนดและเกณฑ์การทดสอบ Performance P95 ใน [`architecture.md` §9.3](architecture.md)):
+
+| ทางเลือก | ถูกต้อง? (Zero Oversell) | เร็ว? (Latency ต่ำ) | ทำไมถึงใช้ / ไม่ใช้ในระบบนี้ |
 | :--- | :---: | :---: | :--- |
-| `SELECT` แล้ว `if` ใน JS | ❌ | ✅ | oversell (ตัวอย่าง §1.1) |
-| `SELECT ... FOR UPDATE` (ล็อกแถวใน DB) | ✅ | ❌ | 500 คนต่อคิวล็อกแถวเดียวกัน → คนที่ 500 รอนานมาก, connection pool เต็ม |
-| `UPDATE ... WHERE stock > 0` (atomic) | ✅ | 🟡 | ถูกต้องแล้ว แต่ 500 requests ยังวิ่งถึง DB หมด → p95 พุ่ง |
-| **สถาปัตยกรรมนี้** | ✅ | ✅ | กรอง 450 คนออกที่ Redis (~1ms) เหลือ 50 คนถึง DB |
+| **1. อ่าน-เช็ค-เขียนใน Node.js** | ❌ (Oversell แน่นอน) | ⚡ เร็ว | เกิดช่องว่าง TOCTOU และ Lost Update ชัดเจนตามตัวอย่าง §1.1 |
+| **2. Optimistic Locking (`@VersionColumn`)** | ✅ ถูกต้อง | 💥 ช้ามาก / ล่ม | ผู้ใช้ 500 คนอ่านเวอร์ชันเดียวกัน มีคนผ่านแค่ 1 คน อีก 499 คน abort ทันที! เกิด Retry Storm ถล่ม DB พัง (เจาะลึกใน [§4.2](#42--เทคนิคที่-1-optimistic-locking-versioncolumn--ดาบชั้นดีในงาน-crud-ที่หักสะบั้นใน-flash-sale)) |
+| **3. Pessimistic Locking (`SELECT ... FOR UPDATE`)** | ✅ ถูกต้อง | 💥 ช้ามาก / Timeout | 500 คนต่อคิวแย่ง Row Lock แถวเดียว Connection Pool ทั้งหมดถูกยึดค้าง คำขออื่นติดขัดจน Nginx ตัด 504 Timeout (เจาะลึกใน [§4.3](#43--เทคนิคที่-2-pessimistic-locking-select--for-update--ถูกต้อง-100-แต่ทำลายระบบบน-synchronous-http)) |
+| **4. Database Atomic Decrement (`UPDATE ... WHERE stock > 0`)** | ✅ ถูกต้อง | 🟡 ปานกลาง | ถูกต้องและตัด TOCTOU ได้ แต่ถ้าปล่อย 500 requests วิ่งชน DB พร้อมกันโดยตรง Throughput ของ DB จะตัน (เจาะลึกใน [§4.5](#45--ยุทธศาสตร์ที่เลือกใช้จริง-สถาปัตยกรรมป้องกัน-4-ชั้น-4-tier-defense-architecture)) |
+| **5. สถาปัตยกรรม 4-Tier Defense ของเรา** | ✅ **ถูกต้อง 100%** | ⚡ **เร็วที่สุด (~1ms)** | **ใช้ Atomic Redis Lua สกัดคน 450 คนทิ้งตั้งแต่ขอบระบบ**, ส่ง 50 คนเข้าคิว BullMQ ตอบ 202 ทันที, แล้วให้ Worker ไปรัน Atomic UPDATE บน DB อย่างเป็นระเบียบ (เจาะลึกใน [§4.5](#45--ยุทธศาสตร์ที่เลือกใช้จริง-สถาปัตยกรรมป้องกัน-4-ชั้น-4-tier-defense-architecture)) |
 
-**นี่คือเหตุผลที่ระบบมีของเยอะ** — ไม่ใช่เพราะความถูกต้องอย่างเดียว แต่เพราะต้องถูก *และ* เร็วพร้อมกัน
+> 📖 **กล่องสอนศัพท์ประจำ §1.4 (กลุ่มเทคนิคการควบคุม Concurrency & Locking)**
+> 
+> 4. **Optimistic Locking (`@VersionColumn`)**
+>    - *ปัญหาเดิม*: การอ่าน-ตรวจ-เขียนธรรมดาเปิดช่องให้คำขออื่นแอบเขียนทับข้อมูล (Lost Update) โดยไม่รู้ตัว
+>    - *นิยามหนึ่งประโยค*: เทคนิคการควบคุม Concurrency แบบไม่ล็อกแถวในฐานข้อมูล แต่อาศัยการตรวจสอบหมายเลขเวอร์ชันของแถวก่อนบันทึก หากเวอร์ชันเปลี่ยนไปจะถือว่าขัดแย้งและยกเลิกคำขอ
+>    - *อุปมา (ยึดกับ FLOOR)*: เหมือนการแก้ไขไฟล์ใน Git แล้วพยายาม push — ถ้าไม่มีใครแตะไฟล์เลยก็ push ผ่านทันที แต่ถ้ามีคน push ตัดหน้าไปก่อน Git จะปฏิเสธและสั่งให้เรา pull เวอร์ชั่นใหม่มาก่อน
+>    - *ในงานจริงคือตัวไหน*: การประกาศคอลัมน์ `@VersionColumn() version: number` ใน Entity ของ TypeORM (ดูตัวอย่างโค้ดใน §4.2)
+>    - *กับดักของศัพท์นี้*: คิดว่า Optimistic Locking ปลอดภัยเสมอ จึงนำมาใช้กับทุกงาน แต่ใน Flash Sale ที่มีคนแย่งซื้อ 500 คนพร้อมกัน คำขอ 499 คนจะถูกยกเลิก (Abort) ทันที และหากสั่ง Retry จะเกิดพายุ Retry Storm ถล่มจนฐานข้อมูลล่ม
+> 
+> 5. **Pessimistic Locking (`SELECT ... FOR UPDATE`)**
+>    - *ปัญหาเดิม*: ข้อมูลถูกคนอื่นแย่งแก้ไขตัดหน้าในระหว่างที่โปรเซสกำลังทำงาน (TOCTOU)
+>    - *นิยามหนึ่งประโยค*: เทคนิคการควบคุม Concurrency โดยการสั่งให้ฐานข้อมูลครอบ Exclusive Lock บนแถวข้อมูลตั้งแต่ตอนอ่าน และบล็อกคนอื่นไม่ให้แก้ไขจนกว่าธุรกรรมจะเสร็จสิ้น
+>    - *อุปมา (ยึดกับ FLOOR)*: เหมือนการเดินเข้าห้องน้ำแล้วล็อกประตูด้านใน คนถัดไปที่ต้องการใช้ต้องยืนรอหน้าห้องจนกว่าคนข้างในจะทำธุระเสร็จและปลดกลอน
+>    - *ในงานจริงคือตัวไหน*: คำสั่ง `queryRunner.manager.findOne(..., { lock: { mode: 'pessimistic_write' } })` ซึ่งส่ง SQL `SELECT ... FOR UPDATE` ไปยัง PostgreSQL (ดูตัวอย่างโค้ดใน §4.3)
+>    - *กับดักของศัพท์นี้*: คิดว่าล็อกแถวแล้วระบบจะถูกต้องและจบ แต่การสั่งล็อกบน Synchronous HTTP Path จะทำให้ Connection Pool ของฐานข้อมูลหมดเกลี้ยง (Pool Starvation) จนระบบล่มและตอบ 504 Gateway Timeout
+> 
+> 6. **Row-level Locking & Contention**
+>    - *ปัญหาเดิม*: เมื่อหลายคำขอพยายามเข้าถึงหรือแก้ไขข้อมูลในตารางเดียวกัน ระบบต้องการกลไกจำกัดสิทธิ์ในระดับแถว ไม่ให้กระทบแถวอื่นที่ไม่เกี่ยวข้องกัน
+>    - *นิยามหนึ่งประโยค*: กลไกภายในของฐานข้อมูล (เช่น PostgreSQL) ที่ล็อกเฉพาะแถว (Row) ที่กำลังถูกกระทำ และสภาวะการแย่งชิง (Contention) ที่เกิดขึ้นเมื่อมีหลายคำขอต้องการล็อกแถวเดียวกันในเวลาเดียวกัน
+>    - *อุปมา (ยึดกับ FLOOR)*: เหมือนตู้ล็อกเกอร์ฝากของที่มีหลายสิบช่อง คนสองคนที่เปิดตู้คนละช่องสามารถทำพร้อมกันได้ทันที แต่ถ้าคน 500 คนต้องการเปิดใช้ช่องเบอร์ 1 ช่องเดียวกัน จะเกิดการเบียดแย่งชิง (Contention) จนแถวติดขัด
+>    - *ในงานจริงคือตัวไหน*: กลไก Tuple Locks ใน PostgreSQL เมื่อทำงานกับตาราง `products` แถว `p-1001` (ดู [`architecture.md` §6.5](architecture.md))
+>    - *กับดักของศัพท์นี้*: คิดว่าการล็อกเฉพาะแถว (Row Lock) ดีกว่าล็อกทั้งตาราง (Table Lock) เสมอ แต่ถ้าทุกคำขอในระบบพุ่งเป้าไปที่ "สินค้าชิ้นเดียวกันตัวเดียว" Row Lock ตัวนั้นจะกลายเป็นคอขวดที่หนักหน่วงไม่ต่างจาก Table Lock เลย
+> 
+> 7. **Deadlock (`40P01`) & Lock Hierarchy**
+>    - *ปัญหาเดิม*: เมื่อสองธุรกรรมที่ทำงานพร้อมกัน ต่างฝ่ายต่างถือ Lock ทรัพยากรคนละชิ้น แล้วต่างคนต่างรอให้อีกฝ่ายปล่อย Lock เพื่อทำงานต่อ ทำให้ติดค้างตลอดกาล (Circular Wait)
+>    - *นิยามหนึ่งประโยค*: สภาวะชะงักงันสมบูรณ์ที่คำขอตั้งแต่ 2 รายการขึ้นไปรอคอย Lock ของกันและกันเป็นวงกลม จนฐานข้อมูลต้องสั่งทำลายธุรกรรมหนึ่งทิ้งด้วย Error Code `40P01`
+>    - *อุปมา (ยึดกับ FLOOR)*: รถสองคันขับสวนกันเข้ามาในตรอกแคบ คัน A รอให้คัน B ถอย คัน B ก็รอให้คัน A ถอย ไม่มีใครยอมถอย จนกระทั่งเจ้าหน้าที่จราจร (PostgreSQL Deadlock Detector) ต้องสั่งยกรถคันหนึ่งออกไป
+>    - *ในงานจริงคือตัวไหน*: ข้อผิดพลาด `40P01` ใน PostgreSQL เมื่อ Transaction แย่งล็อกระหว่างแถวในตาราง `products` และแถวในตาราง `orders` แก้ไขได้ด้วยการจัดลำดับ Lock (Lock Hierarchy: อัปเดต `products` ก่อน `orders` เสมอ ตาม [`architecture.md` §6.5](architecture.md))
+>    - *กับดักของศัพท์นี้*: คิดว่า Deadlock เกิดจากการเขียนโค้ดช้า แต่ความจริงเกิดจาก "ลำดับการขอ Lock ไม่ตรงกัน" ต่อให้โค้ดทำงานเร็วระดับไมโครวินาที ก็เกิด Deadlock ได้หากลำดับการเข้าถึงทรัพยากรขัดแย้งกัน
+> 
+> 8. **Atomic Operation / Decrement**
+>    - *ปัญหาเดิม*: การอ่านค่ามาคำนวณใน RAM แล้วเขียนกลับ (Read-Modify-Write) เกิดช่องว่างเวลาให้ข้อมูลสูญหาย (Lost Update / TOCTOU)
+>    - *นิยามหนึ่งประโยค*: การทำงานที่รวบขั้นตอนการตรวจสอบและปรับปรุงข้อมูลให้เสร็จสิ้นในคำสั่งเดียวอย่างเบ็ดเสร็จ โดยไม่มีจังหวะเวลาแทรกแซงจากคำขออื่นได้เลย
+>    - *อุปมา (ยึดกับ FLOOR)*: เหมือนเครื่องกดเงิน ATM ที่หักยอดเงินในบัญชีและพ่นธนบัตรออกมาในจังหวะกลไกเดียว ไม่มีการแยกกระบวนการนับเงินออกจากกระบวนการตัดยอด
+>    - *ในงานจริงคือตัวไหน*: คำสั่ง SQL `UPDATE products SET remaining_stock = remaining_stock - 1 WHERE id = $1 AND remaining_stock > 0` ใน PostgreSQL (Tier 3) และคำสั่ง `DECR` / Lua Script ใน `redis-data` (Tier 1) ตาม [`architecture.md` §6.1](architecture.md)
+>    - *กับดักของศัพท์นี้*: คิดว่าการใช้คำสั่ง Atomic Operation บนฐานข้อมูลหลักเพียงอย่างเดียวจะเพียงพอกับโหลดระดับ Flash Sale แต่ความจริงฐานข้อมูลมีขีดจำกัดด้าน I/O และ Connection Pool จึงต้องมี Atomic Gatekeeper บน Redis คอยสกัดโหลดไว้ที่ขอบระบบก่อน
 
 ---
 
@@ -141,9 +231,9 @@ SELECT COUNT(*), COUNT(DISTINCT user_id) FROM orders WHERE product_id = 'p-1001'
 
 ```mermaid
 flowchart TD
-    K6["👥 k6<br/>1,000 คนอ่าน + 500 คนซื้อ"]
+    K6["👥 k6 Load Tester<br/>1,000 คนอ่าน + 500 คนซื้อ"]
 
-    NGINX["① Nginx :8080<br/>Load Balancer"]
+    NGINX["① Nginx :8080<br/>Load Balancer (least_conn)"]
 
     APP1["② app-1"]
     APP2["② app-2"]
@@ -152,900 +242,755 @@ flowchart TD
     APP5["② app-5"]
     APP6["② app-6"]
 
-    JWT["③ JWT HS256<br/>ตรวจในหน่วยความจำ ไม่แตะ DB"]
+    RC[("④ redis-cache :6379<br/>maxmemory allkeys-lru")]
+    RD[("⑤ redis-data :6380<br/>noeviction + AOF")]
 
-    RC["⑤ redis-cache :6379<br/>metadata สินค้า<br/>allkeys-lru · TTL 30-60s"]
-    RD["⑥ redis-data :6380<br/>stock counter · lock · คิว<br/>noeviction + AOF"]
+    PG_M[("③ PostgreSQL Primary<br/>เขียนออเดอร์ + ตัดสต็อก")]
+    PG_R[("③ PostgreSQL Replica<br/>อ่านสินค้าตอน cache miss")]
 
-    Q["⑦ BullMQ + Worker"]
-
-    PGP[("④ PostgreSQL Primary :5432<br/>เขียนที่นี่เท่านั้น")]
-    PGR[("④ PostgreSQL Replica :5433<br/>อ่านอย่างเดียว")]
+    BMQ["⑥ BullMQ Worker<br/>concurrency: 5"]
+    JWT["⑦ JWT Auth Guard<br/>Stateless, in-process"]
 
     K6 --> NGINX
-    NGINX -->|least_conn| APP1 & APP2 & APP3 & APP4 & APP5 & APP6
-    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 -.->|ตรวจ token| JWT
-    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 -->|อ่าน metadata| RC
-    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 -->|"อ่านสต็อกสด / Lua gatekeeper"| RD
-    RC -.->|cache miss| PGR
-    RD --> Q
-    Q -->|"createQueryRunner('master')"| PGP
-    PGP -.->|streaming replication| PGR
+    NGINX --> APP1 & APP2 & APP3 & APP4 & APP5 & APP6
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 --> JWT
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 --> RC
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 --> RD
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 --> BMQ
+    BMQ --> PG_M
+    APP1 & APP2 & APP3 & APP4 & APP5 & APP6 -.-> PG_R
 ```
-
-ต่อไปนี้อธิบายทีละตัว แต่ละตัวตอบ 4 คำถาม: **ปัญหาเดิม → มันคืออะไร → ในงานเราคือตัวไหน → ศัพท์**
 
 ---
 
-### 2.1 ① Nginx (Load Balancer)
-
-| | |
-| :--- | :--- |
-| **ปัญหาเดิม** | Node.js 1 process ใช้ CPU ได้แค่ 1 core ต่อให้เครื่องมี 8 core. 1,000 คนอ่าน + 500 คนซื้อพร้อมกัน → process เดียวรับไม่ไหว |
-| **มันคืออะไร** | โปรแกรมที่ยืนอยู่หน้าสุด รับ request ทุกอันแล้ว *กระจาย* ไปให้ backend หลายตัวที่ทำงานเหมือนกันเป๊ะ |
-| **ในงานเรา** | container `nginx` ฟังที่ `:8080` → กระจายไป `app-1` … `app-6` (แต่ละตัว `:3000`). k6 ยิงมาที่ `:8080` เท่านั้น ไม่เคยรู้จัก app-1..6 เลย |
-| **ศัพท์** | **Reverse Proxy** (ตัวกลางที่รับแทน backend) · **Upstream** (backend ที่มันกระจายไปหา) · **`least_conn`** (ส่งให้ตัวที่มีงานค้างน้อยสุด ต่างจาก round-robin ที่ส่งวนไปเรื่อยๆ ไม่สนว่าใครยุ่ง) · **Keepalive** (ใช้ TCP connection เดิมซ้ำ ไม่ handshake ใหม่ทุกครั้ง) |
-
-**💥 ถ้าทำผิดจะพังยังไง**
-ใน `nginx.conf` ถ้าใส่ `keepalive 768` แต่ **ลืม** 2 บรรทัดนี้:
-
-```nginx
-proxy_http_version 1.1;
-proxy_set_header Connection "";
-```
-
-Nginx จะคุยกับ app-1..6 ด้วย HTTP/1.0 ซึ่งปิด connection ทุกครั้ง → `keepalive 768` **ไม่ทำงานเลยแม้แต่นิดเดียว** → ทุก request เสีย TCP handshake ใหม่ (~1–3ms) × 1,000 VUs
-
-[`architecture.md` §2](architecture.md) เรียกอันนี้ว่า **"ตัวฉุด p95 อันดับ 1"** — คือจะเห็นตัวเลขแย่ในรายงานโดยไม่รู้สาเหตุ
+### ① Nginx (Port 8080) — นายทวารแจกบัตรคิว
+- **ปัญหาเดิม**: มี NestJS รันอยู่ 6 instances แต่ผู้ใช้ภายนอกมี URL เดียว ถ้าไม่มีตัวกลางกระจายงาน จะมี instance เดียวที่รับงานจนน็อค ขณะที่อีก 5 ตัวว่างงาน
+- **มันคืออะไร**: Reverse Proxy และ Load Balancer ที่กระจาย Traffic ขาเข้าด้วยอัลกอริทึม `least_conn` (ส่งงานให้เครื่องที่มีงานค้างน้อยที่สุด)
+- **ในงานจริง**: คอนฟิกอยู่ที่ `nginx.conf` ตั้งค่า `keepalive 768`, `proxy_http_version 1.1`, และปิด failover ช้าด้วย `max_fails=0`
 
 ---
 
-### 2.2 ② NestJS 6 instances + Stateless
-
-| | |
-| :--- | :--- |
-| **ปัญหาเดิม** | พอมี 6 ตัว: `user-101` login ที่ app-1 (app-1 จำไว้ใน RAM ว่าใครคือใคร) แต่ request ถัดไป Nginx ส่งไป app-2 ซึ่ง **ไม่รู้จัก** user-101 → หลุด login |
-| **มันคืออะไร** | **Stateless** = แต่ละ instance ไม่เก็บอะไรที่ต้องใช้ร่วมกันไว้ใน RAM ตัวเอง ทุกตัวเหมือนกันเป๊ะ แลกกันได้ ตายไปตัวหนึ่งไม่มีอะไรหาย |
-| **ในงานเรา** | `app-1..6` เป็น NestJS ตัวเดียวกันเป๊ะ (image เดียวกัน) — state ที่ต้องแชร์ถูกย้ายออกไปอยู่ Redis กับ Postgres หมด |
-| **ศัพท์** | **Instance / Replica** (สำเนาของแอปที่รันพร้อมกัน) · **Horizontal Scaling** (เพิ่มจำนวนเครื่อง ไม่ใช่เพิ่มสเปกเครื่องเดียว) · **Modular by domain** (แบ่งโฟลเดอร์ตามเรื่อง `auth/`, `products/`, `orders/` ไม่ใช่ตามชั้น `controllers/`, `services/`) |
-
-**💥 ถ้าทำผิดจะพังยังไง**
-[`CLAUDE.md` §6](../../CLAUDE.md) ห้าม "L1 in-memory cache ที่มี `remainingStock`" ไว้ชัดเจน สมมติ optimize ด้วยการเก็บผลลัพธ์ `GET /products` ไว้ใน RAM 2 วินาที:
-
-```
-วินาทีที่ 10: app-1 cache ไว้ remainingStock = 30
-วินาทีที่ 11: มีคนซื้อไป 20 ชิ้น → ของจริงเหลือ 10
-วินาทีที่ 11: user A ถาม → Nginx ส่งไป app-1 → ตอบ 30  ❌
-วินาทีที่ 11: user B ถาม → Nginx ส่งไป app-2 → ตอบ 10  ✓
-```
-
-ลูกค้า 2 คนเห็นสต็อกไม่ตรงกัน ที่วินาทีเดียวกัน — ผิด **"เงื่อนไขสำคัญ"** ที่โจทย์ระบุไว้ตรงๆ
+### ② NestJS Application Cluster (`app-1` ถึง `app-6`) — ผู้ประมวลผลไร้สถานะ
+- **ปัญหาเดิม**: รัน Node.js instance เดียว ใช้ CPU ได้แค่ 1 core เต็มที่ ถ้าคำขอทะลักเข้ามา Event Loop จะหน่วง
+- **มันคืออะไร**: แอปพลิเคชันเซิร์ฟเวอร์แบบ Modular Monolith จำนวน 6 instances รันบน Docker Containers
+- **ในงานจริง**: รันจากโค้ดในโฟลเดอร์ `src/` กำหนด environment แยก instance ผ่าน `INSTANCE_ID=app-1` ถึง `app-6` ใน `docker-compose.yml`
+- **กฎเหล็ก**: **ห้ามเก็บสถานะไว้ในหน่วยความจำของ Process เด็ดขาด (Stateless)** เพราะคำขอแรกอาจเข้า `app-1` แต่คำขอกดเบิ้ลอาจวิ่งเข้า `app-5` ข้อมูลทุกอย่างต้องแชร์ผ่าน Redis และ PostgreSQL เท่านั้น
 
 ---
 
-### 2.3 ③ JWT (Stateless Auth)
-
-| | |
-| :--- | :--- |
-| **ปัญหาเดิม** | ต่อจาก §2.2 — ถ้าไม่เก็บ session ใน RAM แล้วจะรู้ได้ไงว่าคนที่ส่ง request มาคือใคร? ถ้าไปถาม DB/Redis ทุก request = เพิ่ม I/O หลายร้อยครั้งต่อวินาที **ก่อนเริ่มทำงานจริงด้วยซ้ำ** |
-| **มันคืออะไร** | บัตรผ่านที่ **ลูกค้าถือเอง** ข้างในเขียนว่า "ฉันคือ user-101" พร้อม **ลายเซ็นดิจิทัล** ที่ปลอมไม่ได้ (ต้องรู้ `JWT_SECRET` ถึงจะเซ็นได้) server แค่ตรวจลายเซ็นด้วยคณิตศาสตร์ในหน่วยความจำ — **ไม่ต้องแตะ DB เลย** |
-| **ในงานเรา** | `POST /api/v1/auth/token` ส่ง `{"userId":"user-999"}` → ได้ token กลับมา (endpoint นี้ *จำลอง* login ไม่เช็ครหัสผ่าน และโจทย์บอกว่า **ไม่วัด performance**) จากนั้นทุกครั้งที่ `POST /api/v1/orders` ต้องแนบ `Authorization: Bearer <token>` |
-| **ศัพท์** | **Claim** (ข้อมูลใน token) · **`sub`** (subject = ชื่อ claim มาตรฐานที่เก็บ userId) · **HS256** (อัลกอริทึมเซ็นแบบใช้ secret ร่วม — ทั้ง 6 instance ใช้ secret เดียวกันจึงตรวจข้าม instance ได้) · **Zero-I/O verify** (ตรวจโดยไม่ยิงไปที่ไหนเลย) · **Bearer** (คำนำหน้าใน header แปลว่า "ผู้ถือบัตรนี้") |
-
-**💥 ถ้าทำผิดจะพังยังไง**
-นี่คือ invariant ข้อ 2 ใน [`CLAUDE.md` §4](../../CLAUDE.md) — **`userId` ต้องมาจาก JWT claim `sub` เท่านั้น ห้ามรับจาก request body**
-
-ถ้าเขียน `POST /api/v1/orders` แบบรับ `{ userId, productId }` จาก body:
-
-- ส่ง `{"userId":"user-1"}` แล้วก็ `{"userId":"user-2"}`, `{"userId":"user-3"}`... จากเครื่องเดียว
-- กลไกกันซื้อซ้ำทุกชั้นใช้ `userId` เป็นกุญแจ → **พังทั้งระบบ** เพราะคนเดียวกวาดของ 50 ชิ้นได้หมด
-- และ `COUNT(DISTINCT user_id) = 50` **ยังผ่านอยู่!** → จะไม่มีทางรู้เลยว่ามีรู
+### ③ PostgreSQL (Primary & Replica) — สมุดบัญชีตัวจริง (Source of Truth)
+- **ปัญหาเดิม**: หน่วยความจำชั่วคราวอย่าง RAM ข้อมูลสูญหายได้เมื่อไฟดับ ระบบต้องมีที่เก็บข้อมูลถาวรที่มีคุณสมบัติ ACID อย่างสมบูรณ์
+- **มันคืออะไร**: ฐานข้อมูลเชิงสัมพันธ์ (RDBMS) ที่เป็นเจ้าของข้อมูลตัวจริง ประกอบด้วย Primary (สำหรับเขียน) และ Replica (สำหรับอ่าน)
+- **ในงานจริง**: ตาราง `products` และ `orders` ใน `src/database_config/migrations/` จัดการ Connection Pool แยกฝั่ง Master (Pool 8) และ Replica (Pool 8) ผ่าน `src/database_config/database.module.ts`
 
 ---
 
-### 2.4 ④ PostgreSQL Primary + Replica
-
-| | |
-| :--- | :--- |
-| **ปัญหาเดิม** | 1,000 คนอ่านสินค้า + คนเขียนออเดอร์ ยิงเข้า DB ตัวเดียว → การอ่านไปแย่งทรัพยากรกับการเขียน ทั้งที่คนอ่าน "แค่ดูรายการสินค้า" ไม่จำเป็นต้องได้ข้อมูลสดวินาทีต่อวินาที |
-| **มันคืออะไร** | **Replication** = มี DB 2 ตัว: **Primary** รับเขียน แล้วส่งการเปลี่ยนแปลงไปให้ **Replica** อัตโนมัติ. Replica รับแต่ *อ่าน* — และข้อมูลตามหลัง Primary อยู่นิดหน่อย (10–100 มิลลิวินาที) |
-| **ในงานเรา** | Primary `:5432` (worker เขียนออเดอร์ที่นี่) · Replica `:5433` (อ่าน catalog ตอน cache miss). TypeORM ตั้งค่าที่ `src/config/database.config.ts` แล้ว route ให้อัตโนมัติ |
-| **ศัพท์** | **Read-Write Split** (แยกทางอ่าน/ทางเขียน) · **Replication Lag** (ความช้าที่ Replica ตามหลัง) · **Streaming Replication** (วิธี sync ของ Postgres) · **Connection Pool** (ถังเก็บ connection ที่เปิดค้างไว้ใช้ซ้ำ เพราะเปิด connection ใหม่แพงมาก) |
-
-**💥 ถ้าทำผิดจะพังยังไง**
-[`architecture.md` §6.3](architecture.md) เรียกอันนี้ว่า **"จุดที่พลาดกันบ่อยที่สุด"**
-
-`repository.findOne()` ใน TypeORM จะวิ่งไป **Replica อัตโนมัติ** — ซึ่งดูสมเหตุสมผลมาก จนกระทั่ง worker ทำแบบนี้:
-
-```mermaid
-sequenceDiagram
-    participant W as Worker
-    participant R as Replica :5433
-    participant P as Primary :5432
-
-    P->>P: remaining_stock ถูกหักเหลือ 0 แล้ว
-    Note over P,R: replication lag ~50ms<br/>Replica ยังไม่รู้
-    W->>R: repository.findOne(p-1001)
-    R-->>W: remaining_stock = 1  ❌ ข้อมูลเก่า
-    Note over W: "ยังมีของ!" → เขียนต่อ
-    W->>P: INSERT order
-    Note over W,P: 💥 oversell
-```
-
-เพราะฉะนั้น **invariant ข้อ 3**: worker **ต้อง** ใช้ `dataSource.createQueryRunner('master')` เท่านั้น
-
-บั๊กนี้เจ็บเพราะมัน **ผ่านตอนเทสในเครื่องตัวเอง** (ไม่มี lag) แล้วพังตอนยิงโหลดจริง
+### ④ `redis-cache` (Port 6379) — กระดานข่าวสาร (Read Cache)
+- **ปัญหาเดิม**: การยิง SQL `SELECT` ดูรายการสินค้าทุกครั้งทำให้ PostgreSQL ล่มเมื่อมีคนอ่าน 1,000 คน
+- **มันคืออะไร**: Redis Instance ที่ทำหน้าที่แคชก้อนข้อมูล JSON ของหน้ารายการสินค้า (`catalog:page:P:limit:L`)
+- **ในงานจริง**: คอนฟิกใน `redis/redis-cache.conf` ตั้งค่านโยบายหน่วยความจำแบบ **`allkeys-lru`** (เมื่อ RAM เต็ม ให้ลบหน้าที่คนเปิดดูน้อยที่สุดทิ้งอัตโนมัติ) และข้อมูลมี TTL กำกับเสมอ
+- **ศัพท์ประจำตัว**:
+  > 📖 **Cache-Aside (Lazy Loading)**
+  > - *ปัญหาเดิม*: การให้อ่าน DB ตรงๆ ตลอดเวลาทำให้ DB ล่มเมื่อมีคนอ่าน 1,000 คน
+  > - *นิยาม*: รูปแบบการแคชที่แอปพลิเคชันจะเช็คข้อมูลในแคชก่อน ถ้าไม่เจอ (Miss) ค่อยไปดึงจาก DB มาใส่แคชแล้วส่งกลับ
+  > - *อุปมา*: ดูข้อมูลในกระดาษโพสต์อิทบนโต๊ะก่อน ถ้าไม่มีค่อยเดินไปเปิดสมุดตู้เอกสาร แล้วจดสรุปใส่โพสต์อิทไว้ดูรอบหน้า
+  > - *ในงานจริง*: เมธอด `listProducts()` ใน `src/products/products.service.ts`
+  > - *กับดักของศัพท์นี้*: คิดว่าแคชมีหน้าที่เพียง "ทำให้เร็ว" จึงแคชข้อมูลทุกอย่างรวมถึงสต็อกสด (remainingStock) ไว้ในก้อนเดียวกัน ส่งผลให้ทุกครั้งที่มีการซื้อ แคชต้องถูกล้างทิ้ง จนเกิด Cache Stampede ถล่มฐานข้อมูล (ระบบเราจึงแยกแก้ด้วย Stock Overlay Pattern ซึ่งจะได้เรียนละเอียดใน §3.1 และ [`architecture.md` §5.1](architecture.md))
 
 ---
 
-### 2.5 ⑤ `redis-cache` :6379 — แคช metadata
-
-| | |
-| :--- | :--- |
-| **ปัญหาเดิม** | 1,000 คนถาม `GET /api/v1/products` ทุกวินาที = 1,000 SQL queries ต่อวินาที ทั้งที่ **ชื่อสินค้ากับราคาไม่เคยเปลี่ยน** ระหว่าง flash sale |
-| **มันคืออะไร** | **Cache** = ที่เก็บของชั่วคราวในหน่วยความจำ อ่านเร็วกว่า DB ~100 เท่า · **Cache-Aside** = แพตเทิร์นการใช้: ดูในแคชก่อน → เจอ (**hit**) ใช้เลย → ไม่เจอ (**miss**) ค่อยไปถาม DB แล้วเอามาใส่แคชไว้ |
-| **ในงานเรา** | key `catalog:page:1:limit:10` เก็บ metadata ของสินค้าหน้านั้น อายุ **30–60 วินาที + jitter** |
-| **ศัพท์** | **TTL** (Time To Live = อายุของ key ก่อนหายไปเอง) · **Jitter** (สุ่มบวกอายุนิดหน่อยไม่ให้หมดพร้อมกัน) · **`allkeys-lru`** (ถ้า RAM เต็ม ให้ลบ key ที่ไม่ได้ใช้นานสุดทิ้ง) · **Hit Ratio** (สัดส่วนที่เจอในแคช — โจทย์อยากเห็น ≥ 90%) |
-
-**💥 ถ้าทำผิดจะพังยังไง — Cache Stampede**
-
-```mermaid
-sequenceDiagram
-    participant VU as 1,000 VUs
-    participant C as redis-cache
-    participant DB as Replica DB
-
-    Note over VU,DB: วินาทีที่ 0 — เริ่มยิง
-    VU->>C: GET catalog:page:1:limit:10
-    C-->>VU: MISS ทุกอัน
-    VU->>DB: SELECT (พร้อมกัน)
-    DB-->>VU: rows
-    VU->>C: SETEX ttl=60  ← ทุกอันหมดอายุ "พร้อมกัน"
-
-    Note over VU,DB: วินาทีที่ 60 — TTL หมดพร้อมกันหมด
-    VU->>C: GET
-    C-->>VU: MISS × 1,000
-    VU->>DB: SELECT × 1,000 ถล่มพร้อมกัน
-    Note over DB: 💥 connection pool เต็ม<br/>p95 พุ่งเป็นวินาที<br/>เห็นเป็น "หนามแหลม" ในกราฟ k6
-```
-
-ทางแก้ในเอกสารมี **2 ชั้น**:
-
-| ทางแก้ | ทำอะไร | แก้ปัญหาอะไร |
-| :--- | :--- | :--- |
-| **TTL jitter** | `ttl = 30 + random(0..30)` วินาที | key หมดอายุกระจายกัน ไม่พร้อมกัน (avalanche) |
-| **Single-flight** | ใน 1 process ถ้ามี 200 requests miss หน้าเดียวกันพร้อมกัน ให้แชร์ Promise เดียว | query DB **ครั้งเดียว** แทน 200 ครั้ง |
-
-> **single-flight ไม่ผิดกฎ stateless** เพราะมันเก็บ *in-flight request* (คำขอที่กำลังวิ่งอยู่ตอนนี้) ไม่ใช่เก็บ *ผลลัพธ์* ไว้ข้ามคำขอ
+### ⑤ `redis-data` (Port 6380) — ตู้เซฟควบคุมสิทธิ์และสต็อกความเร็วแสง ⭐
+- **ปัญหาเดิม**: การตัดสต็อกและเช็คการซื้อซ้ำใน PostgreSQL ช้าเกินไปสำหรับจังหวะ Write Burst 500 คำขอพร้อมกัน
+- **มันคืออะไร**: Redis Instance ที่ทำหน้าที่เก็บ **Atomic Stock Counter** (`stock:flash_sale:p-1001`), **In-Flight Lock กันกดรัว**, และ **สิทธิ์ผู้ซื้อ** (`bought:p-1001:u-101`)
+- **ในงานจริง**: คอนฟิกใน `redis/redis-data.conf` บังคับนโยบาย **`noeviction`** (ห้ามลบข้อมูลทิ้งเด็ดขาด ถ้ารหัสหน่วยความจำเต็มให้โยน Error ดีกว่าสต็อกหาย) และเปิดใช้ persistence แบบ AOF
+- **ศัพท์ประจำตัว**:
+  > 📖 **Distributed In-Flight Lock**
+  > - *ปัญหาเดิม*: ลูกค้ามือลั่นกดย้ำปุ่มซื้อ 3 ครั้งในเสี้ยววินาที อาจหลุดเข้าไปในคิวทั้ง 3 อัน
+  > - *นิยาม*: กลไกล็อกชั่วคราวบน Redis เพื่อรับประกันว่าจะมีเพียงคำขอเดียวของผู้ใช้รายนั้นที่กำลังอยู่ระหว่างการประมวลผล
+  > - *อุปมา*: บัตรคิวประจำตัวชั่วคราว ตราบใดที่ถือบัตรคิวนี้อยู่ ถ้าพยายามกดขอใหม่จะโดนสกัดทันทีด้วย HTTP 429
+  > - *ในงานจริง*: คีย์ `lock:order:{userId}:{productId}` จัดการผ่าน `src/redis/lua/gatekeeper.lua` และปลดล็อกด้วย `src/redis/lua/release-lock.lua`
+  > - *กับดักของศัพท์นี้*: ปลดล็อกด้วยคำสั่ง `DEL` ตรงๆ เพราะหากคำขอทำงานช้าจน Lock หมดอายุ (TTL Expired) คำขออื่นจะได้ Lock ใหม่ไป แล้วคำขอแรกกลับมาสั่ง `DEL` จะกลายเป็นการ "แอบลบล็อกของคนอื่น" ระบบเราจึงบังคับใช้ Lua Script (`release-lock.lua`) ทำ Compare-and-Delete ร่วมกับ Token สุ่มเฉพาะคำขอเสมอ (ตาม [`architecture.md` §6.1](architecture.md))
 
 ---
 
-### 2.6 ⑥ `redis-data` :6380 — stock counter + lock ⭐ ตัวสำคัญที่สุด
-
-นี่คือตัวที่ทำให้สถาปัตยกรรมนี้ต่างจากที่คนอื่นเขียน **อ่านช้าๆ**
-
-| | |
-| :--- | :--- |
-| **ปัญหาเดิม** | 500 คนวิ่งเข้า Postgres พร้อมกันเพื่อแย่งของ 50 ชิ้น = **450 คนวิ่งไปเพื่อโดนปฏิเสธ** ทำให้ DB ทำงานหนักเปล่าๆ 90% |
-| **มันคืออะไร** | Redis เก็บ **ตัวนับสต็อก** แยกอีกที่หนึ่ง แล้วให้มัน "ตัดสินก่อน" ว่าใครมีสิทธิ์เดินต่อ — คนที่ไม่มีสิทธิ์ถูกปฏิเสธที่นี่ในเวลา ~1ms โดยไม่แตะ DB เลย |
-| **ในงานเรา** | 3 กลุ่ม key: `stock:flash_sale:p-1001` (ตัวนับ) · `lock:order:{userId}:{productId}` (กันกดรัว) · `bought:{productId}:{userId}` (ธงว่าซื้อสำเร็จแล้ว) |
-| **ศัพท์** | **Atomic** (ทำทั้งชุดหรือไม่ทำเลย ไม่มีใครแทรกกลางได้) · **Lua script** (โปรแกรมเล็กๆ ที่ส่งไปรันในตัว Redis) · **Mutex / Lock** (ป้ายจองว่า "ฉันกำลังทำอยู่ ห้ามแทรก") · **`noeviction`** (RAM เต็มก็ห้ามลบอะไรทิ้ง ให้ error แทน) |
-
-#### ทำไมต้องเป็น Lua ไม่ใช่หลายคำสั่งเรียงกัน?
-
-Redis เป็น **single-threaded** — ทำทีละคำสั่ง เพราะฉะนั้น `DECR` คำสั่งเดียวไม่มีทาง race กัน ✅
-แต่ถ้าเขียนแบบนี้ใน JavaScript:
-
-```typescript
-// ❌ ผิด — TOCTOU กลับมาอีกแล้ว แค่ย้ายที่เกิดเหตุจาก DB มา Redis
-const stock = await redis.get('stock:flash_sale:p-1001');   // ← ได้ 1
-if (Number(stock) > 0) {                                     // ← ระหว่างนี้คนอื่นแทรกได้!
-  await redis.decr('stock:flash_sale:p-1001');               // ← ทั้งคู่ decr → -1
-}
-```
-
-ระหว่างบรรทัด 1 กับ 3 มี **network roundtrip** คั่นอยู่ คนอื่นแทรกได้สบายๆ
-
-**Lua script แก้ตรงนี้** — Redis รับสคริปต์ทั้งก้อนไปรันรวดเดียว และ **ไม่รับคำสั่งอื่นเลยจนกว่าจะรันจบ** → เช็ค 4 อย่าง + เขียน 2 อย่าง กลายเป็นการกระทำเดียวที่แบ่งแยกไม่ได้
-
-สคริปต์จริง ([`architecture.md` §6.1](architecture.md)) แบบย่อ:
-
-```lua
-local raw = redis.call('GET', KEYS[2])                     -- stock:flash_sale:p-1001
-if raw == false then return -4 end                         -- ยังไม่ seed        → 503
-if redis.call('EXISTS', KEYS[3]) == 1 then return -1 end   -- เคยซื้อแล้ว        → 409
-if redis.call('EXISTS', KEYS[1]) == 1 then return -2 end   -- กำลังทำอยู่ (กดรัว) → 429
-if tonumber(raw) <= 0 then return -3 end                   -- ของหมด            → 409
-redis.call('DECR', KEYS[2])                                -- ✂️ จองสิทธิ์
-redis.call('SET', KEYS[1], ARGV[2], 'PX', ARGV[1])         -- 🔒 ตั้ง lock
-return 1                                                   -- ผ่าน              → 202
-```
-
-#### 💥 `-4` ที่ดูเหมือนไม่จำเป็น แต่สำคัญมาก
-
-โค้ดที่คนเขียนกันทั่วไปคือ `tonumber(redis.call('GET', k) or '0')` ซึ่งแปลว่า *"ไม่มี key ก็ถือว่าสต็อก 0"*
-
-ทีนี้ถ้า `redis-data` restart แล้วลืมรัน `pnpm run seed:redis`:
-
-- key `stock:flash_sale:p-1001` หายไป → ระบบตอบ **"ของหมด" (409)** ให้ทุกคน **ตลอดกาล**
-- ไม่มี error, ไม่มี log, dashboard เขียว, ยิง k6 แล้วเห็น 409 เยอะ ก็นึกว่าถูกแล้ว
-- จะนั่งงงเป็นชั่วโมงว่าทำไม `remaining_stock` ใน DB ยังเป็น 50
-
-การแยก `-4` → **503 Service Unavailable** ทำให้ปัญหานี้ *โผล่ขึ้นมาทันที* แทนที่จะเงียบ
-นี่คือความต่างระหว่าง **"ของหมด" (ปกติ)** กับ **"ระบบพัง" (ผิดปกติ)**
-
-#### 💥 ทำไมต้องแยก Redis เป็น 2 ตัว?
-
-| | `redis-cache` :6379 | `redis-data` :6380 |
-| :--- | :--- | :--- |
-| เก็บอะไร | metadata สินค้า | stock counter, lock, **BullMQ jobs** |
-| หายได้ไหม | **ได้** — miss แล้วไปอ่าน DB ใหม่ | **ไม่ได้เด็ดขาด** |
-| `maxmemory-policy` | `allkeys-lru` (ลบตัวเก่าทิ้งได้) | **`noeviction`** |
-| Persistence | ไม่ต้อง | **AOF** (จดทุกคำสั่งลงดิสก์) |
-
-ถ้ารวมเป็นตัวเดียวแล้วตั้ง `allkeys-lru`: ตอน RAM ใกล้เต็มกลาง load test Redis จะ **ลบ key ที่ไม่ได้ใช้นานสุดทิ้ง** ซึ่งอาจเป็น BullMQ job ของ user-250
-
-→ user-250 ได้ **202 "ออเดอร์คุณเข้าคิวแล้ว"** แต่ไม่มีออเดอร์เกิดขึ้นจริง **ไม่มี error ที่ไหนเลย**
+### ⑥ BullMQ Queue & Worker — สายพานลำเลียงออเดอร์
+- **ปัญหาเดิม**: หากคำสั่งซื้อต้องรอผลการเขียนลงดิสก์ของ PostgreSQL ถึงจะตอบ HTTP ได้ ผู้ใช้จะต้องรอนานหลายวินาที และขัดกับข้อกำหนดโจทย์ที่ต้องการ HTTP 202
+- **มันคืออะไร**: ระบบ Message Queue ที่สร้างบน Redis ทำหน้าที่รับรายการออเดอร์ไปต่อแถว แล้วตอบรับคำขอทันที จากนั้น Background Worker จะค่อยๆ หยิบงานไปเขียนลง PostgreSQL อย่างเป็นระเบียบ
+- **ในงานจริง**: นิยามคิวใน `src/orders/orders.module.ts` และประมวลผลงานใน `src/orders/orders.processor.ts` โดยตั้งค่า `concurrency: 5` เพื่อไม่ให้แย่ง Connection Pool ของฐานข้อมูล
+- **ศัพท์ประจำตัว**:
+  > 📖 **Message Queue & Decoupling (202 Accepted)**
+  > - *ปัญหาเดิม*: การทำงานแบบ Synchronous (รอ DB เขียนเสร็จ) ผูก HTTP Client ไว้กับความเร็วของ Disk I/O
+  > - *นิยาม*: การแยกส่วนรับคำขอออกจากส่วนประมวลผลข้อมูลจริง โดยรับเรื่องแล้วตอบ 202 Accepted ทันทีก่อนนำงานไปทำเบื้องหลัง
+  > - *อุปมา*: เคาน์เตอร์รับคำสั่งซื้ออาหาร พนักงานยื่นใบเสร็จให้คุณแล้วบอกว่า "รับออเดอร์แล้วนะ ไปนั่งรอได้เลย" โดยไม่ต้องยืนรอให้เชฟทำอาหารเสร็จตรงหน้าเคาน์เตอร์
+  > - *ในงานจริง*: คำสั่ง `ordersQueue.add()` ใน `src/orders/orders.service.ts`
+  > - *กับดักของศัพท์นี้*: คิดว่าการตอบ 202 Accepted แปลว่าสินค้าถูกบันทึกสำเร็จลงฐานข้อมูลแล้ว แต่แท้จริงมันคือสัญญาว่า "รับเรื่องเข้าคิวแล้ว จะดำเนินการให้เบื้องหลัง" หาก Worker บันทึกล้มเหลวถาวร ระบบจำเป็นต้องมีกลไกชดเชยคืนสต็อก (Compensation — ซึ่งจะได้เรียนละเอียดใน §3.2) เสมอ (ตาม [`architecture.md` §6.1](architecture.md))
 
 ---
 
-### 2.7 ⑦ BullMQ Queue + Worker
-
-| | |
-| :--- | :--- |
-| **ปัญหาเดิม** | ต่อให้ Redis กรองเหลือ 50 คน การเขียน DB ก็ยังใช้เวลา ~20–50ms และโจทย์บังคับว่า controller **ห้ามเขียน DB แบบรอ** (invariant ข้อ 1) — ต้องตอบ HTTP กลับให้เร็ว |
-| **มันคืออะไร** | **Message Queue** = กล่องรับงาน คนที่รับ request แค่ **หย่อนใบสั่งงานลงกล่อง** แล้วตอบลูกค้าไปเลยว่า *"รับเรื่องแล้ว"* ส่วนงานจริงมี **Worker** มาหยิบไปทำทีหลัง |
-| **ในงานเรา** | `orders.service.ts` หย่อน job แล้ว return `202` ทันที · `orders.processor.ts` (worker) หยิบ job ไปเขียน Postgres Primary — worker รันอยู่ใน process เดียวกับ API คือ app-1..6 แต่ละตัวเป็นทั้ง API และ worker |
-| **ศัพท์** | **Producer** (คนหย่อนงาน = controller) · **Consumer / Worker** (คนหยิบไปทำ) · **Job** (ใบสั่งงาน 1 ใบ) · **`jobId`** (เลขที่ใบสั่งงาน) · **Async processing** (ทำทีหลัง ไม่ให้ลูกค้ารอ) · **At-least-once** (คิวรับประกันว่างานจะถูกทำ *อย่างน้อย* 1 ครั้ง — อาจซ้ำได้) · **Idempotent** (ทำซ้ำกี่ครั้งผลก็เท่าเดิม) |
-
-#### ทำไมต้องเป็น 202 ไม่ใช่ 200/201?
-
-| Status | ความหมาย | เหมาะกับ |
-| :--- | :--- | :--- |
-| `200 OK` | "ทำเสร็จแล้ว นี่ผลลัพธ์" | `GET /products` |
-| `201 Created` | "สร้างของเรียบร้อยแล้ว" | ถ้าเขียน DB เสร็จแล้วจริงๆ |
-| **`202 Accepted`** | **"รับเรื่องแล้ว กำลังทำ ยังไม่รู้ผล"** | **`POST /orders` ของเรา** |
-
-`202` เป็นการ **พูดความจริง** — ตอนที่ตอบกลับ ออเดอร์ยังไม่ได้เขียนลง DB จริงๆ
-
-#### 💥 invariant ข้อ 6 — ทุก path ที่หักสต็อกแล้วต้องมีทางคืน
-
-```mermaid
-flowchart TD
-    A["Lua: DECR stock<br/>(10 → 9) ✂️ หักไปแล้ว!"] --> B{"queue.add() สำเร็จ?"}
-    B -->|✅ สำเร็จ| C["ตอบ 202"]
-    B -->|❌ Redis สะดุด| D["❌ แบบผิด:<br/>throw 503 เฉยๆ"]
-    B -->|❌ Redis สะดุด| E["✅ แบบถูก:<br/>compensate() → INCR คืน<br/>แล้วค่อย throw 503"]
-    D --> F["💥 สต็อก 1 ชิ้นหายถาวร<br/>ไม่มีใครได้ ไม่มีใครรู้<br/>remaining_stock จบที่ 3 ไม่ใช่ 0<br/>→ ตกเกณฑ์ Data Integrity"]
-    E --> G["✅ stock กลับเป็น 10<br/>คนอื่นแย่งต่อได้"]
-
-    style D fill:#5a1e1e,color:#fff
-    style F fill:#5a1e1e,color:#fff
-    style E fill:#1e4620,color:#fff
-    style G fill:#1e4620,color:#fff
-```
-
-โค้ดจริง:
-
-```typescript
-try {
-  await this.ordersQueue.add('process-order', { userId, productId }, { jobId, ... });
-} catch (err) {
-  await this.redis.compensate(userId, productId);   // ← INCR คืน + DEL lock (Lua, atomic)
-  throw new ServiceUnavailableException('Queue unavailable');
-}
-```
-
-> 📖 **ศัพท์: Compensation / Compensating Transaction** — เมื่อทำงานข้ามระบบ (Redis + Postgres) เรา rollback ข้ามระบบไม่ได้ จึงต้องเขียน "การกระทำที่ย้อนผลของอีกอันหนึ่ง" ไว้เอง
+### ⑦ JWT Authentication Guard — การ์ดตรวจบัตรแบบ Zero-I/O
+- **ปัญหาเดิม**: ถ้าระบบใช้ระบบ Session แบบดั้งเดิมที่ต้องคอย Query ฐานข้อมูลหรือ Redis ทุกครั้งที่ผู้ใช้ส่ง request เข้ามา ฐานข้อมูลจะล่มตั้งแต่ขั้นตอนตรวจสิทธิ์
+- **มันคืออะไร**: กลไกยืนยันตัวตนแบบ Stateless ด้วย JSON Web Token (HS256) ตรวจสอบความถูกต้องของลายเซ็นดิจิทัลได้ภายในหน่วยความจำของ Process เองทันที
+- **ในงานจริง**: `src/auth/jwt-auth.guard.ts` ตรวจสอบ Token แล้วดึง `sub` มาเป็น `userId` ส่งต่อให้ Controller โดยไม่มี Network Call แม้แต่เสี้ยวครั้งเดียว
 
 ---
 
-## 3. ⭐ เส้นทางที่ 1: Read Path — `GET /api/v1/products`
+## 3. 🛣️ เส้นทางหลักทั้งสองเส้น (The Two Critical Paths)
 
-### 3.1 ปัญหา: แคชกับสต็อกขัดกันเอง
+---
 
-โจทย์ระบุเป็น **"เงื่อนไขสำคัญ"** ว่า `remainingStock` ต้องถูกต้องเสมอ แต่ก็อยากได้ cache hit ratio สูงๆ ด้วย — **สองอย่างนี้ขัดกันโดยตรง**
+### 3.1 เส้นทางที่ 1: Read Path (`GET /api/v1/products`)
 
-```
-ถ้าแคชทั้งก้อน (metadata + remainingStock อยู่ด้วยกัน):
-  วินาทีที่ 0.0: แคชไว้ { name: "Sneaker", price: 2990, remainingStock: 50 }
-  วินาทีที่ 0.1: มีคนซื้อ → ต้อง invalidate (ลบแคชทิ้ง)
-  วินาทีที่ 0.2: มีคนซื้อ → ต้อง invalidate อีก
-  ...ระหว่าง flash sale มีคนซื้อทุกๆ ไม่กี่มิลลิวินาที
-  → แคชโดนลบตลอดเวลา → hit ratio เกือบ 0% → แคชไม่มีประโยชน์เลย
-```
+เป้าหมายคือรองรับคนอ่าน **1,000 Read VUs** ได้ต่อเนื่อง พร้อมการันตีว่า **ตัวเลขสต็อกคงเหลือต้องถูกต้องเสมอ**:
 
-### 3.2 ทางออก: แยกของ 2 ชนิดออกจากกัน ⭐
-
-**นี่คือไอเดียที่ฉลาดที่สุดในสถาปัตยกรรมนี้ และเป็นสิ่งที่ต้องเขียนอธิบายในรายงาน**
-
-| ชนิด | ฟิลด์ | เก็บที่ | TTL | เปลี่ยนบ่อยแค่ไหน |
-| :--- | :--- | :--- | :--- | :--- |
-| **Metadata** | `productId`, `name`, `price`, `availableStock`, `isFlashSaleActive` | `redis-cache`<br/>`catalog:page:{p}:limit:{l}` | 30–60s + jitter | แทบไม่เปลี่ยนเลย |
-| **Stock** | `remainingStock` | `redis-data`<br/>`stock:flash_sale:{productId}` | **ไม่มี TTL** | เปลี่ยนตลอดเวลา |
-
-> ⚠️ **อย่าสับสน 2 ฟิลด์นี้**
-> `availableStock` = ของตั้งต้น (50, คงที่ตลอด, มาจาก seed)
-> `remainingStock` = เหลือจริง (นับถอยหลัง 50 → 0)
-> Response ต้องมี **ทั้งคู่**
-
-### 3.3 ลำดับเวลาจริง
+> 📖 **กล่องสอนศัพท์ประจำ §3.1 (กลุ่ม Caching & High-Traffic Resilience)**
+> 
+> 12. **Stock Overlay Pattern**
+>     - *ปัญหาเดิม*: การรวมข้อมูล Metadata ของสินค้า (ชื่อ, ราคา) เข้ากับตัวเลขสต็อกคงเหลือสด (Dynamic Stock) ไว้ในแคชก้อนเดียวกัน ทำให้ทุกครั้งที่มีการซื้อของ แคชต้องถูกทำลายทิ้ง ส่งผลให้ฐานข้อมูลถูกรุมถล่ม
+>     - *นิยามหนึ่งประโยค*: รูปแบบการออกแบบแคชที่แยกชิ้นส่วนข้อมูลที่อยู่นิ่ง (Metadata) ไปเก็บไว้ใน Read Cache (`redis-cache`) ต่างหากจากตัวเลขสต็อกที่เปลี่ยนตลอดเวลาใน Fast Data Store (`redis-data`) แล้วนำมาผสานข้อมูลกันในหน่วยความจำก่อนตอบกลับลูกค้า
+>     - *อุปมา (ยึดกับ FLOOR)*: เหมือนเมนูอาหารในร้าน — รายชื่ออาหารและรูปภาพพิมพ์ลงแผ่นเคลือบแข็งแบบถาวร (Metadata Cache) ส่วนจำนวนจานที่เหลือในแต่ละวันใช้กระดาษโน้ตแปะทับไว้ (Stock Overlay) ไม่ต้องพิมพ์เมนูใหม่ทั้งเล่มทุกครั้งที่อาหารหมดไป 1 จาน
+>     - *ในงานจริงคือตัวไหน*: โค้ดใน `src/products/products.service.ts` ที่ดึง `catalog:page:P:limit:L` จาก `redis-cache` แล้วใช้ `redis.getStocks()` ดึง `stock:flash_sale:productId` จาก `redis-data` มาประกอบร่างกัน (ดู [`architecture.md` §5.1](architecture.md))
+>     - *กับดักของศัพท์นี้*: คิดว่าตัวเลขสต็อกที่อ่านได้จาก Read Path ต้องตรงกับฐานข้อมูล PostgreSQL ทุกมิลลิวินาที (Strict Real-time) แต่แท้จริง Read Path ยอมรับ Eventual Consistency ในระดับเสี้ยววินาทีเพื่อแลกกับ Throughput การอ่าน 1,000 VUs
+> 
+> 13. **Cache Invalidation**
+>     - *ปัญหาเดิม*: เมื่อข้อมูลต้นฉบับในฐานข้อมูลเปลี่ยนแปลง แต่ข้อมูลในแคชยังเป็นค่าเดิม ผู้ใช้จะเห็นข้อมูลที่ผิดพลาดและล้าสมัย
+>     - *นิยามหนึ่งประโยค*: กระบวนการลบหรืออัปเดตข้อมูลในแคชทิ้ง เพื่อบังคับให้คำขอถัดไปเดินทางไปดึงข้อมูลที่ถูกต้องล่าสุดจากแหล่งต้นฉบับ (PostgreSQL)
+>     - *อุปมา (ยึดกับ FLOOR)*: การลบกระดานดำหน้าห้องเรียนเมื่อมีประกาศใหม่ เพื่อไม่ให้นักเรียนอ่านประกาศเก่าที่ยกเลิกไปแล้ว
+>     - *ในงานจริงคือตัวไหน*: การลบคีย์ `catalog:index` และหน้ารายการสินค้าผ่าน `src/products/products.service.ts` เมธอด `invalidateCatalog()` และ `CATALOG_FLUSH_MIN_INTERVAL_MS` (ดู [`architecture.md` §5.4](architecture.md))
+>     - *กับดักของศัพท์นี้*: สั่ง Invalidate แคชทุกครั้งที่มีคำสั่งซื้อใน Flash Sale (ถ้าซื้อ 50 ชิ้นใน 0.3 วินาที แคชจะถูกลบ 50 ครั้ง ทำให้ผู้อ่าน 1,000 คนเจอ Cache Miss รัวๆ) หรือใช้คำสั่ง `KEYS *` ใน Redis ซึ่งเป็นคำสั่ง $O(N)$ ที่บล็อกการทำงานทั้งระบบ
+> 
+> 14. **Cache Stampede (Thundering Herd)**
+>     - *ปัญหาเดิม*: เมื่อแคชของข้อมูลยอดนิยมหมดอายุพร้อมกัน คำขอคู่ขนานจำนวนมหาศาลจะทะลักไปที่ฐานข้อมูลพร้อมกันจนระบบล่ม
+>     - *นิยามหนึ่งประโยค*: สภาวะวิกฤตที่คำขออ่านจำนวนมากพบว่าแคชหมดอายุ (Cache Miss) ในเสี้ยววินาทีเดียวกัน แล้วต่างคนต่างยิง Query ไปยังฐานข้อมูลเพื่อสร้างแคชใหม่พร้อมๆ กัน
+>     - *อุปมา (ยึดกับ FLOOR)*: เหมือนประตูห้างเปิดตอน 10:00 น. คน 1,000 คนที่ยืนอออยู่หน้าประตูพร้อมใจกันวิ่งกรูเข้าไปที่เคาน์เตอร์แจกของแถมจุดเดียว จนเคาน์เตอร์พังถล่ม
+>     - *ในงานจริงคือตัวไหน*: สภาวะที่อาจเกิดขึ้นกับ `GET /api/v1/products` เมื่อคนอ่าน 1,000 VUs พบว่าแคชหน้าแรกหมดอายุ (ดู [`architecture.md` §5.5](architecture.md))
+>     - *กับดักของศัพท์นี้*: คิดว่าการตั้งเวลา TTL ของแคชให้นานขึ้นจะแก้ปัญหาได้ถาวร แต่เมื่อใดก็ตามที่ TTL สิ้นสุดลง วิกฤต Stampede ก็จะเกิดขึ้นอยู่ดี
+> 
+> 15. **In-Process Single-Flight Promise Memoization**
+>     - *ปัญหาเดิม*: แม้จะใช้ Cache-Aside แต่ถ้าแคชหมดอายุ คำขอ 1,000 คำขอบน NestJS เดียวกันจะสร้าง 1,000 Promises ยิงไปที่ PostgreSQL ซ้ำซ้อนกัน
+>     - *นิยามหนึ่งประโยค*: เทคนิคในหน่วยความจำของ Node.js ที่รวมคำขอที่เข้ามาพร้อมกันและต้องการข้อมูลเดียวกัน ให้ร่วมกันรอผลลัพธ์จาก `Promise` เพียงตัวเดียวที่ยิงไปยังฐานข้อมูลเพียงครั้งเดียว
+>     - *อุปมา (ยึดกับ FLOOR)*: เพื่อน 10 คนนั่งอยู่ในห้องเดียวกัน อยากรู้ผลบอล แทนที่ทุกคนจะหยิบมือถือขึ้นมากดดูพร้อมกัน 10 เครื่อง ให้คนคนหนึ่งเป็นตัวแทนเปิดดู แล้วหันมาบอกผลให้ทุกคนในห้องฟังพร้อมกัน
+>     - *ในงานจริงคือตัวไหน*: Map `flightMap` ใน `src/products/products.service.ts` ที่ทำหน้าที่เก็บ Promise ของ `fetchCatalogPage()` ในระหว่างที่กำลังรอผลจาก DB Replica (ดู [`architecture.md` §5.5](architecture.md))
+>     - *กับดักของศัพท์นี้*: สับสนระหว่าง In-Process Memoization (แชร์ภายใน 1 Node instance) กับ Distributed Lock (แชร์ข้ามหลายเซิร์ฟเวอร์) — Single-Flight ไม่จำเป็นต้องพึ่งพา Redis จึงทำงานได้เร็วกว่าและไม่มี Network Overhead
+> 
+> 16. **Cache Avalanche & TTL Jitter**
+>     - *ปัญหาเดิม*: หากข้อมูลในแคชทั้งหมดถูกตั้งค่าให้หมดอายุที่เวลาเดียวกันเป๊ะ (เช่น 60 วินาทีพอดีทุกคีย์) คำขอทั้งหมดจะชน DB พร้อมกันเป็นระลอกคลื่นหิมะถล่ม (Avalanche)
+>     - *นิยามหนึ่งประโยค*: ปรากฏการณ์ที่แคชจำนวนมากหมดอายุพร้อมกันจนฐานข้อมูลรับโหลดไม่ไหว (Avalanche) และการป้องกันด้วยการสุ่มเวลาบวกเพิ่มเล็กน้อยเข้าไปใน TTL (TTL Jitter) เพื่อกระจายจังหวะการหมดอายุไม่ให้ตรงกัน
+>     - *อุปมา (ยึดกับ FLOOR)*: ไฟแดงสี่แยกที่ปล่อยรถพร้อมกันทุกเลนจะทำให้ถนนข้างหน้าติดขัดอย่างหนัก แต่ถ้าทยอยปล่อยรถสลับเหลื่อมเวลากันทีละไม่กี่วินาที การจราจรจะไหลลื่น
+>     - *ในงานจริงคือตัวไหน*: สูตรสุ่ม TTL ใน `src/products/products.service.ts`: `const ttl = 30 + Math.floor(Math.random() * 30)` (ช่วง 30–60 วินาที ตาม [`architecture.md` §5.3](architecture.md))
+>     - *กับดักของศัพท์นี้*: ตั้งค่า TTL เป็นตัวเลขคงที่ (Fixed Constant) เช่น `SETEX key 60 value` ซึ่งดูเรียบร้อยดี แต่จะก่อให้เกิดคลื่น Avalanche ถล่มระบบเป็นจังหวะทุกๆ 60 วินาทีอย่างหลีกเลี่ยงไม่ได้
+> 
+> ---
+> 
+> #### นวัตกรรม: Stock Overlay Pattern (แยกของนิ่ง ออกจากของวิ่ง)
+> ในระบบอีคอมเมิร์ซทั่วไป มักทำพลาดด้วยการแคชข้อมูลสินค้าทั้งก้อน:
+> ```json
+> // ❌ แคชแบบเดิมที่รวมทุกอย่างไว้ด้วยกัน
+> { "id": "p-1001", "name": "รองเท้า", "price": 2990, "remainingStock": 50 }
+> ```
+> ถ้าทำแบบนี้ พอมีคนซื้อของ 1 ชิ้น แคชทั้งก้อนต้องถูกลบทิ้ง (Invalidate) ทำให้ผู้ใช้ 1,000 คนที่กำลังเปิดดูอยู่เจอ **Cache Miss** พร้อมกัน แล้วรุมถล่ม PostgreSQL จนล่ม (**Cache Stampede**)!
+> 
+> **ระบบของเราแก้ด้วย Stock Overlay**:
+> 1. แคชเฉพาะข้อมูลที่อยู่นิ่ง (ชื่อ, ราคา, รายละเอียด, availableStock) ไว้ใน `redis-cache` (Key: `catalog:page:1:limit:10`) — แคชก้อนนี้อยู่นาน 30–60 วินาที ไม่ต้องลบทิ้งตอนมีคนซื้อ! (ดู [`architecture.md` §5.1](architecture.md))
+> 2. สต็อกคงเหลือจริงที่วิ่งตลอดเวลา (`remainingStock`) เก็บแยกไว้ใน `redis-data` เป็นตัวนับโดดๆ
+> 3. เมื่อมีคำขออ่านเข้ามา: ดึงก้อน Metadata จาก `redis-cache` (1 รอบ) + ดึงสต็อกสดทุกชิ้นด้วยคำสั่ง `MGET` จาก `redis-data` (1 รอบ) แล้วนำมาประกอบร่างกัน (Merge) ใน RAM ของ NestJS ก่อนตอบกลับลูกค้า!
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant VU as k6 VU
-    participant N as Nginx
-    participant A as app-2
-    participant RC as redis-cache
-    participant RD as redis-data
-    participant DB as Replica DB
+    participant VU as 1,000 Read VUs
+    participant Nest as ProductsService
+    participant RC as redis-cache :6379
+    participant RD as redis-data :6380
+    participant DB as PostgreSQL Replica
 
-    VU->>N: GET /api/v1/products?page=1&limit=10
-    N->>A: least_conn
+    VU->>Nest: GET /api/v1/products?page=1&limit=10
 
-    rect rgb(40,50,70)
-    Note over A,DB: ① metadata — cache-aside
-    A->>RC: GET catalog:page:1:limit:10
-    alt HIT (ปกติ ≥90%)
-        RC-->>A: metadata[]
-    else MISS
-        Note over A: single-flight — ถ้ามีคนกำลังถามอยู่แล้ว รอคนนั้น
-        A->>DB: SELECT ... LIMIT 10 OFFSET 0
-        DB-->>A: rows
-        A->>RC: SETEX ttl = 30 + rand(0..30)
+    rect rgb(30, 45, 60)
+    Note over Nest,RC: 1. อ่าน Metadata (Cache-Aside)
+    Nest->>RC: GET catalog:page:1:limit:10
+    alt Cache HIT (ความถี่ > 90%)
+        RC-->>Nest: คืนค่าก้อนข้อมูลสินค้า 10 ชิ้น
+    else Cache MISS (เพิ่งสตาร์ท หรือหมดอายุ)
+        Note over Nest: Single-Flight Memo: แชร์ Promise เดียวกัน
+        Nest->>DB: SELECT * FROM products LIMIT 10 OFFSET 0
+        DB-->>Nest: ข้อมูลจาก DB
+        Nest->>RC: SETEX catalog:page:1:limit:10 (TTL 30-60s Jitter)
     end
     end
 
-    rect rgb(60,45,30)
-    Note over A,RD: ② stock — อ่านสดทุก request
-    A->>RD: MGET stock:flash_sale:p-1001 ... (10 key, 1 roundtrip)
-    RD-->>A: ["30","12","500",...]
+    rect rgb(60, 45, 30)
+    Note over Nest,RD: 2. อ่านสต็อกสดแบบ Real-time
+    Nest->>RD: MGET stock:flash_sale:p-1001 ... p-1010 (1 roundtrip)
+    RD-->>Nest: ["48", "15", "0", ...]
     end
 
-    Note over A: ③ merge: { ...metadata, remainingStock: Number(v) }
-    A-->>N: 200 OK
-    N-->>VU: { status, data[], meta{total,page,limit,totalPages} }
+    Note over Nest: 3. ประกบร่าง (Overlay Merge ใน RAM)
+    Nest-->>VU: 200 OK (สต็อกตรงเป๊ะ และแคช Metadata ไม่แตกเลย!)
 ```
-
-**ขั้นตอน ② และ ③ คือคำตอบของ "เงื่อนไขสำคัญ"**
-metadata นอนอยู่ในแคชได้เป็นนาทีโดยไม่ต้อง invalidate เลยแม้มีคนซื้อรัวๆ ขณะที่ `remainingStock` อ่านสดทุก request ด้วยต้นทุนแค่ **1 `MGET`** (คำสั่งเดียว ดึงหลาย key พร้อมกัน)
-
-### 3.4 แล้วเมื่อไหร่ถึงต้อง invalidate?
-
-| เหตุการณ์ | ต้องลบแคชไหม | เพราะ |
-| :--- | :---: | :--- |
-| มีคนซื้อ (สต็อกลด) | **ไม่ต้อง** | `remainingStock` ไม่ได้อยู่ในแคชตั้งแต่แรก |
-| แอดมินแก้ชื่อ/ราคาสินค้า | ✅ ต้อง | metadata เปลี่ยนจริง |
-| สินค้าเปลี่ยน `isFlashSaleActive` | ✅ ต้อง | worker ส่ง invalidate หลังตัดสต็อกสำเร็จ |
-
-**💥 ถ้าทำผิดจะพังยังไง**
-
-1. ลำดับต้องเป็น **update DB ก่อน → แล้วค่อย `DEL` cache** ถ้าทำกลับกัน (DEL ก่อน) จะมีช่องว่างที่ request อื่นเข้ามาอ่านค่า *เก่า* จาก DB แล้วเอาไปใส่แคชใหม่ → แคชค้างค่าเก่าจนกว่า TTL หมด
-2. ❌ **ห้ามใช้ `redis.keys('catalog:*')`** เพื่อล้างแคช — คำสั่งนี้ scan ทุก key ในฐาน และ Redis เป็น single-threaded แปลว่ามัน **บล็อกทุกคน** รวมถึง gatekeeper ของ 500 คนที่กำลังแย่งของอยู่ → ใช้ `SCAN` หรือคำนวณ key ตรงๆ แทน
 
 ---
 
-## 4. ⭐ เส้นทางที่ 2: Write Path — `POST /api/v1/orders`
+### 3.2 เส้นทางที่ 2: Write Path (`POST /api/v1/orders`)
 
-### 4.1 ปัญหา: 500 คนแย่ง 50 ชิ้น พร้อมกัน
+เป้าหมายคือรองรับคนแย่งซื้อ **500 Write VUs พร้อมกัน** โดยที่ **สต็อก 50 ชิ้นไม่ขาดไม่เกิน และตอบกลับ 202 ภายในเสี้ยววินาที** (ตาม [`architecture.md` §6](architecture.md)):
 
-ทางเดียวที่จะทั้งเร็วและถูกคือ **กรองเป็นชั้นๆ** — เอาคนออกให้ได้มากที่สุดตั้งแต่ชั้นที่ถูกที่สุด
-
-### 4.2 ภาพรวม 5 ด่าน + จำนวนคนที่เหลือรอด
-
-```mermaid
-flowchart TD
-    START["500 requests เข้ามาพร้อมกัน"]
-
-    R401["401 Unauthorized"]
-    R503["503 Service Unavailable<br/>⚠️ ระบบพัง ไม่ใช่ของหมด"]
-    R409A["409 เคยซื้อแล้ว"]
-    R429["429 กดรัว<br/>✅ พฤติกรรมที่ถูกต้อง"]
-    R409B["409 ของหมด<br/>450 คนจบที่นี่"]
-    COMP["compensate: INCR คืน<br/>แล้วตอบ 503"]
-    R202["202 Accepted<br/>ตอบทันที ไม่รอ DB"]
-    WR["return เฉยๆ<br/>ห้าม throw!"]
-
-    START --> T0A
-
-    subgraph T0["Tier 0 — JwtAuthGuard · ต้นทุน ~0ms อยู่ใน RAM"]
-        T0A{"token ถูกต้อง?"}
-    end
-
-    T0A -->|❌| R401
-    T0A -->|"✅ userId = jwt.sub<br/>ห้ามเอามาจาก body"| L1
-
-    subgraph T1["Tier 1 — Redis Lua Gatekeeper · ~1ms · 1 roundtrip · atomic"]
-        L1{"stock key มีจริง?"}
-        L2{"เคยซื้อแล้ว?"}
-        L3{"มี order in-flight?"}
-        L4{"stock เหลือ?"}
-        L1 -->|มี| L2
-        L2 -->|ไม่เคย| L3
-        L3 -->|ไม่มี| L4
-    end
-
-    L1 -->|"ไม่มี = -4"| R503
-    L2 -->|"เคย = -1"| R409A
-    L3 -->|"มี = -2"| R429
-    L4 -->|"หมด = -3"| R409B
-    L4 -->|"✅ DECR stock + SET lock = 1"| Q1
-
-    subgraph T2["Tier 2 — BullMQ enqueue"]
-        Q1["jobId = order:userId:productId<br/>deterministic → BullMQ ปฏิเสธซ้ำเอง"]
-    end
-
-    Q1 -->|"❌ add ล้ม"| COMP
-    Q1 -->|✅| R202
-    R202 -.->|"HTTP response ออกไปแล้ว<br/>ลูกค้าไม่รออีกต่อไป"| W1
-
-    subgraph T3["Tier 3 — Worker → PostgreSQL Primary เท่านั้น · concurrency 1 ต่อ node (×6 = 6)"]
-        W1["UPDATE products<br/>SET remaining_stock = remaining_stock - 1<br/>WHERE id = $1 AND remaining_stock &gt; 0"]
-        W2{"affected === 0 ?"}
-        W3["INSERT INTO orders"]
-        W1 --> W2
-        W2 -->|ไม่ใช่| W3
-    end
-
-    W2 -->|"ใช่ = ของหมดจริง"| WR
-    W3 --> C1
-
-    subgraph T4["Tier 4 — DB Constraints · ด่านสุดท้าย ทะลุไม่ได้"]
-        C1["UNIQUE user_id, product_id"]
-        C2["CHECK remaining_stock &gt;= 0"]
-    end
-
-    style R202 fill:#1e4620,color:#fff
-    style R409B fill:#4a3a1e,color:#fff
-    style R429 fill:#4a3a1e,color:#fff
-    style R503 fill:#5a1e1e,color:#fff
-    style R401 fill:#5a1e1e,color:#fff
-```
-
-### 4.3 ลำดับเวลา: 202 ออกไปก่อน DB เขียนเสร็จ
+> 📖 **กล่องสอนศัพท์ประจำ §3.2 (กลุ่ม Reliability & Distributed Saga)**
+> 
+> 17. **Idempotency & Compensation**
+>     - *ปัญหาเดิม*: ในระบบกระจายศูนย์ เครือข่ายอาจล่มหรือคำขออาจถูกส่งซ้ำ (Network Retry) หากไม่มีการควบคุม การรันคำสั่งเดิมซ้ำจะทำให้ตัดสต็อกซ้ำซ้อน และหากขั้นตอนเบื้องหลังล้มเหลว สต็อกที่ถูกตัดไปล่วงหน้าจะหายไปถาวร
+>     - *นิยามหนึ่งประโยค*: **Idempotency** คือคุณสมบัติที่การประมวลผลคำสั่งเดิมซ้ำหลายครั้งจะให้ผลลัพธ์เทียบเท่ากับการประมวลผลเพียงครั้งเดียว; **Compensation** คือกระบวนการชดเชยคืนสภาพทรัพยากร (เช่น คืนสต็อกใน Redis) เมื่อการทำงานในขั้นตอนถัดไปล้มเหลวโดยไม่อาจแก้ไขได้
+>     - *อุปมา (ยึดกับ FLOOR)*: Idempotency เหมือนสวิตช์เปิดไฟ กดกี่ครั้งผลลัพธ์ก็คือไฟเปิดอยู่ดี (ต่างจากสวิตช์สลับไฟที่กดซ้ำแล้วไฟจะดับ); Compensation เหมือนการจองโรงแรมแล้วหักเงินไปก่อน แต่ถ้าระบบตรวจพบว่าห้องพักเต็มจริง จะสั่งโอนเงินคืนเข้าบัญชีลูกค้าโดยอัตโนมัติ
+>     - *ในงานจริงคือตัวไหน*: Idempotency รับประกันด้วย SQL Constraint `uq_user_product_order` ในตาราง `orders` และคีย์ `bought:{productId}:{userId}` ใน Redis; ส่วน Compensation จัดการผ่าน Lua Script `src/redis/lua/compensate-once.lua` และฟังก์ชัน `compensateIfReserved()` ใน `src/orders/orders.service.ts` (ดู [`architecture.md` §6.1](architecture.md))
+>     - *กับดักของศัพท์นี้*: สั่งคืนสต็อก (Compensate) ทุกครั้งที่โค้ดเกิดข้อผิดพลาด (Catch Error) — หากข้อผิดพลาดนั้นเป็น Transient Error ชั่วคราว เช่น Deadlock `40P01` ซึ่ง Worker กำลังจะลองใหม่ (Retry) หากสั่งคืนสต็อกไปล่วงหน้า จะทำให้สต็อกใน Redis บวมเกินจริง (ดู §4.6, §7 และ §8)
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant U as user-101
-    participant A as app-1 (API)
-    participant RD as redis-data
-    participant W as Worker
-    participant P as Primary DB
-    participant RC as redis-cache
+    participant Buyer as ผู้ซื้อ (500 VUs)
+    participant API as OrdersController
+    participant Lua as redis-data (gatekeeper.lua)
+    participant Queue as BullMQ Queue
+    participant Worker as OrdersProcessor
+    participant DB as PostgreSQL Master
 
-    U->>A: POST /orders {productId} + Bearer JWT
-    Note over A: Tier 0 — verify JWT ในหน่วยความจำ<br/>userId = "user-101" จาก claim sub
-    A->>RD: EVALSHA gatekeeper.lua (atomic)
-    RD-->>A: 1 = ALLOWED (DECR แล้ว + lock ตั้งแล้ว)
-    A->>RD: queue.add(jobId="order:user-101:p-1001")
-    RD-->>A: ok
-    A-->>U: 202 { status:"processing", orderJobId, message }
+    Buyer->>API: POST /api/v1/orders { productId } + Bearer JWT
+    Note over API: Tier 0: ตรวจ JWT ใน RAM สำเร็จ
 
-    Note over U,A: ⏱️ ลูกค้าได้คำตอบแล้ว จบเรื่องฝั่ง HTTP
+    rect rgb(40, 50, 40)
+    Note over API,Lua: Tier 1: ตัดสินใจระดับไมโครวินาทีที่ Edge
+    API->>Lua: evalsha gatekeeper.lua (userId, productId, requestToken)
+    alt ของหมด (สต็อก <= 0)
+        Lua-->>API: คืนค่า -3 (Sold Out)
+        API-->>Buyer: 💥 409 Conflict (450 คนถูกเตะออกที่นี่ใน 1ms!)
+    else กดรัวซ้ำซ้อน
+        Lua-->>API: คืนค่า -2 (In-flight lock)
+        API-->>Buyer: ⚠️ 429 Too Many Requests
+    else ผ่านเกณฑ์
+        Lua-->>API: คืนค่า 1 (ตัดสต็อกใน Redis แล้ว + ตั้ง In-flight lock)
+    end
+    end
 
-    RD->>W: worker หยิบ job
-    W->>P: BEGIN
-    W->>P: UPDATE ... WHERE id=$1 AND remaining_stock > 0
-    P-->>W: affected = 1
-    W->>P: INSERT INTO orders
-    W->>P: COMMIT  ← committed = true
-    Note over W: ── side effects อยู่ "นอก" try เดิม โดยเจตนา ──
-    W->>RD: SET bought:p-1001:user-101
-    W->>RD: DEL lock:order:user-101:p-1001
-    W->>RC: invalidate catalog cache
+    rect rgb(30, 45, 60)
+    Note over API,Queue: Tier 2: ฝากงานเข้าสายพาน ตอบลูกค้ารวดเร็ว
+    API->>Queue: ordersQueue.add({ userId, productId, requestToken })
+    API-->>Buyer: 🟢 HTTP 202 Accepted (ลูกค้าได้คำตอบทันที ไม่รอ DB!)
+    end
+
+    rect rgb(60, 40, 40)
+    Note over Queue,DB: Tier 3: ทยอยลงบันทึกบัญชีถาวรใน PostgreSQL
+    Queue->>Worker: หยิบงานไปประมวลผล (concurrency: 5)
+    Worker->>DB: BEGIN Transaction
+    Worker->>DB: UPDATE products SET remaining_stock = remaining_stock - 1<br/>WHERE id = $1 AND remaining_stock > 0
+    Worker->>DB: INSERT INTO orders (user_id, product_id, status) VALUES (...)
+    Worker->>DB: COMMIT Transaction
+    end
+
+    rect rgb(30, 50, 50)
+    Note over Worker,Lua: ปลดล็อกและบันทึกสิทธิ์ถาวร
+    Worker->>Lua: SET bought:{productId}:{userId} = 1
+    Worker->>Lua: release-lock.lua (ปลด In-flight lock ปลอดภัย)
+    Worker->>Lua: invalidateCatalogCache() (Debounced ล้างแคช)
+    end
 ```
 
-### 4.4 จุดที่ต้องเข้าใจให้ขาด 3 จุด
+---
 
-#### จุดที่ 1 — `UPDATE ... WHERE remaining_stock > 0` ทำไมถึงปลอดภัย
+## 4. 🔒 เจาะลึกเทคนิค Concurrency & Locking — Optimistic vs Pessimistic vs Distributed Lock vs Row Lock
 
-```sql
-UPDATE products SET remaining_stock = remaining_stock - 1
-WHERE id = 'p-1001' AND remaining_stock > 0;
-```
+> 📚 **เชื่อมโยงวิชา Backend02 (Transactions & ACID) และ Backend03 (Database Engineering: Locking & Concurrency)**:
+> สไลด์อาจารย์สอนเทคนิคการคุม Concurrency ไว้ 2 สำนักหลัก: **Optimistic Locking** (`@VersionColumn`) และ **Pessimistic Locking** (`SELECT ... FOR UPDATE`) 
+> หัวข้อนี้จะชำแหละให้เห็นจริงว่าทำไมระบบ Flash Sale ของเราถึงไม่เลือกใช้สองตัวนี้บนเส้นทาง HTTP ปกติ!
 
-คำสั่งนี้ **เช็คและเขียนในคำสั่งเดียว** — Postgres ล็อกแถวให้ระหว่างรัน ไม่มีใครแทรกได้
+---
 
-- ถ้า `remaining_stock` เป็น 0 อยู่แล้ว → เงื่อนไข `WHERE` ไม่ตรง → **ไม่อัปเดตอะไรเลย** → `result.affected === 0`
-- ไม่มีช่องว่างระหว่าง "เช็ค" กับ "ใช้ผล" อีกต่อไป → **TOCTOU หายไป**
+### 4.1 ปูพื้นฐาน: Concurrency ใน Web Server และความวิบัติของ Race Condition
 
-เทียบกับตัวอย่างใน §1.1 ที่ `SELECT` แยกจาก `UPDATE` — **นี่คือความต่างทั้งหมด**
+หลายคนมักท่องจำว่า *"Node.js เป็น Single-threaded แปลว่ามันทำงานทีละอย่าง จึงไม่มีทางเกิด Concurrency ภายในแอปพลิเคชัน"* — **นี่คือความเข้าใจผิดที่อันตรายที่สุด!**
 
-> ⚠️ **ห้าม `SELECT` มาเช็คใน JS ก่อน** (invariant ข้อ 4) — นั่นคือการเอา TOCTOU กลับมาใส่เอง
+ความจริงคือ:
+1. **Multi-Instance ขนานกันจริง**: ระบบของเรามี Nginx กระจายโหลดไปยัง NestJS ทั้งหมด **6 instances (`app-1` ถึง `app-6`)** รันแยกโปรเซสขนานกันบน CPU จริง
+2. **Asynchronous I/O ใน Node.js เดียวกัน**: ต่อให้มีเพียง 1 instance เมื่อมีคำสั่ง I/O (`await repo.findOne()`) Node.js จะสลับให้ Event Loop ไปหยิบ HTTP request อื่นขึ้นมาทำงานสลับกัน (Interleaved Execution) ทันที คำขอซื้อ 500 รายการจึงเข้ามาปะปนกันในช่วงเวลาเสี้ยววินาที
+3. **Database รองรับ Multi-Connection**: PostgreSQL เป็น Multi-Process RDBMS ที่รองรับคำสั่ง SQL จากหลายสิบ Connection พร้อมๆ กัน
 
-#### จุดที่ 2 — `jobId` เป็นสูตรตายตัว
+เมื่อคำขอ 500 รายการยิงเข้ามาอ่านยอดสต็อก 50 ในเวลาเดียวกัน ข้อมูลที่อ่านไปจะเก่าทันที และหากเขียนทับลงไปตรงๆ สต็อกจะพังพินาศจากปรากฏการณ์ **Lost Update** และ **TOCTOU** ตามที่พิสูจน์ใน §1.1
 
-```
-jobId = order:{userId}:{productId}      เช่น  order:user-101:p-1001
-```
+---
 
-BullMQ **ปฏิเสธ job ที่ id ซ้ำโดยอัตโนมัติ** เพราะฉะนั้นต่อให้ user-101 กดรัว 3 ครั้ง (ซึ่ง k6 ทำจริง — `iterations: 3`) แล้วหลุด Redis lock มาได้ ก็ยังมี BullMQ เป็นด่านที่สองปฏิเสธให้อยู่ดี
+### 4.2 🛡️ เทคนิคที่ 1: Optimistic Locking (`@VersionColumn`) — ดาบชั้นดีในงาน CRUD ที่หักสะบั้นใน Flash Sale
 
-#### จุดที่ 3 — `committed` flag กับ side effect หลัง commit ⚠️
-
-จุดนี้ [`architecture.md`](architecture.md) ย้ำ 2 รอบ และเป็นบั๊กที่หายากที่สุด
+#### 1. กลไกการทำงาน (Mechanism)
+แนวคิดของ Optimistic Locking คือ *"เชื่อว่าโอกาสที่คำขอจะชนกันมีน้อยมาก ดังนั้นไม่ต้องไปเสียเวลาล็อกแถวในฐานข้อมูลให้คนอื่นต้องรอ"*
+- อาศัยการเพิ่มคอลัมน์ `version` เข้าไปในตาราง
+- ตอนอัปเดต จะส่งคำสั่ง SQL:
+  ```sql
+  UPDATE products 
+  SET remaining_stock = remaining_stock - 1, version = version + 1 
+  WHERE id = :id AND version = :expectedVersion;
+  ```
+- ถ้ามีคนอื่นชิงอัปเดตไปก่อน `version` จะขยับหนีไปแล้ว ทำให้ `affected rows = 0` และ TypeORM จะโยน `OptimisticLockVersionMismatchError`
 
 ```typescript
-    await queryRunner.commitTransaction();
-    committed = true;              // ◄── หมุดชี้ขาดของทุก branch ข้างล่าง
-  } catch (err) {
-    if (!committed) await queryRunner.rollbackTransaction();
-    // ...
-    // คืนสต็อกเฉพาะ attempt สุดท้าย และ **ไม่คืน** ตอน sold-out (ดูสเปก §6.3)
-    if (isFinalAttempt) {
-      await this.redis.compensateOnce(job.id, userId, productId, requestToken);
-    }
-  }
-
-  // ── ออกมา "นอก" try เดิม โดยเจตนา ──
-  try {
-    await this.redis.markBought(productId, userId);
-    await this.redis.releaseInFlightLock(userId, productId, requestToken);
-    await this.redis.invalidateCatalogCache();
-  } catch (e) {
-    this.logger.error({ ... });   // กลืน error ทิ้ง — order สำเร็จไปแล้วจริง
-  }
+// โค้ดตัวอย่างที่ใช้ Optimistic Lock ใน TypeORM
+@Entity('products')
+export class Product {
+  @PrimaryColumn() id: string;
+  @Column() remainingStock: number;
+  @VersionColumn() version: number; // 👈 TypeORM เช็คเวอร์ชันให้อัตโนมัติ
+}
 ```
 
-**ถ้าเอา `markBought` ไปไว้ใน try เดิม จะพังแบบนี้:**
+#### 2. ทำไมคนถึงชอบใช้ในงาน Normal CRUD?
+- **Zero Lock Overhead**: ไม่มีการค้าง Connection หรือค้าง Lock ไว้ในฐานข้อมูลเลย คนอื่นยังอ่านข้อมูลได้ตลอดเวลา
+- **เหมาะมากกับ Human Workflow**: เช่น ระบบ CMS หรือแก้ไขข้อมูลลูกค้า ที่แอดมินเปิดหน้าจอค้างไว้ 10 นาทีเพื่อพิมพ์ฟอร์ม ใครกดบันทึกทีหลังจะได้รับการเตือนว่าข้อมูลถูกแก้ไปแล้ว โดยไม่ต้องล็อกตารางค้างไว้ 10 นาที
+
+#### 3. 💥 ทำไม Optimistic Locking ถึงล้มเหลวอย่างย่อยยับใน Flash Sale?
+
+ลองดูคณิตศาสตร์แห่งความพินาศเมื่อ 500 VUs แย่งของ 50 ชิ้น:
+1. วินาทีที่ 0.000: สินค้าอยู่ที่ `version = 1`
+2. คำขอซื้อ 500 คำขอ วิ่งเข้ามาถึง NestJS พร้อมกัน และอ่านค่าได้ `version = 1` ออกมาเหมือนกันหมดทั้ง 500 คำขอ!
+3. ทั้ง 500 คำขอ พยายามยิงคำสั่ง `UPDATE ... WHERE version = 1`
+4. **ผลลัพธ์**: 
+   - มีเพียง **1 คำขอแรกสุดเท่านั้น** ที่ UPDATE สำเร็จ (`version` กลายเป็น 2)
+   - อีก **499 คำขอที่เหลือ ล้มเหลวทันที (`affected = 0`)** และโยน Version Mismatch Error!
+5. **วิกฤต Retry Storm**: หากระบบเขียนโค้ดให้ลองใหม่อัตโนมัติ (Retry):
+   - ทั้ง 499 คำขอจะวนกลับมายิง SELECT เวอร์ชัน 2 ใหม่ แล้วแย่งกัน UPDATE รอบที่สอง
+   - รอบที่สอง: สำเร็จ 1 คำขอ, ล้มเหลว 498 คำขอ!
+   - จำนวน Query จะระเบิดขึ้นเป็น: $500 + 499 + 498 + \dots \approx 125,000\text{ queries}$!
+   - ภายใน 2 วินาที CPU ของ PostgreSQL จะพุ่งแตะ 100%, Connection Pool เต็ม และคำขอ 90% จบลงด้วย Timeout!
+
+> 🛑 **บทสรุป**: Optimistic Locking เหมาะสำหรับ **Low Contention** เท่านั้น ห้ามนำมาใช้กับเหตุการณ์ **High Contention** อย่าง Flash Sale เด็ดขาด
+
+---
+
+### 4.3 🔒 เทคนิคที่ 2: Pessimistic Locking (`SELECT ... FOR UPDATE`) — ถูกต้อง 100% แต่ทำลายระบบบน Synchronous HTTP
+
+#### 1. กลไกการทำงาน (Mechanism)
+แนวคิดคือ *"เชื่อว่าชนกันแน่นอน ดังนั้นใครจะแตะต้องแถวนี้ ต้องล็อกกุญแจไว้ก่อน ห้ามใครเข้ามายุ่งจนกว่าฉันจะเสร็จ"*:
+- ใช้คำสั่ง `SELECT * FROM products WHERE id = $1 FOR UPDATE;`
+- PostgreSQL จะทำการครอบ **Exclusive Row Lock** บนแถวนั้น
+- คำขออื่นที่พยายามจะ UPDATE หรือขอ FOR UPDATE บนแถวเดียวกัน จะต้อง **หยุดรอเข้าแถว (Block & Wait)** จนกว่าคนแรกจะ COMMIT
+
+> 📖 **PostgreSQL Lock Fact**: ตามหลัก MVCC ของ PostgreSQL คำสั่ง `SELECT ... FOR UPDATE` **ไม่บล็อก Plain SELECT ธรรมดา** คนที่เข้ามาเปิดดูสินค้าทั่วไป (`GET /products`) ยังคงอ่านข้อมูลได้ตามปกติ แต่จะบล็อกเฉพาะคนที่ต้องการแก้ไขหรือขอ Lock เหมือนกัน
+
+#### 2. โค้ดตัวอย่าง TypeORM กับ QueryRunner
+```typescript
+await queryRunner.startTransaction();
+const product = await queryRunner.manager.findOne(Product, {
+  where: { id: productId },
+  lock: { mode: 'pessimistic_write' }, // 👈 ส่ง SQL: SELECT ... FOR UPDATE
+});
+product.remainingStock -= 1;
+await queryRunner.manager.save(product);
+await queryRunner.commitTransaction(); // 👈 ปลดล็อกแถวให้คนถัดไป
+```
+
+#### 3. 💥 ทำไมถึง "ทำให้ระบบพิการ" เมื่ออยู่บน Synchronous HTTP Path?
+ในเมื่อมันรับประกันความถูกต้อง 100% ทำไมเราถึงไม่ใช้บน Controller?
+คำตอบคือ **Connection Pool Starvation (วิกฤติตาน้ำฐานข้อมูลแห้งผาก)**:
+1. ระบบของเรามี 6 instances กำหนดขนาด Pool ไว้ที่ instance ละ 8 connections → **ทั้งระบบมี Connection รวมกันเพียง 48 connections**!
+2. เมื่อ 500 คำขอพุ่งเข้ามาพร้อมกัน:
+   - 48 คำขอแรก ได้ Connection ไปครอง และเริ่มเปิด Transaction
+   - อีก 452 คำขอที่เหลือ **ต้องเข้าคิวรอ Connection ว่างอยู่ในหน่วยความจำ**
+3. ในบรรดา 48 รายการที่ได้ Connection ไป:
+   - มีเพียง **1 Transaction เดียว** ที่ได้ถือ Row Lock บนสินค้า `p-1001`
+   - อีก **47 Transactions ถือ Connection ค้างไว้ แต่ทำอะไรไม่ได้เลย เพราะยืนรอคิว Row Lock เดียวกันนั้น!**
+4. **ความพินาศลามทั้งระบบ**:
+   - Connection ทั้ง 48 ตัวถูกจองค้างไว้หมด
+   - คำขออ่านรายการสินค้าทั่วไป (`GET /api/v1/products`) และแม้แต่ Healthcheck (`GET /health`) ไม่สามารถหา Connection ว่างได้
+   - Latency พุ่งทะลุ 10–15 วินาที จน Nginx ตัดการเชื่อมต่อกลายเป็น **504 Gateway Timeout** ทั้งระบบ!
+
+---
+
+### 4.4 🔑 เทคนิคที่ 3: Distributed Mutex Lock ใน Redis (`SET NX PX`)
+
+- **กลไก**: ใช้คำสั่ง `SET lock:key token NX PX 30000` บน Redis เพื่อสร้างป้ายจองสิทธิ์ใน RAM
+- **กับดักของการปลดล็อก**: ห้ามใช้ `DEL lock:key` ตรงๆ เพราะถ้าคำขอแรกทำงานช้าจน Lock หมดอายุ คำขอที่สองจะได้ Lock ไป แล้วคำขอแรกกลับมาสั่ง DEL จะกลายเป็นการ **ลบล็อกของคำขอที่สองทิ้ง**!
+  ระบบเราจึงใช้ Lua script (`release-lock.lua`) เพื่อทำ **Compare-and-Delete** (ตรวจว่า token ตรงกับผู้ถือครองเดิมหรือไม่ก่อนลบ)
+- **การนำไปใช้จริงในระบบนี้**: 
+  - ❌ **ไม่ใช้เป็น Global Product Lock**: เพราะจะทำให้ Redis กลายเป็นคอขวดที่ต้องคอยตอบ poll ซ้ำๆ
+  - ✅ **ใช้เป็น In-Flight Per-User Lock**: ตั้งคีย์ `lock:order:{userId}:{productId}` เพื่อดักจับลูกค้าที่มือลั่นกดเบิ้ล 2 ครั้งติดกัน และตอบกลับด้วย **`429 Too Many Requests` ในเวลา ~1ms**
+
+---
+
+### 4.5 🏆 ยุทธศาสตร์ที่เลือกใช้จริง: สถาปัตยกรรมป้องกัน 4 ชั้น (4-Tier Defense Architecture)
+
+> 📌 **"Tier 1–2 คือ Performance (ทำให้เร็ว) · Tier 3–4 คือ Correctness (ทำให้ถูก)"**
+
+1. **Tier 1: Redis Lua Gatekeeper (`gatekeeper.lua`) — Edge Defense**
+   - รันใน RAM แบบ Single-threaded Atomic: ตรวจสิทธิ์ซื้อซ้ำ, ตรวจ In-flight lock, และลดสต็อกด้วย `DECR`
+   - **450 คนที่มาตอนของหมด จะโดนเตะออกที่นี่ทันที ตอบ 409 ภายใน ~1ms โดยไม่ต้องแตะ Database แม้แต่ตัวเดียว!**
+2. **Tier 2: BullMQ Queue — Traffic Shaping & Decoupling**
+   - นำ 50 คนที่ผ่านด่าน 1 เข้าคิว และ **ตอบกลับ HTTP 202 Accepted ทันที** ลูกค้าไม่ต้องรอเขียนดิสก์
+3. **Tier 3: PostgreSQL Atomic Decrement — The Ultimate Row Lock**
+   - Background Worker ดึงงานมารันคำสั่ง SQL Atomic บรรทัดเดียว:
+     ```sql
+     UPDATE products SET remaining_stock = remaining_stock - 1 
+     WHERE id = $1 AND remaining_stock > 0;
+     ```
+   - ไม่ใช้ `SELECT` นำหน้า จึงไม่มีช่องว่าง TOCTOU
+   - PostgreSQL จะครอบ Row Exclusive Lock (`FOR NO KEY UPDATE`) บนแถวนั้นเพียงเสี้ยววินาทีของการรัน SQL Statement แล้วปล่อยทันที
+4. **Tier 4: Database Constraints — Mathematical Guarantee**
+   - `CONSTRAINT chk_positive_stock CHECK (remaining_stock >= 0)` (การันตีสต็อกไม่ติดลบ)
+   - `CONSTRAINT uq_user_product_order UNIQUE (user_id, product_id)` (การันตี 1 คนได้ 1 ชิ้น)
+   - ต่อให้โค้ดมีบั๊ก หรือ Redis พัง ฐานข้อมูลจะไม่มีวันยอมให้ข้อมูลผิดเพี้ยนเด็ดขาด
+
+---
+
+### 4.6 🔄 ภาวะ Deadlock (`40P01`) และกฎการจัดลำดับ Lock (Lock Ordering Discipline)
+
+#### 1. Deadlock และ Circular Wait
+เกิดเมื่อ Transaction 2 ตัวต่างถือของที่อีกฝ่ายต้องการและรอคอยซึ่งกันและกัน จน PostgreSQL ต้องตัดวงจรด้วยการฆ่าทิ้ง 1 ตัวพร้อมโยน Error: **`40P01` (deadlock_detected)**
+
+#### 2. กับดัก Deadlock จาก Foreign Key ที่ซ่อนอยู่
+ในระบบเรา `orders.product_id` ชี้ไปยัง `products.id`
+- ถ้าโค้ดเผลอรัน `INSERT INTO orders` ก่อน: PostgreSQL จะแอบครอบล็อกแบบ **`KEY SHARE`** บนตาราง `products` เพื่อตรวจ Foreign Key
+- จากนั้นพอสั่ง `UPDATE products`: จะขอเปลี่ยนเป็นล็อกแบบ **`FOR NO KEY UPDATE`**
+- ถ้ามี 2 Workers ทำสลับกันในจังหวะนี้ จะเกิด Deadlock ชนกันเองทันที!
+
+#### 3. กฎการจัดลำดับ Lock (Lock Ordering Discipline)
+ระบบของเราจึงวางกฎเหล็กอย่างเข้มงวด:
+> ⚖️ **"ต้องสั่ง UPDATE products ก่อนเสมอ แล้วจึงค่อยสั่ง INSERT INTO orders"**
+
+เพราะเมื่อ Worker รัน `UPDATE products` ก่อน มันจะได้ถือ `FOR NO KEY UPDATE` ไปครอง เมื่อทำ `INSERT INTO orders` ทีหลัง ล็อกแบบ `KEY SHARE` ของ Foreign Key จะเข้ากันได้พอดี ไม่เกิดการแย่งล็อกข้ามตาราง และหากเกิดเหตุสุดวิสัยเจอ `40P01` Worker จะทำการ **Retry ด้วย Exponential Backoff + Jitter** โดยจะชดเชยคืนสต็อก (`compensateOnce`) เฉพาะเมื่อล้มเหลวใน Final Attempt เท่านั้น
+
+---
+
+## 5. ⚡ เจาะลึกเทคนิค Caching & Cache Invalidation — Cache-Aside, Stampede, Avalanche, Single-Flight Memo
+
+> 📚 **เชื่อมโยงวิชา Backend04 (Redis: Caching & Atomic Operations)**:
+> การแคชข้อมูลเป็นเรื่องจำเป็นอย่างยิ่งในการรองรับ 1,000 Read VUs แต่การแคชที่ไม่เข้าใจกลไกจะนำไปสู่หายนะที่ร้ายแรงยิ่งกว่าการไม่แคช!
+
+---
+
+### 5.1 ปูพื้นฐานความเร็ว: Latency Hierarchy
+
+ลองดูตารางเปรียบเทียบความเร็วของฮาร์ดแวร์คอมพิวเตอร์ หากเปรียบ 1 CPU Cycle (0.5 ns) เท่ากับเวลา 1 วินาทีในชีวิตมนุษย์ (อ้างอิง: สถิติ Latency Numbers Every Programmer Should Know โดย Peter Norvig และบทเรียนวิชา `Backend04 - Redis.pdf` §1.2):
+
+| อุปกรณ์ | เวลาจริงในระบบ | เวลาเปรียบเทียบมนุษย์ | อุปมาในชีวิตจริง |
+| :--- | :---: | :---: | :--- |
+| **CPU L1 Cache** | 0.5 ns | 1 วินาที | ก้มมองกระดาษโน้ตบนโต๊ะทำงาน |
+| **RAM (Redis)** | 100 ns | **~3 นาที** | ลุกเดินไปหยิบแฟ้มเอกสารที่ตู้หนังสือท้ายห้อง |
+| **NVMe SSD (Disk I/O)** | 50 µs | **~19 วัน** | ขับรถไปค้นเอกสารที่คลังเก็บของต่างจังหวัด |
+| **PostgreSQL Query** | 5 ms | **~5 เดือน** | ทำเรื่องเบิกเอกสารข้ามกระทรวง รอนายอำเภอเซ็น |
+| **Internet Roundtrip** | 50 ms | **~4 ปี** | ส่งเรือสำเภาข้ามมหาสมุทรไปกลับเพื่อส่งจดหมาย |
+
+> 💡 **สรุป**: การอ่านข้อมูลจาก **RAM (Redis)** เร็วกว่าการอ่านจาก **Disk (PostgreSQL)** ราวๆ **10,000 ถึง 50,000 เท่า!** การพึ่งพา Redis จึงเป็นทางรอดเดียวของ 1,000 Read VUs
+
+---
+
+### 5.2 วิเคราะห์ Caching Patterns 3 รูปแบบ
 
 ```mermaid
 flowchart TD
-    A["commitTransaction() ✅<br/>DB ตัดสต็อกจริงแล้ว<br/>มี order จริงแล้ว"] --> B["redis.markBought()<br/>❌ Redis สะดุด 1 วินาที"]
-    B --> C{"อยู่ใน try เดียวกับ tx ไหม?"}
-    C -->|"❌ อยู่ข้างใน"| D["กระโดดเข้า catch<br/>→ compensateOnce()<br/>→ INCR stock กลับ"]
-    C -->|"✅ อยู่ข้างนอก"| E["แค่ log แล้วปล่อย<br/>lock มี TTL เก็บกวาดเอง"]
-    D --> F["💥 Redis: stock = 1<br/>แต่ DB: remaining_stock = 0<br/>→ มีคนได้สิทธิ์เพิ่มโดยไม่มีของ<br/>→ OVERSELL"]
-    E --> G["✅ order สำเร็จ จบ"]
+    subgraph P1["1. Cache-Aside (Lazy Loading)"]
+        direction TB
+        A1["Client"] -->|1. อ่านแคช| C1[("Redis Cache")]
+        C1 -.->|2. Miss| D1["App"]
+        D1 -->|3. อ่าน DB| B1[("PostgreSQL")]
+        D1 -->|4. เติมแคช| C1
+    end
 
-    style D fill:#5a1e1e,color:#fff
-    style F fill:#5a1e1e,color:#fff
-    style E fill:#1e4620,color:#fff
-    style G fill:#1e4620,color:#fff
+    subgraph P2["2. Write-Through"]
+        direction TB
+        A2["Client"] -->|1. เขียน| D2["App"]
+        D2 -->|2. เขียนพร้อมกัน| C2[("Redis Cache")]
+        D2 -->|2. เขียนพร้อมกัน| B2[("PostgreSQL")]
+    end
+
+    subgraph P3["3. Write-Behind (Write-Back)"]
+        direction TB
+        A3["Client"] -->|1. เขียน| C3[("Redis Cache")]
+        C3 -.->|2. Async Flush ภายหลัง| B3[("PostgreSQL")]
+    end
 ```
 
-**หลักการ**: หลัง `commit` สำเร็จ ออเดอร์ถือว่าจบแล้ว งานที่เหลือล้มก็แค่ log แล้วปล่อย
+> 📖 **กล่องสอนศัพท์ประจำ §5.2 (เปรียบเทียบกลยุทธ์ Caching สำหรับ Write Path)**
+> 
+> 18. **Write-Through & Write-Behind**
+>     - *ปัญหาเดิม*: Cache-Aside มีไว้สำหรับงานอ่าน แต่สำหรับงานเขียน ถ้าต้องการให้แคชและฐานข้อมูลสอดคล้องกันตลอดเวลา จำเป็นต้องมีกลยุทธ์ว่าจังหวะการเขียนลงแคชกับเขียนลงฐานข้อมูลควรทำอย่างไร
+>     - *นิยามหนึ่งประโยค*: **Write-Through** คือการเขียนข้อมูลลงแคชและฐานข้อมูลพร้อมกันในจังหวะเดียว; **Write-Behind (Write-Back)** คือการเขียนลงแคชในหน่วยความจำทันทีก่อน แล้วค่อยนำข้อมูลในแคชไปทยอยเขียนลงฐานข้อมูลเบื้องหลังในภายหลัง
+>     - *อุปมา (ยึดกับ FLOOR)*: Write-Through เหมือนการจดบันทึกใส่สมุดฉบับร่างพร้อมกับพิมพ์ลงโปรแกรมคอมพิวเตอร์ไปพร้อมกันทีละประโยค; Write-Behind เหมือนการจดใส่สมุดร่างอย่างรวดเร็วก่อน แล้วตอนสิ้นวันค่อยเอาสมุดร่างมาพิมพ์ลงคอมพิวเตอร์รวดเดียว
+>     - *ในงานจริงคือตัวไหน*: ระบบ Flash Sale ของเรา **ปฏิเสธทั้งคู่สำหรับสต็อก** (ดูเหตุผลด้านล่าง และ [`architecture.md` §5.5](architecture.md)) แต่ใช้หลักการ Write-Behind เฉพาะกับระบบเก็บสถิติใน `src/observability/metrics.service.ts` (นับใน RAM แล้ว flush ลง Redis ทุก 1 วินาที)
+>     - *กับดักของศัพท์นี้*: ใช้ Write-Behind กับข้อมูลการเงินหรือสต็อกสินค้า Flash Sale เพราะหากเครื่องเซิร์ฟเวอร์ไฟดับหรือโปรเซสดับกะทันหัน ข้อมูลที่รอเขียนลงฐานข้อมูลจะสูญหายทันที
 
-### 4.5 ตารางแมป: สถานการณ์ → status code
-
-จาก [`CLAUDE.md` §3](../../CLAUDE.md) — **ห้ามเปลี่ยนเด็ดขาด** เพราะกลุ่มอื่นเอา k6 มายิงระบบเรา
-
-| สถานการณ์ | Status | เกิดที่ | ทำไมต้องเป็นค่านี้ |
-| :--- | :---: | :--- | :--- |
-| เข้าคิวสำเร็จ | **202** | Tier 2 | ยังไม่เสร็จจริง แค่รับเรื่อง |
-| ไม่มี/ผิด JWT | 401 | Tier 0 | |
-| เคยซื้อแล้ว | 409 | Lua `-1` | ขัดกับสถานะปัจจุบัน |
-| ของหมด | 409 | Lua `-3` | ขัดกับสถานะปัจจุบัน |
-| กดรัวขณะมี order ค้าง | **429** | Lua `-2` | **พฤติกรรมที่ถูกต้อง ไม่ใช่ error** |
-| stock ยังไม่ seed | **503** | Lua `-4` | ระบบผิดปกติ ≠ ของหมด |
-
-> ⚠️ ตอนตั้ง threshold ใน k6 **ห้ามนับ 409/429 เป็น error**
-> มันคือหลักฐานว่าระบบป้องกันทำงาน — ถ้านับเป็น error จะเห็น error rate ~90% แล้วนึกว่าระบบพัง ทั้งที่มันทำงานถูกเป๊ะ
+1. **Cache-Aside (Lazy Loading) — ✅ ทางเลือกของเราสำหรับ Catalog Metadata**:
+   - อ่านแคชก่อน ถ้าไม่เจอ (Miss) ค่อยไปอ่าน DB แล้วเขียนใส่แคช (ตาม [`architecture.md` §5.1](architecture.md))
+   - **ข้อดี**: ประหยัด RAM (แคชเฉพาะหน้าที่คนเปิดดู), ถ้า Redis ล่ม แอปยัง Fallback อ่าน DB ตรงๆ ได้
+2. **Write-Through — ❌ ไม่ใช้ในระบบนี้**:
+   - เขียน DB และเขียนแคชพร้อมกันทุกครั้งที่ข้อมูลเปลี่ยน
+   - **เหตุผลที่ไม่ใช้**: ในช่วง Flash Sale มีคนซื้อ 500 VUs การสั่งอัปเดตแคชหน้า Catalog ทุกหน้าที่เกี่ยวข้องจะถ่วง Write Path ให้ช้าลงอย่างมาก
+3. **Write-Behind (Write-Back) — ❌ ห้ามใช้กับสต็อกและเงินเด็ดขาด**:
+   - เขียนลงแคชอย่างเดียว แล้วค่อยตั้งเวลาทยอยเขียนลง DB ภายหลัง
+   - **เหตุผลที่ปฏิเสธ**: หากเซิร์ฟเวอร์ไฟดับหรือ Redis Crash ข้อมูลคำสั่งซื้อและเงินของลูกค้าที่ค้างอยู่ใน RAM จะ **สูญหายถาวรทันที**!
 
 ---
 
-## 5. ⭐ ทำไมต้อง 4 ด่าน ด่านเดียวไม่พอเหรอ
+### 5.3 หัวใจของสถาปัตยกรรม: Stock Overlay Pattern
 
-คำถามที่ถูกต้อง เพราะจริงๆ แล้ว **Tier 3 + Tier 4 อย่างเดียวก็ป้องกัน oversell ได้ครบแล้ว**
+#### หายนะของการแคชทั้งก้อน (Monolithic Caching Disaster)
+ถ้าเราแคชข้อมูลสินค้าทั้งก้อนรวม `remainingStock` ไว้ด้วยกัน แล้วกำหนดว่า *"เมื่อมีคนซื้อ ให้ลบแคชทิ้งเพื่อความสดใหม่"*:
+- มีคนซื้อของ 50 ชิ้นสำเร็จภายในเวลา 300 มิลลิวินาที
+- แคชจะถูกสั่งลบทิ้งติดต่อกันถึง **50 ครั้งใน 0.3 วินาที!**
+- ในจังหวะนั้น คนดูสินค้า 1,000 คนที่กำลังยิงเข้ามาจะเจอ Cache Miss ติดกัน 50 รอบรวด
+- เกิดปรากฏการณ์ **Thundering Herd / Cache Stampede** คน 1,000 คนจะรุมยิง SQL ถล่ม PostgreSQL รวมกันถึง $1,000 \times 50 = 50,000$ คำขอในเสี้ยววินาที จน Database Crash ทันที!
 
-| ด่าน | ป้องกันอะไร | ถ้าตัดด่านนี้ทิ้ง จะเกิดอะไร |
+#### ทางแก้: แยกข้อมูลนิ่ง ออกจากข้อมูลวิ่ง (Dual-Redis Architecture)
+ระบบของเราจึงแบ่ง Redis ออกเป็น 2 โลกชัดเจน (ดู [`architecture.md` §5.1](architecture.md)):
+- **`redis-cache` (Port 6379)**: ตั้งค่านโยบาย `allkeys-lru` เก็บเฉพาะ Metadata (ชื่อ, รูป, ราคา) ของหน้าสินค้า มี TTL 30–60 วินาที **เมื่อมีคนซื้อ ไม่ต้องแตะต้องแคชก้อนนี้เลย!**
+- **`redis-data` (Port 6380)**: ตั้งค่านโยบาย `noeviction` เก็บตัวเลขนับสต็อกโดดๆ แบบ Real-time
+- **Stock Overlay**: เมื่อมีคำขอ `GET /products` เข้ามา แอปพลิเคชันจะดึง Metadata จาก `redis-cache` แล้วดึงสต็อกสดผ่านคำสั่ง `MGET` จาก `redis-data` เพียง 1 Roundtrip แล้วนำมาประกบร่างกันในหน่วยความจำ RAM ของ NestJS ก่อนตอบกลับลูกค้า ทำให้สต็อกสดใหม่เสมอ แต่แคชไม่เคยแตก!
+
+---
+
+### 5.4 กลยุทธ์ Cache Invalidation & การป้องกันระบบล่ม
+
+1. **ลำดับการ Invalidate ที่ถูกต้อง**:
+   - ต้องทำ **UPDATE DB ให้เสร็จก่อน แล้วค่อย DEL Cache** (ห้าม DEL ก่อน เพราะถ้ามีคนอ่านแทรกกลางจังหวะนั้น จะดึงค่าเก่าจาก DB ไปใส่แคชคืน ทำให้แคชค้างค่าเก่าถาวร ตาม [`architecture.md` §5.4](architecture.md))
+2. **❌ ข้อห้ามระดับสากล: ห้ามใช้ `KEYS pattern` เด็ดขาด**:
+   - คำสั่ง `KEYS` ใน Redis ทำงานแบบ $O(N)$ และ Redis เป็น Single-threaded คำสั่งนี้จะล็อกการทำงานของ Redis ทั้งเซิร์ฟเวอร์จนระบบหยุดตอบสนอง
+   - ระบบเราใช้ **Catalog Index Set** (`catalog:index`) เพื่อจดจำรายชื่อคีย์แคชไว้ใน Set ทำให้ตอนล้างแคชสามารถสั่งลบตรงๆ ได้ทันทีโดยไม่ต้องสแกนหา (ตาม [`architecture.md` §5.4](architecture.md))
+3. **Debounced / Throttled Invalidation**:
+   - เมื่อสินค้าหมดและต้องล้างแคช Metadata เพื่อปิดปุ่มซื้อ ระบบมีการครอบ **Distributed Throttle ไม่เกิน 1 ครั้งต่อวินาที** (`CATALOG_FLUSH_MIN_INTERVAL_MS = 1000` ตามที่กำหนดใน [`architecture.md` §5.4](architecture.md) และ `src/products/products.service.ts`) ป้องกันการล้างแคชซ้ำซ้อนในจังหวะ Write Burst
+4. **การป้องกัน Cache Stampede ด้วย Single-Flight Promise Memoization**:
+   - เมื่อแคชหมดอายุและมีคนอ่าน 1,000 คนเข้ามาพร้อมกัน ในระดับ Process ของ NestJS จะมีตัวแปร `flightMap = new Map<string, Promise>()` ใน `src/products/products.service.ts`
+   - คำขอแรกจะเป็นผู้ยิง Query เข้า DB ส่วนอีก 999 คำขอที่เหลือจะ **เกาะรอผลลัพธ์จาก Promise ตัวเดียวกันใน RAM**
+   - **ลดโหลดลง Database จาก 1,000 queries เหลือเพียง 1 query ต่อ Instance** (ดู [`architecture.md` §5.5](architecture.md)) โดยไม่ละเมิดกฎ Stateless เพราะ Promise จะถูกลบทิ้งทันทีในบล็อก `finally` เมื่องานเสร็จสิ้น
+5. **การป้องกัน Cache Avalanche ด้วย TTL Jitter**:
+   - หากแคชทุกหน้าถูกสร้างพร้อมกันด้วย TTL 60s เท่ากันทั้งหมด เมื่อครบ 60s แคชทุกหน้าจะดับลงพร้อมกันทำให้ DB รับโหลดกะทันหัน
+   - ระบบเราใช้สูตร: `const ttl = 30 + Math.floor(Math.random() * 30)` วินาที (ตาม [`architecture.md` §5.3](architecture.md) และ `src/products/products.service.ts:109`) ทำให้เวลาหมดอายุกระจายตัวสม่ำเสมอตลอดช่วง 30–60 วินาที
+
+---
+
+## 6. ⭐ ทำไมต้อง 4 ด่าน ด่านเดียวไม่พอเหรอ
+
+คำถามที่ถูกต้อง เพราะจริงๆ แล้ว **Tier 3 (Atomic SQL) + Tier 4 (DB Constraints) อย่างเดียวก็ป้องกัน oversell ได้ครบแล้ว**
+
+| ด่าน | ป้องกันอะไร | ถ้าตัดด่านนี้ทิ้ง จะเกิดอะไรขึ้น |
 | :--- | :--- | :--- |
-| Tier 0 — JWT | สวมสิทธิ์ | 1 คนกวาดของ 50 ชิ้นได้ |
-| **Tier 1 — Redis Lua** | **ภาระของ DB** | ยังไม่ oversell แต่ 500 requests วิ่งถึง DB ทั้งที่ 450 อันจะโดนปฏิเสธอยู่แล้ว → connection pool เต็ม, p95 พุ่ง |
-| **Tier 2 — BullMQ** | **เวลาตอบ HTTP** | ยังถูกต้อง แต่ลูกค้าต้องรอ DB เขียนเสร็จ → ผิด invariant ข้อ 1 และตอบ 202 ไม่ได้ |
-| **Tier 3 — Atomic SQL** | **oversell จริงๆ** | ❌ **oversell ทันที** |
-| **Tier 4 — Constraints** | **ความผิดพลาดของโค้ดเอง** | ถ้าโค้ดมีบั๊ก ไม่มีอะไรจับได้ ข้อมูลเสียถาวร |
+| **Tier 0 — JWT** | สวมสิทธิ์ / บัญชีผี | ผู้ใช้คนเดียวกวาดซื้อของไปคนเดียวทั้ง 50 ชิ้น |
+| **Tier 1 — Redis Lua Gatekeeper** | **ภาระของ Database** | ยังไม่ oversell แต่คำขอ 500 รายการจะวิ่งถึง DB ทั้งที่ 450 อันจะโดนปฏิเสธอยู่แล้ว → Connection Pool เต็ม, p95 พุ่งกระฉูด |
+| **Tier 2 — BullMQ Queue** | **เวลาตอบกลับ HTTP** | ยังถูกต้อง แต่ลูกค้าต้องรอให้ Disk ของ DB เขียนเสร็จถึงจะได้คำตอบ → ตอบ 202 ไม่ได้ และ Latency แย่ลง |
+| **Tier 3 — PostgreSQL Atomic Decrement** | **การขายของเกิน (Oversell)** | ❌ **Oversell ทันที** เพราะไม่มีการหักสต็อกแบบ Atomic ในระดับฐานข้อมูล |
+| **Tier 4 — Database Constraints** | **ความผิดพลาดของโค้ดเอง** | ถ้าวันหนึ่งโปรแกรมเมอร์เขียนโค้ดบั๊กหลุดเข้ามา จะไม่มีปราการด่านสุดท้ายคอยกัก ข้อมูลจะพังอย่างเงียบๆ |
 
-> ### 📌 สรุปเป็นประโยคเดียว (เอาไปใส่รายงานได้เลย)
-> **Tier 1–2 คือ *performance* (ทำให้เร็ว) · Tier 3–4 คือ *correctness* (ทำให้ถูก)**
-> ทุกอย่างข้างบนคือความพยายาม *ไม่ให้ traffic ไปถึง Tier 4* — ส่วน Tier 4 คือสิ่งที่รับประกันว่าต่อให้ทุกอย่างข้างบนพัง ข้อมูลก็ยังถูก
-
-Tier 4 พิเศษตรงที่มัน **ไม่พึ่งความถูกต้องของโค้ดเราเลย** — ต่อให้ Redis ล่ม, worker มีบั๊ก, หรือมีใครเปิด pgAdmin มา `INSERT` มือ ฐานข้อมูลก็ยังปฏิเสธ
+> ### 📌 สรุปเป็นประโยคเดียว (สำหรับใส่ในรายงาน)
+> **"Tier 1–2 คือ *performance* (ทำให้เร็ว) · Tier 3–4 คือ *correctness* (ทำให้ถูก)"**
+> ด่าน 1 และ 2 มีไว้เพื่อไม่ให้ Traffic ส่วนเกินหลุดไปถึง Database ส่วนด่าน 4 คือสิ่งที่รับประกันว่าต่อให้ทุกอย่างข้างบนพัง ข้อมูลก็ยังคงถูกต้องตามหลักคณิตศาสตร์เสมอ
 
 ---
 
-## 6. ⭐ ชีวิตของ order 1 ใบ (State Machine)
+## 7. 🔄 ชีวิตของ order 1 ใบ (State Machine)
 
 ```mermaid
 stateDiagram-v2
-    state "รับ request" as Received
-    state "จองสิทธิ์แล้ว ⚠️" as Reserved
-    state "อยู่ในคิว" as Queued
-    state "กำลังประมวลผล" as Processing
-    state "ยืนยันแล้ว ✅" as Confirmed
-    state "คืนสิทธิ์ (compensate)" as Compensated
-    state "ของหมดที่ DB" as SoldOutDB
-    state "ล้มชั่วคราว" as TransientFail
-    state "401 / 409 / 429 / 503" as Rejected
-
-    [*] --> Received: POST /orders + Bearer JWT
-
-    Received --> Rejected: Tier 0 ไม่ผ่าน = 401
-    Received --> Rejected: Lua -4 ยังไม่ seed = 503
-    Received --> Rejected: Lua -1 เคยซื้อ / -3 ของหมด = 409
-    Received --> Rejected: Lua -2 กดรัว = 429
-    Received --> Reserved: Lua คืน 1 = DECR stock + SET lock
-
-    Reserved --> Compensated: queue.add ล้ม = INCR + DEL lock
-    Compensated --> Rejected: ตอบ 503
-    Reserved --> Queued: enqueue สำเร็จ = ตอบ 202
-
-    Queued --> Processing: worker หยิบ job
-    Processing --> Confirmed: affected 1 + INSERT + COMMIT
-    Processing --> SoldOutDB: affected 0 = permanent = return
-    Processing --> TransientFail: DB timeout / deadlock 40P01
-    Processing --> Confirmed: unique 23505 = job นี้เคยสำเร็จแล้ว
-
-    TransientFail --> Queued: throw = BullMQ retry (attempts 3)
-    TransientFail --> Compensated: หมด attempts = compensateOnce jobId
-
-    Confirmed --> [*]: SET bought + DEL lock + invalidate cache (นอก try เดิม)
-    SoldOutDB --> [*]
-    Rejected --> [*]
+    [*] --> SUBMITTED: ผู้ใช้กดซื้อ (POST /orders)
+    
+    SUBMITTED --> REJECTED_401: JWT ไม่ถูกต้อง (Tier 0)
+    SUBMITTED --> REJECTED_409_BOUGHT: เคยซื้อไปแล้ว (Tier 1)
+    SUBMITTED --> REJECTED_429_INFLIGHT: กดรัวซ้ำซ้อน (Tier 1)
+    SUBMITTED --> REJECTED_409_SOLDOUT: สต็อกใน Redis <= 0 (Tier 1)
+    
+    SUBMITTED --> IN_FLIGHT: สต็อกพอ -> DECR Redis + ตั้ง Lock (Tier 1)
+    
+    IN_FLIGHT --> QUEUED: ใส่เข้า BullMQ สำเร็จ -> ตอบ HTTP 202 (Tier 2)
+    IN_FLIGHT --> COMPENSATED: ใส่คิวล้มเหลว -> คืนสต็อกใน Redis -> ตอบ 503
+    
+    QUEUED --> PROCESSING: Worker ดึงงานจากคิวไปทำ (Tier 3)
+    
+    PROCESSING --> CONFIRMED: UPDATE DB สำเร็จ + INSERT order สำเร็จ
+    PROCESSING --> CANCELLED_SOLDOUT: DB แจ้ง affectedRows === 0 (ของหมดจริง)
+    PROCESSING --> RETRYING: เกิด Deadlock 40P01 หรือ Network สะดุด
+    
+    RETRYING --> PROCESSING: ลองใหม่อีกครั้ง (โควตา 3 ครั้ง ตาม [`architecture.md` §6.4](architecture.md))
+    RETRYING --> COMPENSATED: ล้มเหลวครบโควตา (Final Attempt) -> คืนสต็อกใน Redis
+    
+    CONFIRMED --> [*]: บันทึก bought flag + ปลด in-flight lock สำเร็จ
+    COMPENSATED --> [*]
+    CANCELLED_SOLDOUT --> [*]
+    REJECTED_401 --> [*]
+    REJECTED_409_BOUGHT --> [*]
+    REJECTED_429_INFLIGHT --> [*]
+    REJECTED_409_SOLDOUT --> [*]
 ```
 
-**อ่าน state machine นี้แล้วสังเกต 3 อย่าง:**
+### ตารางวิเคราะห์สถานะและความปลอดภัย
 
-1. **"จองสิทธิ์แล้ว" เป็นสถานะอันตราย** — สต็อกถูกหักไปแล้วแต่ยังไม่มีใครได้ของ ทุกทางออกจากสถานะนี้ต้องจบที่ "ยืนยันแล้ว" หรือ "คืนสิทธิ์" เท่านั้น **ห้ามมีทางที่ค้างอยู่ตรงนี้**
-2. **`23505` (ซ้ำ) ไปที่ "ยืนยันแล้ว" ไม่ใช่ "ล้มเหลว"** — เพราะมันแปลว่า job นี้เคยสำเร็จไปแล้ว นี่คือ **idempotency**
-3. **"ของหมดที่ DB" กับ "ล้มชั่วคราว" แยกกันคนละทาง** — อันแรก `return` (permanent, retry ไม่มีทางสำเร็จ) อันหลัง `throw` (transient, retry มีโอกาส)
+| สถานะ | เข้าสู่เมื่อไหร่ | ออกไปไหนได้ | ใครเป็นคนเปลี่ยน |
+| :--- | :--- | :--- | :--- |
+| `SUBMITTED` | ลูกค้าส่งคำขอ `POST /api/v1/orders` | `REJECTED_*`, `IN_FLIGHT` | Nginx / NestJS Controller |
+| **`IN_FLIGHT`**<br/>*(⚠️ สถานะอันตราย)* | สต็อกใน Redis ถูกหักลดแล้ว แต่ยังเอาของใส่คิวไม่สำเร็จ | `QUEUED`, `COMPENSATED` | Lua Script (`gatekeeper.lua`) |
+| `QUEUED` | เอา Job ใส่คิว BullMQ สำเร็จแล้ว | `PROCESSING` | OrdersService |
+| `PROCESSING` | Worker กำลังเปิด Transaction บน PostgreSQL | `CONFIRMED`, `CANCELLED_SOLDOUT`, `RETRYING` | OrdersProcessor |
+| `CONFIRMED` | บันทึกลงตาราง `orders` และตัดสต็อกใน DB สำเร็จ | `[*]` (จบงานสมบูรณ์) | PostgreSQL Commit |
+| `COMPENSATED` | การทำงานล้มเหลวถาวร ต้องคืนสต็อกใน Redis | `[*]` (จบงานสมบูรณ์) | `compensateOnce` Lua Script |
 
----
-
-## 7. 🔥 ตารางรวม: ถ้าทำผิดจะพังยังไง
-
-สรุปจาก [`architecture.md` §7 Failure Matrix](architecture.md) — **อ่านซ้ำตอนเริ่มเขียนโค้ด**
-
-| ถ้าคุณ... | ผลที่เกิด | เห็น error ไหม |
-| :--- | :--- | :---: |
-| ใช้ `repository.findOne()` ใน worker | อ่านสต็อกเก่าจาก Replica → race condition | ❌ |
-| ลืม compensate ตอน `queue.add()` ล้ม | สต็อกหายถาวร → `remaining_stock` ไม่ถึง 0 | ❌ |
-| เอา side effect ไว้ใน try เดิม | คืนสต็อกทั้งที่ขายไปแล้ว → oversell | ❌ |
-| compensate โดยไม่ guard ด้วย `jobId` | BullMQ retry 3 ครั้ง → คืนสต็อก 3 เท่า | ❌ |
-| compensate ทุกครั้งที่ catch (ไม่ดูว่า attempt สุดท้ายหรือยัง) | attempt 1 คืน แล้ว attempt 2 สำเร็จ → Redis สูงกว่า DB ถาวร | ❌ |
-| compensate ตอน `affected = 0` (sold out) | Redis สูงกว่า DB อยู่แล้ว การคืนทำให้ปล่อยคนถัดไปเข้ามาแล้วตายซ้ำ **วนไม่จบ** | ❌ |
-| ใช้ `jobId` เป็น token ของ lock | `jobId` ซ้ำทุกครั้งที่คนเดิมขอของเดิม → compare-and-delete แยกการถือครองไม่ออก | ❌ |
-| เทียบ `job.data` ที่ `queue.add()` คืนมา | BullMQ ไม่เคยอ่าน `data` กลับจาก Redis → เทียบยังไงก็ตรงเสมอ = เช็คตาย | ❌ |
-| ตีความ `nil` ว่าสต็อก 0 (ไม่มี `-4`) | ตอบ "ของหมด" ตลอดกาลอย่างเงียบสนิท | ❌ |
-| รวม Redis เป็นตัวเดียว + LRU | job หายกลางคัน ลูกค้าได้ 202 แต่ไม่มีของ | ❌ |
-| ลืม `proxy_http_version 1.1` | p95 แย่ลงมาก หาสาเหตุยาก | 🟡 |
-| `throw` แทน `return` ตอนของหมด | retry 3 ครั้งเปล่าๆ, Failed jobs รกใน dashboard | 🟡 |
-| ตั้ง worker concurrency > pool size | job รอ connection จนหมดเวลา | ✅ |
-| เปิด `synchronize: true` | TypeORM DROP column ได้เอง = ข้อมูลหายถาวร | ✅ (สาย) |
-
-> ### ⚠️ สังเกตว่าเกือบทั้งหมดเป็น ❌
-> บั๊ก concurrency **แทบไม่เคยแสดงตัวเป็น error** มันแสดงตัวเป็น **ตัวเลขที่ไม่ตรง** ตอนรัน SQL ตรวจตอนจบเท่านั้น
-> นี่คือเหตุผลที่ [Data Integrity Proof (§9.3)](architecture.md) สำคัญกว่าที่คิด
+> 🛡️ **การพิสูจน์สถานะอันตราย (`IN_FLIGHT`)**:
+> สถานะ `IN_FLIGHT` คือจุดเสี่ยงที่สุด เพราะสต็อกใน Redis ถูกตัดไปแล้ว 1 ชิ้น แต่ยังไม่ได้บันทึกลง DB หากระบบตายตรงนี้ สต็อกจะหายไปเฉยๆ (Undersell)
+> **การรับประกัน**: ทุกเส้นทางออกจาก `IN_FLIGHT` จะต้องจบที่ **`QUEUED` (ไปต่อจนสำเร็จ)** หรือ **`COMPENSATED` (เรียก Lua Script ไป `INCR` คืนสต็อกทันที)** เท่านั้น **ไม่มีทางตันที่ทำให้สต็อกค้างเติ่งเด็ดขาด!** (ดูบทพิสูจน์ใน [`architecture.md` §7](architecture.md))
 
 ---
 
-## 8. ✂️ สิ่งที่เอกสารนี้ตัดออกไป (และทำไม)
+## 8. 💥 ตารางรวม: ถ้าทำผิดจะพังยังไง
 
-| ตัดอะไร | ทำไม | อ่านเมื่อไหร่ |
+ระดับการรู้ตัว: ❌ เงียบสนิท (น่ากลัวที่สุด) · 🟡 เห็นอาการแต่หาสาเหตุยาก · ✅ พังทันทีรู้เลย · ✅(สาย) รู้ตัวตอนสายไปแล้ว
+
+| ถ้าคุณ... | ผลที่เกิดจริง | **รู้ตัวไหม** | กลไกและเหตุผลที่ไม่มีใครสังเกตเห็น |
+| :--- | :--- | :---: | :--- |
+| **ลืมใส่ `noeviction` ใน `redis-data`** | ออเดอร์ของลูกค้าหายไปเฉยๆ ลูกค้าได้ 202 แต่ไม่มีของ | ❌ **เงียบสนิท** | Redis จะแอบเตะ Job ของ BullMQ หรือสต็อกทิ้งเงียบๆ เมื่อ RAM เต็ม โดยไม่มี Exception โยนออกมาในแอป |
+| **ใช้ `SELECT` แล้วค่อย `save()` ใน Worker** | ขายของเกินสต็อก (Oversell) เกิด Lost Update | ❌ **เงียบสนิท** | โค้ดรันผ่านฉลุย ไม่มี Error โค้ดตอบ 200/202 ปกติ แต่วันรุ่งขึ้นตอนแพ็คของส่ง ลูกค้าคนที่ 51 โทรมาด่าว่าไม่ได้ของ |
+| **สั่ง Invalidate แคชก่อน UPDATE DB** | แคชค้างค่าเก่าไปตลอดกาลจนกว่า TTL จะหมด | ❌ **เงียบสนิท** | มีคำขออ่านแทรกเข้ามาจังหวะกึ่งกลาง แล้วเอาค่าเก่าจาก DB ไปเขียนใส่แคชทับอีกรอบ |
+| **คืนสต็อก (`compensate`) ทุกครั้งที่ Worker Catch** | สต็อกใน Redis จะสูงกว่า DB ถาวร | ❌ **เงียบสนิท** | เมื่อเกิด Deadlock `40P01` ในรอบแรก ระบบคืนสต็อกไปแล้ว พอรอบสองรันซ้ำผ่าน สต็อกใน Redis จะบวกเกินจริง 1 หน่วยเงียบๆ |
+| **สั่ง `SELECT ... FOR UPDATE` บน Controller** | Connection Pool เต็ม คำขออ่านและ Healthcheck พังหมด | 🟡 **เห็นอาการแต่หายาก** | หน้าซื้อขายดูเหมือนทำงานถูก แต่หน้าอื่นหมุนค้าง และ Nginx พ่น 504 นึกว่าเน็ตล่ม |
+| **ใส่ `@VersionColumn` บนสินค้า Flash Sale** | คำขอ 90%+ ล้มเหลว เกิด Retry Storm ถล่ม CPU 100% | 🟡 **เห็นอาการแต่หายาก** | ฐานข้อมูล CPU ทะลุเพดาน Latency พุ่งเป็นนาที ผู้ใช้นึกว่าเซิร์ฟเวอร์สเปกไม่พอ ทั้งที่เป็นบั๊กทางสถาปัตยกรรม |
+| **เอาคำสั่ง `markBought` ไปไว้ใน `try` บล็อกเดียวกับ DB Transaction** | สต็อกใน Redis ถูกคืนทั้งที่ของขายไปแล้วจริง | 🟡 **เห็นอาการแต่หายาก** | หาก Redis สะดุดตอนท้าย มันจะกระโดดเข้า catch ไปคืนสต็อกใน Redis ทั้งที่ DB commit ไปแล้ว ทำให้เกิด Oversell ในรอบถัดไป |
+| **ลืมดักจับ Error Code `23505` ใน Worker** | BullMQ จะมองว่า Job ล้มเหลว แล้วพยายามรันซ้ำ | ✅(สาย) **รู้ตอนสาย** | ออเดอร์สำเร็จไปแล้วตั้งแต่รอบแรก แต่ระบบสั่ง retry ซ้ำจนกระทั่งทราฟฟิกบวม |
+| **ไม่ส่ง Header Authorization (JWT)** | คำขอถูกปฏิเสธทันทีที่ Gateway | ✅ **พังทันทีรู้เลย** | `JwtAuthGuard` โยน `401 Unauthorized` ออกมาอย่างชัดเจนตั้งแต่ด่านแรก |
+
+---
+
+## 9. 📦 สิ่งที่เอกสารนี้ตัดออกไป และทำไม
+
+| สิ่งที่ตัดออก | ทำไมถึงตัดออก | ถ้าจะอ่านต่อ อ่านที่ไหน |
 | :--- | :--- | :--- |
-| Connection Pool sizing (`6 × 8 = 48` ต่อเซิร์ฟเวอร์ — primary และ replica แยกกัน) | เป็นการจูนตัวเลข ไม่ใช่ความเข้าใจโครงสร้าง | ตอนเขียน `database.config.ts` → [§8](architecture.md) |
-| `nginx.conf` ทั้งไฟล์ | ก็อปจากเอกสารได้เลย | ตอนเขียน `docker-compose.yml` → [§2](architecture.md) |
-| k6 scenarios / thresholds | เขียนทีหลัง หลังระบบขึ้นแล้ว | ตอนทำ `loadtest.js` → [§9.2](architecture.md) |
-| Bull-Board, health checks, structured logging | เป็น deliverable แต่ไม่ใช่แก่นของ concurrency | ตอนใกล้ส่งงาน → [§9](architecture.md) |
-| `src/observability/` (`/admin/insights`, `/admin/metrics`) | **เครื่องมือวัด ไม่ใช่กลไก** — ไม่เปลี่ยน read/write path แม้แต่บรรทัดเดียว | ตอนเก็บตัวเลขใส่รายงาน → [`01-codebase-primer.md`](../Codebase/Separate/01-codebase-primer.md) §9 |
-| Probabilistic early expiration (XFetch) | เอกสารระบุเองว่า **ไม่ใช้ในการส่งงาน** | ข้ามได้ |
+| **การ Implement ระบบจ่ายเงิน (Payment Gateway)** | โจทย์กำหนดให้จำลองคำสั่งซื้อเสร็จสมบูรณ์ทันทีที่ตัดสต็อก ไม่มี Webhook จากธนาคาร | ยังไม่มีเอกสารรองรับ (อยู่นอก Scope การบ้าน) |
+| **การตั้งค่า Nginx SSL/TLS และ Let's Encrypt** | ระบบทดสอบบน Internal Docker Network ผ่านพอร์ต 8080 | [`architecture.md` §2](architecture.md) |
+| **อัลกอริทึม Probabilistic Early Expiration (XFetch)** | สูตร $-β \cdot δ \cdot \ln(\text{rand}())$ ไม่จำเป็นสำหรับ TTL ระดับ 60 วินาที และพิสูจน์ยาก | [`architecture.md` §5.3](architecture.md) |
+| **Distributed Lock แบบ Redlock ข้ามหลาย Redis Nodes** | ระบบใช้ Redis Instance เดี่ยวสำหรับข้อมูล Data การทำ Redlock เพิ่มความซับซ้อนเกินจำเป็น | วิชา `Backend04 - Redis.pdf` |
 
 ---
 
-## 9. 📖 Glossary
+## 10. 📖 Glossary (ดัชนีคำศัพท์จัดหมวดหมู่ — ครบทั้ง 18 คำ)
 
-| คำ | คำอธิบายบรรทัดเดียว |
+### หมวด Concurrency & Database
+- **Race Condition**: สภาวะที่ผลลัพธ์ของระบบขึ้นอยู่กับลำดับเวลาที่คำขอคู่ขนานวิ่งมาถึง (สอนใน §1.1, §4.1)
+- **TOCTOU**: ช่องว่างเวลาระหว่างจังหวะที่ตรวจเช็คความถูกต้อง กับจังหวะที่นำผลไปใช้งานจริง (สอนใน §1.1)
+- **Lost Update**: การที่ธุรกรรมหนึ่งบันทึกข้อมูลทับการเปลี่ยนแปลงของอีกธุรกรรมหนึ่งโดยไม่รู้ตัว (สอนใน §1.1)
+- **Optimistic Locking**: การคุม Concurrency โดยตรวจเลขเวอร์ชันตอนบันทึก เหมาะกับ Low Contention (สอนใน §1.4, §4.2)
+- **Pessimistic Locking**: การสั่งล็อกแถวข้อมูลทันทีที่อ่านเพื่อห้ามคนอื่นแตะ ป้องกันได้ 100% แต่เสี่ยง Pool Starvation บน HTTP (สอนใน §1.4, §4.3)
+- **Row-level Locking & Contention**: กลไกล็อกเฉพาะแถวในตารางของฐานข้อมูล และสภาวะแย่งชิงแถวเดียวกัน (สอนใน §1.4, §4.3)
+- **Deadlock (`40P01`) & Lock Hierarchy**: สภาวะรอคอยล็อกซึ่งกันและกันเป็นวงกลม และการแก้ปัญหาด้วยการจัดลำดับการล็อกทรัพยากร (สอนใน §1.4, §4.6)
+- **Atomic Operation / Decrement**: คำสั่งที่รวมการตรวจและแก้ไขไว้ในหนึ่งเดียวโดยไม่มีใครแทรกกลางได้ (สอนใน §1.4, §4.5)
+
+### หมวด Caching & Performance
+- **Cache-Aside (Lazy Loading)**: รูปแบบการอ่านแคชก่อน ถ้าไม่พบจึงไปอ่านฐานข้อมูลมาเติมแคช (สอนใน §2.4, §5.2)
+- **Stock Overlay Pattern**: สถาปัตยกรรมแยกแคช Metadata ออกจากตัวนับสต็อกสดเพื่อไม่ให้แคชแตกตอนขายของ (สอนใน §3.1, §5.3)
+- **Cache Invalidation**: กระบวนการลบหรืออัปเดตข้อมูลในแคชทิ้งเพื่อให้ข้อมูลถูกต้องตรงกับฐานข้อมูล (สอนใน §3.1, §5.4)
+- **Cache Stampede (Thundering Herd)**: ปรากฏการณ์ที่คำขอมหาศาลวิ่งทะลุแคชที่หมดอายุพร้อมกันไปถล่มฐานข้อมูล (สอนใน §3.1, §5.4)
+- **In-Process Single-Flight Memoization**: การแชร์ Promise การอ่านฐานข้อมูลร่วมกันใน Process เดียวกันเพื่อกัน Stampede (สอนใน §3.1, §5.4)
+- **Cache Avalanche & TTL Jitter**: การสุ่มค่าเวลาหมดอายุของแคชเพื่อไม่ให้แคชดับลงพร้อมกันเป็นระลอกคลื่น (สอนใน §3.1, §5.4)
+- **Write-Through & Write-Behind**: กลยุทธ์การเขียนข้อมูลลงแคชพร้อมฐานข้อมูล หรือเขียนลงแคชก่อนแล้วค่อยทยอยเขียนลงฐานข้อมูล (สอนใน §5.2)
+
+### หมวด Messaging & Reliability
+- **Distributed In-Flight Lock**: กุญแจชั่วคราวบน Redis ประจำตัวผู้ใช้เพื่อดักจับการกดเบิ้ลซ้ำซ้อน (สอนใน §2.5, §4.4)
+- **Message Queue & Decoupling (202 Accepted)**: การแยกขั้นตอนรับคำขอออกจากขั้นตอนบันทึกจริงเพื่อตอบกลับผู้ใช้ทันที (สอนใน §2.6, §3.2)
+- **Idempotency & Compensation**: คุณสมบัติที่คำสั่งรันซ้ำแล้วได้ผลเท่าเดิม และการคืนสภาพทรัพยากรเมื่อขั้นตอนถัดไปล้มเหลว (สอนใน §3.2, §4.5, §7)
+
+---
+
+## 11. 🧠 คำถามทดสอบตัวเอง (Self-Test Questions)
+
+<details>
+<summary><b>1. ในเมื่อ Optimistic Lock ปลอดภัยและทันสมัย ทำไมเราถึงห้ามใส่ @VersionColumn ใน Entity สินค้า Flash Sale?</b></summary>
+
+**คำตอบ**: เพราะใน Flash Sale มีคน 500 คนแย่งของ 50 ชิ้นพร้อมกัน หากใช้ Optimistic Lock ผู้ใช้ทั้ง 500 คนจะอ่านได้เวอร์ชันเดียวกัน จะมีเพียง **1 คนแรกเท่านั้นที่บันทึกสำเร็จ** อีก **499 คนจะล้มเหลวทันที (Version Mismatch)** และหากมีระบบ Retry อัตโนมัติ ทั้ง 499 คนจะวนกลับมายิง DB ซ้ำพร้อมกัน เกิดเป็น **Retry Storm** ถล่มจน CPU ฐานข้อมูลแตะ 100% และ Connection เต็มทั้งระบบ
+
+📍 *ชี้กลับไปที่: [§4.2](#42--เทคนิคที่-1-optimistic-locking-versioncolumn--ดาบชั้นดีในงาน-crud-ที่หักสะบั้นใน-flash-sale)*
+</details>
+
+<details>
+<summary><b>2. ในเมื่อ Pessimistic Lock (SELECT FOR UPDATE) ป้องกัน Oversell ได้ 100% ทำไมถึงห้ามนำมาครอบบน HTTP Controller?</b></summary>
+
+**คำตอบ**: เพราะ Connection Pool ของฐานข้อมูลมีจำกัด (ในระบบเรามี 48 connections รวมทั้งคลัสเตอร์) หาก 500 คำขอพุ่งเข้า Controller แล้วเปิด Transaction รอ Row Lock แถวเดียวกัน คำขอ 48 รายการแรกจะยึด Connection ทั้งหมดไปค้างรอคิว ทำให้คำขออ่านสินค้าทั่วไป (`GET /products`) และคำขอตรวจสุขภาพ (`GET /health`) ไม่สามารถหา Connection ว่างได้ จนกระทั่ง Nginx ตัดการเชื่อมต่อกลายเป็น **504 Gateway Timeout** ทั้งระบบ
+
+📍 *ชี้กลับไปที่: [§4.3](#43--เทคนิคที่-2-pessimistic-locking-select--for-update--ถูกต้อง-100-แต่ทำลายระบบบน-synchronous-http)*
+</details>
+
+<details>
+<summary><b>3. ทำไมการแคชข้อมูลสินค้าแบบเดิม (เก็บทั้งก้อนรวม remainingStock ไว้ด้วยกัน) ถึงทำให้ระบบล่มตอน Flash Sale?</b></summary>
+
+**คำตอบ**: เพราะเมื่อมีคนซื้อของสำเร็จ สต็อกจะลดลง ทำให้ระบบต้องสั่งลบแคช (Invalidate) ทิ้ง และเนื่องจากของ 50 ชิ้นถูกซื้อหมดใน 300ms แคชจะถูกลบทิ้งถึง 50 ครั้งใน 0.3 วินาที ผู้ใช้ 1,000 คนที่กำลังเปิดดูสินค้าจะเจอ Cache Miss ติดต่อกัน 50 รอบรวด และรุมยิง SQL Query รวมกัน 50,000 ครั้งไปยังฐานข้อมูลจน Database Crash ทันที (**Thundering Herd**)
+
+📍 *ชี้กลับไปที่: [§5.3](#53--หัวใจของสถาปัตยกรรม-stock-overlay-pattern)*
+</details>
+
+<details>
+<summary><b>4. Single-Flight Promise Memoization ขัดต่อกฎ "Stateless" ของระบบหรือไม่? ทั้งที่มีการเก็บตัวแปร Map ในหน่วยความจำ</b></summary>
+
+**คำตอบ**: **ไม่ขัดเลย 100%** เพราะ Single-Flight Memoization จดจำเฉพาะ **In-Flight Requests** (คำขอที่กำลังรอคำตอบจากฐานข้อมูล ณ เสี้ยววินาทีนั้น) เมื่องานเสร็จสิ้น มันจะลบ Promise ทิ้งทันทีในบล็อก `finally` มัน**ไม่ได้เก็บข้อมูล (State) ค้างไว้ข้ามคำขอ** หากมีคำขอใหม่เข้ามาในวินาทีถัดไป มันก็จะทำงานใหม่ตามปกติ
+
+📍 *ชี้กลับไปที่: [§5.4 ข้อ 4](#54-กลยุทธ์-cache-invalidation--การป้องกันระบบล่ม)*
+</details>
+
+<details>
+<summary><b>5. ทำไมการปลด Distributed Lock ใน Redis ถึงห้ามใช้คำสั่ง redis.del() ตรงๆ?</b></summary>
+
+**คำตอบ**: เพราะหากคำขอแรกทำงานช้ามากจนเวลาของ Lock หมดอายุ (TTL Expired) คำขอที่สองจะเข้ามาคว้า Lock ไปครองได้ หากคำขอแรกเพิ่งฟื้นกลับมาแล้วสั่ง `DEL` มันจะกลายเป็นการ **ลบล็อกของคำขอที่สองทิ้ง** ทำให้คำขอที่สามหลุดเข้ามาทำงานซ้อนได้ จึงต้องใช้ Lua Script เพื่อตรวจสอบว่า Token ยังตรงกับของตนเองหรือไม่ก่อนลบเสมอ (Compare-and-Delete)
+
+📍 *ชี้กลับไปที่: [§4.4](#44--เทคนิคที่-3-distributed-mutex-lock-ใน-redis-set-nx-px)*
+</details>
+
+<details>
+<summary><b>6. ใน Worker ทำไมคำสั่งอัปเดตสต็อกและบันทึกออเดอร์ ต้องเรียงลำดับ Product ก่อน Order เสมอ?</b></summary>
+
+**คำตอบ**: เพื่อป้องกันภาวะ **Deadlock (`40P01`)** จาก Foreign Key! หากบันทึก `Order` ก่อน PostgreSQL จะครอบล็อกแบบ `KEY SHARE` บนตาราง `Product` เมื่อพยายามสั่ง `UPDATE Product` ทีหลัง ล็อกทั้งสองตัวจะขัดแย้งกันเองหากมี Worker สองตัวรันพร้อมกัน การสั่ง `UPDATE Product` ก่อนจะทำให้ได้ถือครอง Exclusive Lock ตั้งแต่ต้นอย่างเป็นระเบียบ
+
+📍 *ชี้กลับไปที่: [§4.6](#46--ภาวะ-deadlock-40p01-และกฎการจัดลำดับ-lock-lock-ordering-discipline)*
+</details>
+
+<details>
+<summary><b>7. ทำไมคำสั่งล้างแคชใน Redis ถึงห้ามใช้คำสั่ง redis.keys('catalog:*') เด็ดขาด?</b></summary>
+
+**คำตอบ**: เพราะคำสั่ง `KEYS` มี Time Complexity เป็น $O(N)$ และ Redis ประมวลผลคำสั่งแบบ Single-threaded คำสั่งนี้จะทำการสแกนคีย์ทุกตัวในหน่วยความจำและ **หยุดการทำงานของ Redis ทั้งเซิร์ฟเวอร์** ทำให้คำสั่งตัดสต็อกของคำขออื่นค้างตามไปด้วย ระบบเราจึงใช้การเก็บรายชื่อคีย์ไว้ใน Redis Set (`catalog:index`) เพื่อลบตรงๆ แทน
+
+📍 *ชี้กลับไปที่: [§5.4 ข้อ 2](#54-กลยุทธ์-cache-invalidation--การป้องกันระบบล่ม)*
+</details>
+
+<details>
+<summary><b>8. ใน Worker เมื่อเกิดข้อผิดพลาดขึ้น ทำไมเราถึงห้ามสั่งคืนสต็อก (compensate) ในทุกครั้งที่ catch?</b></summary>
+
+**คำตอบ**: เพราะหากข้อผิดพลาดนั้นเป็น Transient Error ชั่วคราว เช่น Deadlock `40P01` ระบบจะทำการ Retry ใหม่อีกครั้ง หากเราคืนสต็อกไปตั้งแต่รอบแรก แล้วในรอบถัดไปคำสั่งซื้อดันทำงานสำเร็จ สต็อกใน Redis จะถูกบวกเกินจริง 1 หน่วยอย่างถาวร จึงต้องคืนสต็อกเฉพาะเมื่อเป็น **Final Attempt** ที่หมดโควตาลองใหม่แล้วจริงๆ เท่านั้น
+
+📍 *ชี้กลับไปที่: [§4.6](#46--ภาวะ-deadlock-40p01-และกฎการจัดลำดับ-lock-lock-ordering-discipline) และ [§8](#8--ตารางรวม-ถ้าทำผิดจะพังยังไง)*
+</details>
+
+<details>
+<summary><b>9. ทำไมระบบเราถึงไม่เลือกใช้ Write-Through หรือ Write-Behind ในการอัปเดตสต็อกสินค้า Flash Sale?</b></summary>
+
+**คำตอบ**: **Write-Through** จะไปถ่วง Write Path ของคำขอซื้อ 500 VUs ให้ช้าลงอย่างมาก เพราะต้องคอยเขียนลงแคชหน้าสินค้าทุกหน้าที่เกี่ยวข้อง ส่วน **Write-Behind** มีความเสี่ยงร้ายแรงต่อความถูกต้องของข้อมูลสต็อกและเงิน เพราะหากเซิร์ฟเวอร์ไฟดับหรือ Redis ดับกะทันหัน ข้อมูลคำสั่งซื้อที่ค้างอยู่ใน RAM จะสูญหายถาวรทันที ระบบเราจึงเลือกใช้ **Stock Overlay Pattern** ที่แยกแคช Metadata ออกจากตัวนับสต็อกสดแทน
+
+📍 *ชี้กลับไปที่: [§5.2](#52-วิเคราะห์-caching-patterns-3-รูปแบบ) และ [§5.3](#53--หัวใจของสถาปัตยกรรม-stock-overlay-pattern)*
+</details>
+
+<details>
+<summary><b>10. ใน Worker ทำไมคำสั่ง UPDATE products ต้องมีเงื่อนไข WHERE remaining_stock > 0 ด้วย ทั้งที่มี CHECK constraint ในฐานข้อมูลอยู่แล้ว?</b></summary>
+
+**คำตอบ**: เพื่อให้ระบบสามารถแยกแยะระหว่าง **"ของหมดตามปกติ (Business Outcome)"** กับ **"ความผิดพลาดระดับวิกฤต (System Exception)"** ออกจากกันได้อย่างนุ่มนวล! หากไม่มี `WHERE remaining_stock > 0` คำสั่ง `UPDATE` จะไปชน `CHECK (remaining_stock >= 0)` ของฐานข้อมูล แล้วโยน Error Code `23514` ออกมา ทำให้ Transaction ล้มเหลวและ Worker มองว่าเป็น Error ที่ต้อง Rollback แต่เมื่อใส่ `WHERE remaining_stock > 0` หากของหมด คำสั่งจะคืนค่า `affectedRows === 0` ทำให้ Worker ทราบได้ทันทีว่าของหมด และจบงานได้อย่างสง่างามโดยไม่ต้อง Rollback
+
+📍 *ชี้กลับไปที่: [§4.5](#45--ยุทธศาสตร์ที่เลือกใช้จริง-สถาปัตยกรรมป้องกัน-4-ชั้น-4-tier-defense-architecture) และ [§6](#6--ทำไมต้อง-4-ด่าน-ด่านเดียวไม่พอเหรอ)*
+</details>
+
+<details>
+<summary><b>11. ทำไมจึงต้องใส่ TTL Jitter สุ่มค่า 30–60 วินาทีในแคช Metadata แทนที่จะใช้เวลา 60 วินาทีคงที่?</b></summary>
+
+**คำตอบ**: เพื่อป้องกันปรากฏการณ์ **Cache Avalanche**! หากแคชหน้ารายการสินค้าทั้งหมดถูกสร้างขึ้นพร้อมกันด้วย TTL 60 วินาทีคงที่ เมื่อเวลาผ่านไปครบ 60 วินาที แคชทุกหน้าจะหมดอายุลงพร้อมกันเป๊ะ ส่งผลให้คำขอจากผู้อ่าน 1,000 คนพร้อมใจกันยิงทะลุไปถล่ม PostgreSQL ในเสี้ยววินาทีเดียวกัน การใส่ Jitter ด้วยสูตร `30 + Math.floor(Math.random() * 30)` จะช่วยเกลี่ยเวลาหมดอายุให้เหลื่อมล้ำกันอย่างสม่ำเสมอตลอดช่วง 30–60 วินาที ฐานข้อมูลจึงทำงานราบรื่นต่อเนื่อง
+
+📍 *ชี้กลับไปที่: [§5.4 ข้อ 5](#54-กลยุทธ์-cache-invalidation--การป้องกันระบบล่ม)*
+</details>
+
+---
+
+## 12. 📚 อ่านอะไรต่อ
+
+### ตารางที่ 1: เรียงลำดับตามขั้นตอนการทำงานจริง
+| ลำดับ | สิ่งที่ควรอ่าน | สิ่งที่คุณจะได้รับ |
+| :---: | :--- | :--- |
+| **1** | [📖 `architecture.md`](architecture.md) | สเปกทางสถาปัตยกรรมฉบับเต็มของระบบ สัญญาทางเทคนิคทุกข้อที่ต้องปฏิบัติตาม |
+| **2** | [🗺️ `01-codebase-primer.md`](../Codebase/Separate/01-codebase-primer.md) | แผนที่โค้ดเบส เจาะลึกระดับชื่อไฟล์และบรรทัดจริงของทุกโมดูลในระบบ |
+| **3** | [🧪 `LOADTEST_AND_SCALING_REPORT.md`](../LOADTEST_AND_SCALING_REPORT.md) | ผลการทดสอบ k6 จริง และบทวิเคราะห์พฤติกรรมของระบบภายใต้โหลด 1,500 VUs |
+
+### ตารางที่ 2: เลือกอ่านตามประเด็นที่สนใจ
+| ประเด็นที่สนใจ | เอกสารแนะนำ |
 | :--- | :--- |
-| **Concurrent** | เกิดขึ้นพร้อมกันจริงๆ ไม่ใช่ต่อคิว |
-| **Race Condition** | บั๊กที่ผลลัพธ์ขึ้นกับว่าใครวิ่งถึงก่อน ซึ่งควบคุมไม่ได้ |
-| **TOCTOU** | ช่องว่างระหว่าง "ตอนเช็ค" กับ "ตอนใช้ผลของการเช็ค" |
-| **Atomic** | ทำทั้งชุดหรือไม่ทำเลย ไม่มีใครแทรกกลางได้ |
-| **Oversell / Undersell** | ขายเกินของที่มี / ขายไม่หมดทั้งที่มีคนแย่ง |
-| **Idempotent** | ทำซ้ำกี่ครั้งผลลัพธ์ก็เท่าเดิม |
-| **Stateless** | ไม่เก็บข้อมูลที่ต้องแชร์ไว้ใน RAM ของ process ตัวเอง |
-| **Instance** | สำเนาของแอปที่รันพร้อมกัน (เรามี 6 ตัว: app-1 … app-6) |
-| **Load Balancer / Reverse Proxy** | ตัวหน้าที่รับ request แล้วกระจายไปยัง instance |
-| **`least_conn`** | กระจายให้ instance ที่มีงานค้างน้อยที่สุด |
-| **Keepalive** | ใช้ TCP connection เดิมซ้ำ ไม่ handshake ใหม่ทุก request |
-| **JWT** | บัตรผ่านที่ลูกค้าถือเอง มีลายเซ็นที่ปลอมไม่ได้ |
-| **Claim / `sub`** | ข้อมูลใน JWT / ชื่อ claim มาตรฐานที่เก็บ userId |
-| **HS256** | อัลกอริทึมเซ็น JWT แบบใช้ secret ร่วมกัน |
-| **Zero-I/O verify** | ตรวจ token โดยไม่ยิงไป DB/Redis เลย |
-| **Cache-Aside** | ดูแคชก่อน miss แล้วค่อยไป DB แล้วเอามาใส่แคช |
-| **Cache Hit / Miss** | เจอในแคช / ไม่เจอ |
-| **TTL** | อายุของ key ก่อนหายไปเอง |
-| **Jitter** | สุ่มบวกอายุนิดหน่อย ไม่ให้ key หมดอายุพร้อมกัน |
-| **Cache Stampede / Avalanche** | แคชหมดอายุพร้อมกัน → DB โดนถล่มพร้อมกัน |
-| **Single-flight** | หลาย request ที่ถามเรื่องเดียวกันตอน miss ให้แชร์การ query ครั้งเดียว |
-| **Cache Invalidation** | การลบแคชเมื่อข้อมูลจริงเปลี่ยน |
-| **`allkeys-lru` / `noeviction`** | RAM เต็มแล้วลบตัวเก่าทิ้ง / ห้ามลบอะไรทั้งนั้น |
-| **AOF** | Redis จดทุกคำสั่งลงดิสก์ เปิดใหม่แล้วข้อมูลไม่หาย |
-| **Lua script** | โปรแกรมเล็กๆ ที่รันในตัว Redis แบบ atomic |
-| **`MGET`** | ดึงหลาย key ในคำสั่งเดียว (1 roundtrip) |
-| **Mutex / Lock** | ป้ายจองว่า "ฉันกำลังทำอยู่ ห้ามแทรก" |
-| **Compensation** | การกระทำที่ย้อนผลของอีกการกระทำหนึ่ง (rollback ข้ามระบบ) |
-| **Message Queue** | กล่องรับใบสั่งงาน ให้ worker มาหยิบไปทำทีหลัง |
-| **Producer / Consumer (Worker)** | คนหย่อนงาน / คนหยิบงานไปทำ |
-| **`jobId`** | เลขที่ใบสั่งงาน — ถ้าซ้ำ BullMQ ปฏิเสธเอง |
-| **At-least-once** | คิวรับประกันงานถูกทำอย่างน้อย 1 ครั้ง (อาจซ้ำ → จึงต้อง idempotent) |
-| **Permanent / Transient failure** | ล้มแบบ retry ไม่มีทางสำเร็จ (ของหมด) / ล้มชั่วคราว retry มีโอกาส (DB timeout) |
-| **Replication / Replica** | ก็อป DB ไว้อีกตัวสำหรับอ่านอย่างเดียว |
-| **Replication Lag** | ความช้าที่ Replica ตามหลัง Primary (10–100ms) |
-| **Read-Write Split** | แยกทางอ่าน (Replica) ออกจากทางเขียน (Primary) |
-| **Connection Pool** | ถังเก็บ DB connection ที่เปิดค้างไว้ใช้ซ้ำ |
-| **Constraint (UNIQUE / CHECK)** | กฎที่ DB บังคับเอง ต่อให้โค้ดมีบั๊กก็ทะลุไม่ได้ |
-| **`23505`** | รหัส error ของ Postgres = ละเมิด UNIQUE |
-| **p95 / p99** | เวลาตอบสนองของคนที่ช้าที่สุด 5% / 1% (ไม่ใช่ค่าเฉลี่ย) |
-| **VU (Virtual User)** | ผู้ใช้จำลอง 1 คนใน k6 |
-| **Graceful shutdown** | ปิดแอปโดยรอให้งานที่ค้างอยู่จบก่อน |
-
----
-
-## 10. 🧠 คำถามทดสอบตัวเอง
-
-ลองตอบในหัวก่อนกดดูเฉลย **ถ้าตอบไม่ได้ 3 ข้อขึ้นไป กลับไปอ่าน § ที่เกี่ยวข้อง**
-
-<details>
-<summary><b>1. ทำไม <code>SELECT stock</code> แล้ว <code>if (stock > 0)</code> ใน JavaScript ถึงใช้ไม่ได้ ทั้งที่ตรรกะดูถูกต้อง?</b></summary>
-
-เพราะระหว่าง `SELECT` กับ `UPDATE` มีช่องว่างเวลาอยู่ ระหว่างนั้น request อื่นบน instance อื่นอ่านค่าเดิมไปแล้วเช็คผ่านเหมือนกัน → ทั้งคู่คิดว่าตัวเองได้ของ = **TOCTOU**
-
-ทางแก้คือรวม "เช็ค" กับ "เขียน" เป็นการกระทำเดียวที่แทรกไม่ได้:
-`UPDATE ... WHERE id = $1 AND remaining_stock > 0` แล้วดู `affected === 0`
-
-📍 §1.1, §4.4 จุดที่ 1
-</details>
-
-<details>
-<summary><b>2. ทำไมถึงต้องแยก <code>remainingStock</code> ออกจาก metadata แทนที่จะแคชทั้ง object แล้ว invalidate ตอนมีคนซื้อ?</b></summary>
-
-เพราะระหว่าง flash sale มีคนซื้อทุกๆ ไม่กี่มิลลิวินาที ถ้า invalidate ทุกครั้ง แคชจะถูกลบตลอดเวลา → hit ratio เกือบ 0% → แคชไม่มีประโยชน์เลย และ DB โดนถล่มจาก 1,000 readers
-
-การแยก 2 อย่างทำให้ metadata (ที่ไม่เคยเปลี่ยน) นอนในแคชได้เป็นนาที ส่วน `remainingStock` อ่านสดจาก counter ด้วยต้นทุน 1 `MGET` แล้ว merge ตอน serialize — **ได้ทั้ง hit ratio สูงและสต็อกสดตลอด**
-
-📍 §3.1–3.2
-</details>
-
-<details>
-<summary><b>3. Redis เป็น single-threaded อยู่แล้ว ทำไมยังต้องใช้ Lua script? <code>DECR</code> เฉยๆ ไม่พอเหรอ?</b></summary>
-
-`DECR` คำสั่งเดียวปลอดภัยจริง แต่ gatekeeper ต้องทำ **6 อย่าง**: เช็ค key มีจริง → เช็คเคยซื้อ → เช็ค in-flight → เช็คสต็อก → `DECR` → `SET` lock
-
-ถ้าแยกเป็น 6 คำสั่งจาก Node.js จะมี network roundtrip คั่นระหว่างทุกคำสั่ง → request อื่นแทรกได้ = TOCTOU กลับมาอีกรอบ แค่ย้ายที่เกิดเหตุจาก DB มา Redis
-
-Lua ทำให้ทั้ง 6 อย่างเป็น **การกระทำเดียว** ที่ Redis ไม่รับคำสั่งอื่นเลยจนกว่าจะจบ
-
-📍 §2.6
-</details>
-
-<details>
-<summary><b>4. ทำไม "stock counter ยังไม่ถูก seed" ต้องตอบ 503 ไม่ใช่ 409 ทั้งที่ผลลัพธ์กับผู้ใช้เหมือนกัน (ซื้อไม่ได้)?</b></summary>
-
-เพราะสองอย่างนี้ **สาเหตุต่างกันโดยสิ้นเชิง**:
-- `409` "ของหมด" = ระบบทำงานถูกต้อง เป็นเรื่องปกติ
-- `503` "ยังไม่ seed" = **ระบบพัง** ต้องมีคนไปแก้
-
-ถ้าเขียน `tonumber(GET(k) or '0')` ระบบจะกลืน "ไม่มี key" เป็น "สต็อก 0" → หลัง Redis restart ระบบจะตอบว่าของหมดตลอดกาลอย่างเงียบสนิท ไม่มี log ไม่มี alert ทั้งที่ `remaining_stock` ใน DB ยังเป็น 50
-
-การแยก error code ทำให้ปัญหา **โผล่ขึ้นมาให้เห็น** แทนที่จะซ่อน
-
-📍 §2.6
-</details>
-
-<details>
-<summary><b>5. ถ้า <code>queue.add()</code> ล้มเหลว ทำไมแค่ throw 503 ให้ผู้ใช้เฉยๆ ถึงไม่พอ?</b></summary>
-
-เพราะ Lua **หัก stock ไปแล้ว** ก่อนหน้านั้น ถ้าไม่ `INCR` คืน สต็อก 1 ชิ้นจะหายจากระบบถาวร — ไม่มีใครได้ ไม่มีใครรู้
-
-ผลคือตอนจบ load test `remaining_stock` จะเหลือ 3 แทนที่จะเป็น 0 → **ตกเกณฑ์ Data Integrity Proof** ทั้งที่ไม่มี oversell เลยแม้แต่ชิ้นเดียว
-
-หลักการ: **ทุก path ที่หักสต็อกแล้ว ต้องมีทางชดเชยเสมอ** (invariant ข้อ 6)
-
-📍 §2.7
-</details>
-
-<details>
-<summary><b>6. ทำไม <code>markBought</code> / <code>releaseLock</code> / <code>invalidateCache</code> ต้องอยู่ <i>นอก</i> try/catch ของ transaction?</b></summary>
-
-เพราะถ้าอยู่ใน try เดิม แล้ว Redis สะดุดหลัง `commitTransaction()` สำเร็จ → โค้ดจะกระโดดเข้า `catch` → เรียก `compensateOnce()` → **`INCR` คืนสต็อกทั้งที่ DB ตัดไปแล้วและมี order จริงแล้ว**
-
-Redis จะบวกเกินจริง → มีคนได้สิทธิ์เพิ่มโดยไม่มีของ → **oversell**
-
-หลัง commit สำเร็จ ออเดอร์ถือว่าจบแล้ว งานที่เหลือล้มก็แค่ log แล้วปล่อย (lock มี TTL เก็บกวาดให้เอง)
-
-📍 §4.4 จุดที่ 3
-</details>
-
-<details>
-<summary><b>7. ทำไม <code>SoldOutError</code> ต้อง <code>return</code> ไม่ใช่ <code>throw</code>?</b></summary>
-
-BullMQ ตีความ `throw` ว่า "งานล้มเหลว ลองใหม่" แล้วจะ retry ตาม `attempts: 3`
-
-แต่ "ของหมด" เป็น **permanent failure** — ลองอีกกี่ครั้งสต็อกก็ไม่กลับมา retry มีแต่เปลือง attempt, กิน worker slot, และทำให้ Failed jobs ใน Bull-Board รกจนแยกไม่ออกว่าอันไหนคือ failure จริงที่ควรสนใจ
-
-ต่างจาก DB connection หลุด ซึ่งเป็น **transient** — อันนั้น `throw` ถูกแล้ว
-
-📍 §6 State Machine
-</details>
-
-<details>
-<summary><b>8. ทำไม <code>userId</code> ต้องมาจาก JWT claim <code>sub</code> ห้ามรับจาก request body?</b></summary>
-
-เพราะกลไกกันซื้อซ้ำทุกชั้นใช้ `userId` เป็นกุญแจ: `bought:{p}:{u}`, `lock:order:{u}:{p}`, `jobId = order:{u}:{p}`, `UNIQUE(user_id, product_id)`
-
-ถ้ารับจาก body ก็ส่ง `user-1`, `user-2`, `user-3`... จากเครื่องเดียวแล้วกวาดของ 50 ชิ้นได้หมด
-
-และที่แย่ที่สุดคือ **`COUNT(DISTINCT user_id) = 50` ยังผ่านอยู่** → จะไม่มีทางรู้เลยว่ามีรู
-
-JWT ปลอมไม่ได้เพราะต้องรู้ `JWT_SECRET` ถึงจะเซ็นได้
-
-📍 §2.3
-</details>
-
-<details>
-<summary><b>9. ทำไม worker ห้ามใช้ <code>repository.findOne()</code> ทั้งที่มันคือวิธีมาตรฐานของ TypeORM?</b></summary>
-
-เพราะโปรเจกต์นี้ตั้ง TypeORM replication ไว้ → `findOne()` จะถูก route ไป **Replica** อัตโนมัติ ซึ่งตามหลัง Primary อยู่ 10–100ms
-
-worker จะอ่านเจอสต็อกเก่า แล้วตัดสินใจผิด → race condition
-
-ต้องบังคับ `dataSource.createQueryRunner('master')`
-
-บั๊กนี้อันตรายเป็นพิเศษเพราะมัน **ผ่านตอนเทสในเครื่องตัวเอง** (ไม่มี lag) แล้วพังตอนยิงโหลดจริง
-
-📍 §2.4
-</details>
-
-<details>
-<summary><b>10. Tier 3 (atomic SQL) + Tier 4 (constraints) ก็กัน oversell ได้ครบแล้ว แล้วจะมี Tier 1 (Redis) กับ Tier 2 (queue) ไปทำไม?</b></summary>
-
-**เพราะโจทย์ไม่ได้วัดแค่ความถูกต้อง แต่วัด performance ด้วย**
-
-- ตัด Tier 1 ทิ้ง → ยังไม่ oversell แต่ 500 requests วิ่งถึง DB ทั้งหมด ทั้งที่ 450 อันจะโดนปฏิเสธอยู่แล้ว → connection pool เต็ม, p95 พุ่ง
-- ตัด Tier 2 ทิ้ง → ยังถูกต้อง แต่ลูกค้าต้องรอ DB เขียนเสร็จก่อนได้ response → ผิด invariant ข้อ 1 และตอบ 202 ไม่ได้
-
-สรุป: **Tier 1–2 = performance · Tier 3–4 = correctness** ทั้งสองอย่างเป็นเกณฑ์ให้คะแนน
-
-📍 §5
-</details>
-
-<details>
-<summary><b>11. ทำไม 429 ถึงไม่ใช่ "error" และห้ามนับใน k6 threshold?</b></summary>
-
-`iterations: 3` ใน k6 คือการ **จำลองคนกดรัว** ตามที่โจทย์ระบุ — คาดหวังว่า 1 ครั้งได้ 202 อีก 2 ครั้งได้ 429/409
-
-429 ที่โผล่มาคือ **หลักฐานว่า in-flight lock ทำงาน** ถ้าไม่มี 429 เลยต่างหากที่น่ากลัว (แปลว่า lock ไม่ทำงาน)
-
-ถ้านับ 429/409 เป็น error จะเห็น error rate ~90% แล้วสรุปว่าระบบพัง ทั้งที่มันทำงานถูกเป๊ะ — ให้แยก `check()` เป็น tag ต่างหากแทน
-
-📍 §4.5
-</details>
-
----
-
-## 11. 📚 อ่านอะไรต่อ
-
-### ถ้าจะอ่านเรียงลำดับเดียว
-
-| ลำดับ | อ่านอะไร | ได้อะไร |
-| :--- | :--- | :--- |
-| 1 | [`architecture.md` §1](architecture.md) (diagram รวม) | เห็นภาพรวมอีกรอบ ตอนนี้จะอ่านรู้เรื่องแล้ว |
-| 2 | [`architecture.md` §5–6](architecture.md) (Read + Write Path) | รายละเอียดของ §3–4 ในเอกสารนี้ |
-| 3 | [`architecture.md` §7](architecture.md) (Failure Matrix) | ตารางบั๊กที่จะเจอ |
-| 4 | [`CLAUDE.md` §4](../../CLAUDE.md) (11 invariants) | เช็คลิสต์ตอนเขียนโค้ด |
-| 5 | [`diagrams.md`](diagrams.md) | DFD / CSPEC / State Machine — **เอาไปใส่รายงานตรงๆ ได้** |
-| 6 | [`architecture-rationale.md`](architecture-rationale.md) | **ทำไมถึงเลือกแบบนี้** + ข้อดีข้อเสีย + บันทึกการถกเถียงของ reviewer 3 มุมมอง |
-
-### ถ้าสนใจแค่มุมใดมุมหนึ่ง
-
-| อยากรู้เรื่อง | อ่าน |
-| :--- | :--- |
-| แคชอย่างเดียว | [`architecture.md` §5](architecture.md) + [`For_human/Backend04.md`](../Summary_Best_Practice/For_human/Backend04.md) |
-| คิว / worker อย่างเดียว | [`architecture.md` §6.2–6.3](architecture.md) + [`For_human/Backend05.md`](../Summary_Best_Practice/For_human/Backend05.md) |
-| DB / transaction / constraint | [`architecture.md` §6.3–6.4, §8](architecture.md) + [`For_human/Backend03.md`](../Summary_Best_Practice/For_human/Backend03.md) |
-| จะเริ่มเขียน `docker-compose.yml` | [`architecture.md` §1 หมายเหตุ, §2, §8](architecture.md) |
-| จะเขียน `loadtest.js` | [`architecture.md` §9.2–9.3](architecture.md) |
-| จะเขียนรายงาน | [`architecture.md` §10](architecture.md) (ตาราง Naive vs นี่) + §9.3 + [`diagrams.md`](diagrams.md) |
-
+| **เบื้องหลังการตัดสินใจทางสถาปัตยกรรม** | [`architecture-rationale.md`](architecture-rationale.md) |
+| **การปรับแต่งประสิทธิภาพและสิทธิ์บนเซิร์ฟเวอร์** | [`../../handoff_log/handoff_31_08_2026_right-size-to-4core-vm.md`](../../handoff_log/handoff_31_08_2026_right-size-to-4core-vm.md) |
+| **สรุปคำสอนและ Best Practices ของอาจารย์** | [`../Summary_Best_Practice/architecture_BP_Checklist.md`](../Summary_Best_Practice/architecture_BP_Checklist.md) |

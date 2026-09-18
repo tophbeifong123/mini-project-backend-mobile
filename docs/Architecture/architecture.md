@@ -14,17 +14,17 @@
 | 1.2 | Backend: NestJS **Modular structure** | §3 |
 | 1.3 | Database: PostgreSQL + TypeORM + **Connection Pooling** | §8 |
 | 1.3.1 | Schema / Entity / Migration | **§3.1** |
-| 1.4 | Caching & Invalidation: Redis | §5 |
+| 1.4 | Caching & Invalidation: Redis | §5 · §5.5 |
 | 1.5 | Message Queue: **BullMQ** (async order processing) | §6.2 |
 | 1.6 | **Stateless Auth: JWT** (ห้าม in-memory session) | §4 |
 | 1.7 | Observability Dashboard (Bull-Board + หน้า Insights ของเราเอง) | §9 · **§9.4** |
 | 2.1 | `POST /api/v1/auth/token` | §4.2 |
-| 2.2 | `GET /api/v1/products?page=1&limit=10` + cache invalidation | §5 |
+| 2.2 | `GET /api/v1/products?page=1&limit=10` + cache invalidation | §5 · §5.5 |
 | 2.3 | `POST /api/v1/orders` → **202 Accepted** | §6 |
 | 2.3.1 | Limit 1 per user | §6.1 + §6.4 |
-| 2.3.2 | Concurrency (API level) — atomic Redis ops | §6.1 |
-| 2.3.3 | Concurrency (Worker/DB level) — locking + unique constraint | §6.3 + §6.4 |
-| 2.3.4 | Cache Invalidation หลัง worker ตัดสต็อกสำเร็จ | §5.4 |
+| 2.3.2 | Concurrency (API level) — atomic Redis ops | §6.1 · §6.5 |
+| 2.3.3 | Concurrency (Worker/DB level) — locking + unique constraint | §6.3 + §6.4 · §6.5 |
+| 2.3.4 | Cache Invalidation หลัง worker ตัดสต็อกสำเร็จ | §5.4 · §5.5 |
 | 3 | Load Test (k6) + Dashboard + Data Integrity Proof | §9 (§9.3 = proof ทำมือ · §9.4 = อัตโนมัติ), §10 |
 
 ---
@@ -467,6 +467,38 @@ GET /api/v1/products?page=1&limit=10
 - ลำดับที่ถูก: **update DB → แล้วค่อย DEL cache** (ไม่ใช่ DEL ก่อน) และพึ่ง TTL เป็น safety net เสมอ *(B04)*
 - ❌ ห้ามใช้ `KEYS pattern` ในการล้างแคช — เป็น O(N) และบล็อก Redis ทั้งตัว ใช้ `SCAN` หรือ key ที่คำนวณตรงได้ *(B04 slide-errata #1)*
 
+### 5.5 🔬 Deep Dive: ยุทธศาสตร์การแคชและการ Invalidate (Cache Validation & Invalidation)
+
+> 📚 **เชื่อมโยงวิชา Backend04 (Redis: Caching & Atomic Operations)**:
+> สไลด์อาจารย์ระบุรูปแบบแคชหลัก 3 แบบ: **Cache-Aside**, **Write-Through**, และ **Write-Behind** พร้อมปัญหาคลาสสิกของระบบแคช (Stampede, Avalanche, Inconsistency)
+
+#### 5.5.1 การเปรียบเทียบ Caching Pattern (ทำไมเลือก Cache-Aside?)
+
+| Pattern | กลไก | ข้อดี | ข้อเสีย | เหมาะกับงานไหน | ทำไมระบบนี้ใช้ / ไม่ใช้ |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Cache-Aside** *(Lazy Loading)* | แอปอ่านแคชก่อน → ถ้า Miss จึงไปอ่าน DB แล้วเอามาเขียนใส่แคช | แคชเฉพาะข้อมูลที่มีคนอ่านจริง (ประหยัด RAM), แคชล่มระบบยังทำงานได้ (fallback to DB) | Miss ครั้งแรกช้า (penalty), เสี่ยงข้อมูลเก่า (stale) ถ้า invalidate ไม่ดี | Read-heavy, ข้อมูลเปลี่ยนไม่บ่อย | **✅ เลือกใช้สำหรับ Catalog Metadata** — รองรับ 1,000 Read VUs ได้เต็มที่ โดยไม่เปลือง RAM แคชของที่ไม่มีคนดู *(B04)* |
+| **Write-Through** | ตอนบันทึกข้อมูล แอปเขียน DB และเขียนแคชพร้อมกันทันที | ข้อมูลในแคชสดเสมอ ไม่เคยมี Cache Miss สำหรับข้อมูลใหม่ | Write Latency สูงขึ้น (ต้องเขียน 2 ที่), เปลือง RAM แคชข้อมูลที่อาจไม่มีใครอ่าน | ข้อมูลที่เขียนแล้วต้องถูกอ่านซ้ำทันทีแน่นอน | **❌ ไม่ใช้** — การเขียนแคช catalog ทุกครั้งที่สินค้าเปลี่ยนใน write burst 500 VUs จะหน่วง write path โดยใช่เหตุ *(B04)* |
+| **Write-Behind** *(Write-Back)* | แอปเขียนลงแคชก่อนทันที แล้วมี background worker ทยอย flush ลง DB | Write เร็วที่สุดในระดับไมโครวินาที | **ข้อมูลสูญหายได้** ถ้าแคชล่มก่อน flush ลง DB, ความซับซ้อนสูง | Audit log, นับวิว, metrics | **❌ ไม่ใช้กับสต็อกเงิน/สินค้า** — สไลด์ B04 ย้ำชัดว่าห้ามใช้เมื่อต้องการความถูกต้องของธุรกรรม |
+
+#### 5.5.2 ทำไมต้องแยก Metadata ออกจาก Dynamic Stock (Stock Overlay Pattern)?
+ในข้อสอบและโปรเจกต์ Flash Sale ทั่วไป จุดตายที่พบบ่อยที่สุดคือ **"แคชทั้งก้อน `Product` รวม `remainingStock` ไว้ด้วยกัน"**:
+- เมื่อมีคำสั่งซื้อสำเร็จ 1 รายการ แคชของสินค้านั้นต้องถูก Invalidate
+- ผลลัพธ์ใน Flash Sale: มีคนแย่งซื้อ 50 ชิ้นสำเร็จภายใน 300ms → แคชถูก Invalidate 50 ครั้งติดต่อกันใน 0.3 วินาที!
+- ผู้ใช้ 1,000 คนที่กำลังยิง `GET /products` จะเจอ Cache Miss พร้อมกัน 50 รอบรวด ทะลุเข้าไปรุม Query PostgreSQL พร้อมกันจน DB Connection ล้นและล่มในที่สุด (**Thundering Herd / Cache Stampede**)
+- **ทางแก้ของระบบนี้**: แยกข้อมูลที่อยู่นิ่ง (Metadata: ชื่อ, รูป, ราคา, สต็อกตั้งต้น) เก็บไว้ใน `redis-cache` โดยใช้ Cache-Aside + TTL 60s
+  ส่วนตัวเลขสต็อกคงเหลือที่วิ่งตลอดเวลา (`remainingStock`) ดึงสดผ่าน `MGET` จาก atomic counter ใน `redis-data` (1 roundtrip ได้ครบทุกสินค้าในหน้า) แล้วนำมารวมกัน (Overlay) ในหน่วยความจำของ NestJS ก่อนตอบกลับลูกค้า
+
+#### 5.5.3 มาตรการป้องกัน Cache Stampede & Avalanche ตามหลักวิศวกรรม
+
+1. **In-Process Single-Flight Promise Memoization (กัน Stampede / Thundering Herd)**:
+   - *ปัญหาเดิม*: เมื่อคีย์แคชหน้า 1 หมดอายุ และมี 1,000 requests วิ่งเข้ามาในเสี้ยววินาทีเดียวกัน ทุก request จะเห็น Cache Miss และยิง SQL query ไปยัง Replica DB พร้อมกัน 1,000 ครั้ง
+   - *วิธีแก้*: ในแต่ละ instance ของ NestJS โค้ดจะเก็บตัวแปร `memoPromise` แชร์ Promise การอ่าน DB ของหน้านั้นร่วมกัน หากมี request ที่ 2..N เข้ามาในขณะที่ request แรกกำลังรอ DB อยู่ ทุก request จะรอรับผลลัพธ์จาก Promise ตัวเดียวกัน → **ลดโหลดลง DB จาก 1,000 queries เหลือเพียง 1 query ต่อ instance** *(B04)*
+2. **TTL Jitter (กัน Avalanche)**:
+   - *ปัญหาเดิม*: หาก Warm up แคชสินค้าพร้อมกันทุกหน้าด้วย TTL 60s เท่ากันทั้งหมด เมื่อครบ 60s แคชทุกหน้าจะดับลงพร้อมกัน ทำให้ DB โดนถล่มกะทันหัน
+   - *วิธีแก้*: ใช้สูตร `TTL = 30 + Math.floor(Math.random() * 30)` วินาที ทำให้เวลาหมดอายุกระจายตัวอย่างสม่ำเสมอตลอดช่วง 30–60 วินาที *(B04)*
+3. **Throttled / Debounced Cache Invalidation**:
+   - เพื่อป้องกันไม่ให้ Worker ส่งคำสั่ง `DEL catalog:page:*` ถี่เกินไป ระบบจำกัดความถี่การล้างแคช metadata ไม่เกิน 1 ครั้งต่อวินาที (`CATALOG_FLUSH_MIN_INTERVAL_MS = 1000`) ป้องกันการล้างแคชรัวซ้ำๆ ขณะที่กำลังเกิด Write Burst
+
 ---
 
 ## 6. 🛡️ Write Path — 4-Tier Defense (500 VUs แย่ง 50 ชิ้น)
@@ -760,6 +792,33 @@ Error mapping (**ในตัว worker ไม่ใช่ HTTP** — client ไ
 | `23505` unique_violation | `return { status: 'already_confirmed' }` — **ไม่ retry ไม่คืนสต็อก** (idempotency) |
 | `23514` check_violation | ไม่มี branch แยก → ตกไป transient (retry) · **เข้าไม่ถึงโดยการออกแบบ** เพราะ `WHERE remaining_stock > 0` กัน `chk_positive_stock` ไว้แล้ว (ยืนยัน 2026-08-29 · ดู `diagrams.md` §6.2) |
 | `40P01` deadlock | retry แบบ exponential + jitter · compensate เฉพาะ attempt สุดท้าย *(B03)* |
+
+### 6.5 🔬 Deep Dive: ยุทธศาสตร์ Concurrency & การเลือกใช้ Locking (Locking Techniques Compared)
+
+> 📚 **เชื่อมโยงวิชา Backend02 (Transactions & ACID) และ Backend03 (Database Engineering: Locking & Concurrency)**:
+> สไลด์อาจารย์สอนเทคนิคการคุม Concurrency ไว้ 2 สำนักหลัก: **Optimistic Locking** (`@VersionColumn`) และ **Pessimistic Locking** (`SELECT ... FOR UPDATE`)
+
+#### 6.5.1 เจาะลึกการเปรียบเทียบ Locking แต่ละแบบในสภาวะ Flash Sale
+
+| เทคนิค Locking | กลไกการทำงาน | จุดเด่น | จุดตายเมื่อเจอกระหน่ำ 500 VUs แย่ง 50 ชิ้น | ผลการตัดสินใจในระบบนี้ |
+| :--- | :--- | :--- | :--- | :--- |
+| **Optimistic Locking**<br/>*(TypeORM `@VersionColumn`)* | ไม่ล็อกแถวตอนอ่าน ตรวจเวอร์ชันตอน UPDATE: `WHERE id = :id AND version = :v`<br/>ถ้ามีคนแก้ไปก่อน version จะไม่ตรง และโยน `OptimisticLockVersionMismatchError` | ไม่มีการจอง row lock ค้าง, ทำงานเร็วมากเมื่อไม่มีการแย่งชิง (Low Contention) | **💥 เกิด Abort Storm / Retry Storm มหาศาล**: ผู้ใช้ 500 คนอ่าน version 1 เข้ามาพร้อมกัน จะมีเพียง 1 คนที่ UPDATE สำเร็จ อีก 499 คน abort ทันที! ถ้าสั่ง retry อัตโนมัติ ทั้ง 499 คนจะวนกลับมายิง DB ซ้ำ เกิด CPU spike, connection pool อิ่มตัว และ request ส่วนใหญ่ timeout | **❌ ปฏิเสธเด็ดขาดบน Write Path ของ Flash Sale** — สไลด์ B03 ระบุชัดว่า Optimistic Lock เหมาะเฉพาะงานที่คนแก้ชนกันน้อย เช่น การแก้ฟอร์มประวัติผู้ใช้ |
+| **Pessimistic Locking**<br/>*(SQL `SELECT ... FOR UPDATE`)* | สั่งล็อกแถวใน DB ตั้งแต่เริ่ม Transaction: ข้อมูลแถวนั้นถูก Exclusive Lock ห้ามคนอื่นอ่าน/เขียนจนกว่าจะ Commit หรือ Rollback | รับประกันความถูกต้อง 100% ข้อมูลไม่มีวันขายเกินแน่นอน | **💥 Connection Pool Starvation & 504 Timeout**: แต่ละ instance มี connection pool จำกัด (8 connections รวมทั้งคลัสเตอร์ 48 connections). หาก 500 คำขอที่ยิงเข้ามาใน HTTP Controller ไปขอเปิด transaction และถือ row lock ใน DB คำขอจะเข้าคิวรอ lock นานเป็นวินาที ส่งผลให้ connection ทั้งหมดถูกยึดค้างจนหมด คำขอ Read (`GET /products`) และ Healthcheck จะถูกปฏิเสธ (504 / Connection Timeout) ทั้งระบบล่ม | **❌ ไม่ใช้บน Synchronous HTTP Controller Path** — แม้ถูกต้องแต่ทำลาย Throughput และ Latency อย่างสิ้นเชิง |
+| **Distributed Mutex Lock**<br/>*(Redis `SET NX PX`)* | จองคีย์ใน Redis ชั่วคราวด้วย `SET lock:key token NX PX ttl`<br/>ปลดล็อกด้วย Lua script ที่เช็ค token ก่อนลบ | กักคำขอซ้ำของผู้ใช้คนเดิมได้รวดเร็วในระดับหน่วยความจำ (RAM) | ถ้าใช้เป็น Distributed Lock สำหรับสต็อกสินค้าชิ้นเดียว (Global Lock) Redis จะต้องรับ contention มหาศาล และหาก TTL สั้นไปขณะ worker ทำงานช้า อาจเกิด split-brain | **✅ ใช้อย่างจำเพาะเจาะจง**: ใช้เป็น **In-Flight Lock ต่อผู้ใช้** (`lock:order:{userId}:{productId}`) เพื่อกันการกดรัว 2–3 ครั้ง โดยไม่ใช้เป็น Global Lock ขวางทั้งระบบ |
+| **Atomic In-Memory Gatekeeper**<br/>*(Redis Lua Script)* | ใช้คำสั่ง `DECRBY` ตรวจสอบและตัดสต็อกตัวเลขใน Redis ภายในคำสั่งเดียว (Single-threaded execution ใน Redis) | ตอบกลับในระดับ ~1ms, กรอง 450 คำขอที่เกินโควตาออกทันทีที่ขอบระบบ | ข้อมูลอยู่ใน RAM ถ้า Redis ล่มโดยไม่ได้ตั้ง Persistence ข้อมูลอาจหาย (แก้ด้วย AOF + Re-sync กับ DB) | **✅ ด่านที่ 1 (Edge Defense)**: ปฏิเสธ 450 คนทันทีที่ Redis ตอบ 409 โดยไม่ต้องแตะ Database แม้แต่ตัวเดียว |
+| **Database Atomic Decrement & Row Serialization**<br/>*(PostgreSQL `UPDATE ... WHERE remaining_stock > 0`)* | ไม่ใช้ `SELECT` นำหน้า แต่สั่ง `UPDATE products SET remaining_stock = remaining_stock - 1 WHERE id = $1 AND remaining_stock > 0` | รันระดับ SQL statement เดียว ใช้ระยะเวลาถือ row lock สั้นที่สุดระดับซับมิลลิวินาที, ไร้ช่องว่าง TOCTOU | ต้องพึ่งพาคิว (BullMQ) ในการลด Concurrency ลงมาก่อน เพื่อไม่ให้ DB connection แตก | **✅ ด่านที่ 3 (Final Ledger)**: ทำงานใน Worker ที่คุม Concurrency ไว้แล้ว การันตีความถูกต้องระดับ ACID บน PostgreSQL |
+
+#### 6.5.2 ลำดับการล็อกและมาตรการป้องกัน Deadlock (PostgreSQL `40P01`)
+
+- **สาเหตุของ Deadlock**: เกิดจาก Circular Wait เมื่อ Transaction A ล็อก Resource 1 แล้วรอ Resource 2 ในขณะที่ Transaction B ล็อก Resource 2 แล้วรอ Resource 1
+- **กฎการจัดลำดับ Resource ในระบบนี้ (Lock Ordering)**:
+  1. Transaction ของ Worker จะอัปเดตสต็อกที่ตาราง `products` ก่อนเสมอ (`UPDATE products ...`) ซึ่ง PostgreSQL จะเข้าถือ `FOR NO KEY UPDATE` row lock บนแถวนั้น
+  2. จากนั้นจึงทำ `INSERT INTO orders` ซึ่งระบบต้องการเพียง Foreign Key check ที่ขอถือ lock แบบ `KEY SHARE` บนแถว `products` ตัวเดิม
+  3. เนื่องจาก `FOR NO KEY UPDATE` และ `KEY SHARE` **ไม่ขัดแย้งกัน (Compatible locks)** จึงไม่เกิด Lock Escalation หรือ Deadlock ระหว่างตาราง
+- **การรับมือ `40P01` (Deadlock Detected)**:
+  - แม้การออกแบบจะป้องกัน circular lock แต่ในระดับ TypeORM / PostgreSQL concurrency สไลด์ B03 ย้ำว่าระบบต้องมีกลยุทธ์ retry เสมอ
+  - Worker ดักจับ Error Code `40P01` แล้วทำการ **Retry ด้วย Exponential Backoff + Jitter** ผ่าน BullMQ
+  - **ข้อควรระวังสำคัญยิ่งยวด**: ห้ามทำการชดเชยคืนสต็อกใน Redis (`compensate`) ในขณะที่ retry เพราะคำขอรอบถัดไปอาจจะสำเร็จ! ต้องชดเชยเฉพาะเมื่อ job ล้มเหลวใน Final Attempt เท่านั้น
 
 ---
 
